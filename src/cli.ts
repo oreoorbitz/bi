@@ -7,6 +7,7 @@
 import { getModel, listAllModels, listModels } from "./models.js";
 import { getProvider, listProviders } from "./provider.js";
 import { runAgent } from "./agent.js";
+import { listBaisIssues, readyBaisIssues } from "./bais.js";
 
 function printHelp(): void {
 	console.log(`bi — BAML port of pi (Orion's fork)
@@ -16,6 +17,8 @@ Usage:
   bi list-models [--provider <id>]
   bi get-model <id>
   bi run <prompt> [--provider <id>] [--model <id>] [--api-key <key>] [--base-url <url>] [--temperature <n>] [--max-turns <n>]
+  bi bais list [--json]           # BAIS interop: list .bais/issues/*.toml via bais BAML parser (BAML is validator)
+  bi bais ready [--json]          # BAIS interop: ready = Open where not blocked (Blocks edges)
 
 Options:
   --provider <id>     Provider id (anthropic, openai, google) [default: anthropic]
@@ -145,6 +148,32 @@ async function main(): Promise<void> {
 			}
 		}
 		return;
+	}
+
+	if (cmd === "bais") {
+		const sub = args[1];
+		const asJson = hasFlag(args, "--json");
+		if (sub === "list") {
+			const files = await listBaisIssues();
+			if (asJson) console.log(JSON.stringify(files, null, 2));
+			else {
+				for (const f of files) console.log(`${f.issue.id}\t${f.issue.status}\t${f.issue.kind}\t${f.issue.title}`);
+				if (files.length === 0) console.error("(no .bais/issues/*.toml — run bais init or add issues)");
+			}
+			return;
+		}
+		if (sub === "ready") {
+			const files = await readyBaisIssues();
+			if (asJson) console.log(JSON.stringify(files, null, 2));
+			else {
+				for (const f of files) console.log(`${f.issue.id}\t${f.issue.title}`);
+				if (files.length === 0) console.log("(no ready issues)");
+			}
+			return;
+		}
+		console.error(`Unknown bais subcommand: ${sub ?? ""} (try: bais list | bais ready)`);
+		printHelp();
+		process.exit(1);
 	}
 
 	console.error(`Unknown command: ${cmd}`);

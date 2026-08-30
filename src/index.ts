@@ -23,3 +23,4 @@ export { listTools, getTool, type ToolSpec as AgentToolSpec } from "./tools.js";
 // from a successful `ai.ModelTurn` — see anthropic.ts's header for why
 // SendTurn/StreamTurn return this instead of throwing.
 export { TurnFailure } from "../baml_sdk/index.js";
+export { listBaisIssues, readyBaisIssues, type BaisIssue, type BaisEdge, type BaisFile } from "./bais.js";
