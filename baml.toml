@@ -1,0 +1,10 @@
+[package]
+name = "bi"
+
+[generator.client1]
+output_type = "typescript/node"
+naming_convention = "preserve-case"
+output_dir = "."
+
+# BAML port of pi/packages/ai — see the plan this was scaffolded from for
+# the full provider mapping (Bucket A/B/C/D breakdown).

@@ -1,0 +1,21 @@
+{
+	"name": "bi",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "BAML port of pi/packages/ai — BAML owns the LLM-calling logic, this package is the thin TypeScript host around the generated baml_sdk client.",
+	"bin": {
+		"bi": "./dist/src/cli.js"
+	},
+	"scripts": {
+		"build": "tsc -p tsconfig.json",
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
+	"dependencies": {
+		"@boundaryml/baml-bridge": "0.17.0"
+	},
+	"devDependencies": {
+		"@types/node": "22.19.19",
+		"typescript": "5.9.3"
+	}
+}
