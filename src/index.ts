@@ -18,6 +18,7 @@ export { listModels, listAllModels, getModel, modelSupportsReasoning, type Model
 export { listProviders, getProvider, providerExists, providerForModel, type Provider } from "./provider.js";
 export { generateImage, type GenerateImageOptions } from "./image.js";
 export { runAgent, createTextTurn, createToolUseTurn, type ToolHandler, type AgentResult } from "./agent.js";
+export { listTools, getTool, type ToolSpec as AgentToolSpec } from "./tools.js";
 // `result instanceof TurnFailure` discriminates SendTurn/StreamTurn results
 // from a successful `ai.ModelTurn` — see anthropic.ts's header for why
 // SendTurn/StreamTurn return this instead of throwing.
