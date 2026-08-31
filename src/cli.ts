@@ -8,12 +8,14 @@ import { getModel, listAllModels, listModels } from "./models.js";
 import { getProvider, listProviders } from "./provider.js";
 import { runAgent } from "./agent.js";
 import { listBaisIssues, readyBaisIssues, createBaisIssue, moveBaisIssue, checkBaisIssues, graphBaisIssues } from "./bais.js";
+import { parse_args, format_help, is_valid_thinking_level } from "../baml_sdk/index.js";
+import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow } from "./session.js";
 
 function printHelp(): void {
-	console.log(`bi — BAML port of pi (Orion's fork) — .bais is first-class
-
-Usage:
-  bi                              # default: show ready BAIS issues (first-class)
+	// BAML is spec: format_help() is bi-renamed pi help (APP_NAME bi, .bi)
+	// Keep TS help in sync — if it diverges, BAML is truth.
+	console.log(format_help());
+	console.log(`\nBi extensions (BAML-owns-LLM, .bais is first-class):
   bi list-providers
   bi list-models [--provider <id>]
   bi get-model <id>
@@ -22,17 +24,8 @@ Usage:
   bi bais ready [--json]
   bi bais new "title" --kind <Kind> [--area <area>] [--status <Status>] [--body <md>]
   bi bais move <id> <Status>
-  bi bais check [--json]           # BAML validates every .bais/issues/*.toml
+  bi bais check [--json]
   bi bais graph --from <id> [--json]
-
-Options:
-  --provider <id>     Provider id (anthropic, openai, google) [default: anthropic]
-  --model <id>        Model id (e.g. claude-haiku-4-5) [default: claude-haiku-4-5]
-  --api-key <key>     API key (or set ANTHROPIC_API_KEY etc. — not yet wired)
-  --base-url <url>    Override base URL (useful for closed-port tests)
-  --temperature <n>   Sampling temperature
-  --max-turns <n>     Agent loop cap [default: 5]
-  --help, -h          Show this help
 `);
 }
 
@@ -59,6 +52,14 @@ async function main(): Promise<void> {
 		process.exit(0);
 	}
 	// first-class: `bi` with no args shows ready BAIS issues (like pi shows session)
+	// BAML is spec for args: parse_args validates --thinking/--mode etc. before dispatch
+	try {
+		const parsed = await parse_args(args);
+		if (parsed.diagnostics.length) {
+			for (const d of parsed.diagnostics) console.error(`[${d.type}] ${d.message}`);
+		}
+		if (parsed.help) { printHelp(); process.exit(0); }
+	} catch {}
 	if (!cmd) {
 		const ready = await readyBaisIssues();
 		if (ready.length === 0) {
@@ -66,8 +67,38 @@ async function main(): Promise<void> {
 		} else {
 			for (const f of ready) console.log(`${f.issue.id}\t${f.issue.status}\t${f.issue.kind}\t${f.issue.title}`);
 		}
-		console.log("\n`bi --help` for commands, `bi bais new \"title\"` to add, `bi run \"prompt\"` to run agent");
+		// session hint — bi native .bi (not .pi)
+		console.log(`\nSessions: ${getBiSessionsDir()} (${listSessions().length} saved) — try \`bi --continue\` or \`bi run "hello"\``);
+		console.log("`bi --help` for commands, `bi bais new \"title\"` to add, `bi run \"prompt\"` to run agent");
+		// interactive skeleton: if tty, prompt once (full TUI lands next)
+		if (process.stdin.isTTY && process.stdout.isTTY && !hasFlag(args, "--print") && !hasFlag(args, "-p")) {
+			const rl = await import("node:readline");
+			const r = rl.createInterface({ input: process.stdin, output: process.stdout });
+			const q = await new Promise<string>((res) => r.question("bi> ", res));
+			r.close();
+			if (q.trim()) {
+				// create a session header via BAML (bi namespace)
+				const sessFile = createSessionFile({ cwd: process.cwd() });
+				console.error(`[bi] new session ${sessFile}`);
+				const fullPrompt = q.trim() + `\n\n[BAIS ready]\n${(await readyBaisIssues()).map((f) => `- ${f.issue.id} ${f.issue.title}`).join("\n")}`;
+				const result = await runAgent(fullPrompt, { provider: "anthropic", model: "claude-haiku-4-5", maxTurns: 5 });
+				if (result.failure) console.error(`TurnFailure ${result.failure.message}`);
+				else for (const m of result.messages) if ((m as any).role === "assistant") console.log((m as any).text ?? JSON.stringify((m as any).content));
+			}
+		}
 		process.exit(0);
+	}
+	// session flags — host handles FS, BAML validates ids (bi/.bi, not .pi)
+	if (hasFlag(args, "--continue") || hasFlag(args, "-c")) {
+		const id = findMostRecentSession();
+		if (!id) console.error("No sessions to continue — `bi` will start fresh");
+		else console.error(`[bi] continuing ${id} @ ${getBiSessionsDir()}`);
+		// `--continue` is a flag, not a command — don't fall through to unknown
+		if (cmd?.startsWith("-")) return;
+	}
+	if (hasFlag(args, "--resume") || hasFlag(args, "-r")) {
+		console.error(`[bi] sessions: ${listSessions().join(", ") || "(none)"} — pick with --session <id>`);
+		if (cmd?.startsWith("-")) return;
 	}
 
 	if (cmd === "list-providers") {
@@ -241,6 +272,13 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
+	if (cmd?.startsWith("-")) {
+		// e.g. `bi --continue` or `bi --thinking high` — already handled above / via parse_args diagnostics
+		// show ready BAIS as default interactive hint
+		const ready = await readyBaisIssues();
+		if (ready.length) for (const f of ready) console.log(`${f.issue.id}\t${f.issue.title}`);
+		return;
+	}
 	console.error(`Unknown command: ${cmd}`);
 	printHelp();
 	process.exit(1);
