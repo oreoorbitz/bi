@@ -1,0 +1,20 @@
+id = "bi#09"
+title = "bi-coding-agent: Phase 2 session header + trust (bi namespace)"
+status = "Open"
+kind = "Feat"
+area = "cli/bi"
+body = """
+Port pi/core/session-manager.ts (SessionHeader, assertValidSessionId, cwd) + pi/core/project-trust.ts (AppMode, ResolveProjectTrusted) into bi/baml_src/session.baml under bi namespace.
+
+- .pi -> .bi, APP_NAME pi -> bi
+- SessionHeader {type, version, id, timestamp, cwd, parentSession?} + CURRENT_SESSION_VERSION
+- validate_session_id (alphanumeric start/end, [-_.] interior) — same regex as pi
+- resolve_issues_dir helper already in bi/src/bais.ts; add session header creation + trust option labels
+
+Acceptance: baml check green, baml test one-test→one-impl for valid/invalid ids, header creation, trust AppMode.
+"""
+
+[[edge]]
+from = "bi#08"
+to = "bi#09"
+kind = "Blocks"

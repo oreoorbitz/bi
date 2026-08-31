@@ -1,6 +1,6 @@
 id = "bi#08"
 title = "bi-coding-agent: Phase 1 cli_args (pi → bi namespace)"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "cli/bi"
 body = """
