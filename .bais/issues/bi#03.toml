@@ -1,0 +1,11 @@
+id = "bi#03"
+title = "FFI: thrown ai.errors.Failure interface decode (TurnFailure union)"
+status = "Open"
+kind = "Proposal"
+area = "bridge/ffi"
+source = "baml.errors.TypeMismatch"
+body = """
+Thrown ai.errors.NetworkFailure satisfying throws via ai.errors.Failure interface fails decode.
+Workaround: SendTurn/StreamTurn catch ai.errors.Failure internally and return TurnFailure concrete.
+See proposals/06-ffi-thrown-interface-error-decode-failure.md and 07.
+"""

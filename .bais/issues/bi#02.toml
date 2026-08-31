@@ -1,0 +1,10 @@
+id = "bi#02"
+title = "FFI: enum arg encoding (provider string tag workaround)"
+status = "Open"
+kind = "Proposal"
+area = "bridge/ffi"
+source = "baml.errors.TypeMismatch"
+body = """
+Repro: BAML enum passed as arg from host encodes as stringValue, VM rejects expected variant.
+Workaround: provider is string, validated via match. See proposals/05-ffi-enum-argument-encoding-gap.md.
+"""

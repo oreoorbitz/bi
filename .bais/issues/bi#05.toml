@@ -1,0 +1,16 @@
+id = "bi#05"
+title = "FFI: ai.stream.TurnStream handle — second next() stale (incremental BamlStream workaround)"
+status = "Blocked"
+kind = "Proposal"
+area = "bridge/ffi"
+source = "baml.errors.TypeMismatch"
+body = """
+TurnStream _cursor/_text mutations don't survive host round-trip; second next() returns first delta.
+Workaround in bi/baml_src/stream.baml + bi/src/incremental.ts: BamlStream closure owns cursor.
+See proposals/09-ffi-turnstream-handle-round-trip-failure.md. Blocked on bi#04 pattern.
+"""
+
+[[edge]]
+from = "bi#04"
+to = "bi#05"
+kind = "Blocks"

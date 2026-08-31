@@ -1,0 +1,10 @@
+id = "bi#04"
+title = "FFI: ai.tools.Tool handle round-trip (plain-data ToolSpec)"
+status = "Open"
+kind = "Proposal"
+area = "bridge/ffi"
+source = "baml.errors.TypeMismatch"
+body = """
+ai.tools.Tool (ai.tools.raw_tool with closure) fails when built in one call and passed as arg.
+Workaround: ToolSpec plain data, build_toolbox inside VM. See proposals/08-ffi-tool-handle-round-trip-failure.md.
+"""

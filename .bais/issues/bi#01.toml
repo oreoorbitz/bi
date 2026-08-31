@@ -1,0 +1,11 @@
+id = "bi#01"
+title = "FFI: ai.Client interface handle round-trip (bi proposes 04)"
+status = "Open"
+kind = "Proposal"
+area = "bridge/ffi"
+source = "baml.errors.TypeMismatch"
+body = """
+Repro: make_client() -> anthropic.AnthropicClient returned to TS, passed as ai.Client to use_client() — TypeMismatch.
+Workaround in bi/baml_src/turn.baml: build_client + SendTurn in one call, TS passes string provider tag.
+Next: re-check on toolchain >0.17.0; remove workaround if fixed. See proposals/04-ffi-interface-argument-type-mismatch.md.
+"""

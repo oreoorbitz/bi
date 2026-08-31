@@ -1,0 +1,9 @@
+id = "bi#07"
+title = "Next slice: AnthropicCallOptions + thinking + temperature passthrough"
+status = "Open"
+kind = "Feat"
+area = "ai/provider"
+body = """
+Add thinking, cache_control, temperature/top_p passthrough matching pi/packages/ai AnthropicOptions.
+Acceptance: baml test proves option forwarding via closed-port plumbing, no panic; bi run --temperature works.
+"""

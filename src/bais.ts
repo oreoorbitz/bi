@@ -25,22 +25,23 @@ export type BaisFile = { issue: BaisIssue; edges: BaisEdge[] };
 
 // Resolve the BAIS issues directory. Prefer the nearest .bais/issues
 // (cwd → bais project → repo dot). Mirrors `rg` file-per-issue layout.
+// For bi, primary is bi/.bais/issues — handle both `cwd==bi` and `cwd==orion-learn-baml`.
 function resolveIssuesDir(from: string = process.cwd()): string | null {
 	const candidates = [
-		join(from, ".bais", "issues"),
+		join(from, ".bais", "issues"), // cwd is bi/
+		join(from, "bi", ".bais", "issues"), // cwd is orion-learn-baml/
 		join(from, "bais", ".bais", "issues"),
 		resolve(from, "../bais/.bais/issues"),
 		join(resolve(from, ".."), ".bais", "issues"),
-		// fallback: bais project's own layout (bais/baml_src defines the type)
 		resolve(from, "../bais"),
+		join(from, ".bais"),
+		join(from, "bi", ".bais", "issues"),
 	];
 	for (const c of candidates) {
 		if (existsSync(c)) return c;
-		// also handle case where `bais` dir itself is the package (bais/baml_src)
 		const alt = join(c, "bais", ".bais", "issues");
 		if (existsSync(alt)) return alt;
 	}
-	// direct check for the sibling bais repo's issues (bais/.bais/issues)
 	const sibling = resolve(from, "../bais/.bais/issues");
 	if (existsSync(sibling)) return sibling;
 	const here = join(from, "bais", ".bais", "issues");

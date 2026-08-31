@@ -1,0 +1,11 @@
+id = "bi#06"
+title = "FFI: ai.MediaPart media union round-trip (SendTurnWithImage workaround)"
+status = "Open"
+kind = "Proposal"
+area = "ai/media"
+source = "baml.errors.TypeMismatch"
+body = """
+ai.content.Media with baml.media.Image round-trips as AssistantMessage but fails as history arg (union alias vs Image).
+Workaround: CreateMediaBlock/SendTurnWithImage build media inside VM. See proposals/10-ffi-media-union-handle-round-trip-failure.md.
+Acceptance: history + generated Media both survive round-trip via ai.events.Media.
+"""
