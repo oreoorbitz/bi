@@ -10,6 +10,8 @@ import { runAgent } from "./agent.js";
 import { listBaisIssues, readyBaisIssues, createBaisIssue, moveBaisIssue, checkBaisIssues, graphBaisIssues } from "./bais.js";
 import { parse_args, format_help, is_valid_thinking_level } from "../baml_sdk/index.js";
 import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow } from "./session.js";
+import { HostTui, renderReadyScreen } from "./tui.js";
+import { runBiLoop } from "./agent_loop.js";
 
 function printHelp(): void {
 	// BAML is spec: format_help() is bi-renamed pi help (APP_NAME bi, .bi)
@@ -62,26 +64,30 @@ async function main(): Promise<void> {
 	} catch {}
 	if (!cmd) {
 		const ready = await readyBaisIssues();
+		// HostTui differential — BAML owns Component/diff_lines, host renders (pi TUI spec)
+		const tui = new HostTui();
 		if (ready.length === 0) {
+			tui.render(renderReadyScreen([], process.stdout.columns ?? 80));
 			console.log("(no ready BAIS issues — `bi bais list` to see all)");
 		} else {
+			tui.render(renderReadyScreen(ready, process.stdout.columns ?? 80));
 			for (const f of ready) console.log(`${f.issue.id}\t${f.issue.status}\t${f.issue.kind}\t${f.issue.title}`);
 		}
-		// session hint — bi native .bi (not .pi)
+		// session hint — bi native .bi (not .pi), validated via BAML SessionHeader
 		console.log(`\nSessions: ${getBiSessionsDir()} (${listSessions().length} saved) — try \`bi --continue\` or \`bi run "hello"\``);
 		console.log("`bi --help` for commands, `bi bais new \"title\"` to add, `bi run \"prompt\"` to run agent");
-		// interactive skeleton: if tty, prompt once (full TUI lands next)
+		// interactive skeleton: if tty, prompt once via BAML LoopState (full TUI lands next)
 		if (process.stdin.isTTY && process.stdout.isTTY && !hasFlag(args, "--print") && !hasFlag(args, "-p")) {
 			const rl = await import("node:readline");
 			const r = rl.createInterface({ input: process.stdin, output: process.stdout });
 			const q = await new Promise<string>((res) => r.question("bi> ", res));
 			r.close();
 			if (q.trim()) {
-				// create a session header via BAML (bi namespace)
 				const sessFile = createSessionFile({ cwd: process.cwd() });
 				console.error(`[bi] new session ${sessFile}`);
 				const fullPrompt = q.trim() + `\n\n[BAIS ready]\n${(await readyBaisIssues()).map((f) => `- ${f.issue.id} ${f.issue.title}`).join("\n")}`;
-				const result = await runAgent(fullPrompt, { provider: "anthropic", model: "claude-haiku-4-5", maxTurns: 5 });
+				// BAML loop validation — runBiLoop wraps runAgent with LoopContext (agent_loop.baml)
+				const result = await runBiLoop(fullPrompt, { provider: "anthropic", model: "claude-haiku-4-5", maxTurns: 5, onEvent: (e) => console.error(`[loop] ${e}`) });
 				if (result.failure) console.error(`TurnFailure ${result.failure.message}`);
 				else for (const m of result.messages) if ((m as any).role === "assistant") console.log((m as any).text ?? JSON.stringify((m as any).content));
 			}

@@ -1,6 +1,6 @@
 id = "bi#10"
 title = "bi-coding-agent: full TUI/agent-loop (pi TUI differential + agent-loop)"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "cli/bi"
 body = """
