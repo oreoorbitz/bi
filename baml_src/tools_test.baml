@@ -1,6 +1,6 @@
 testset "tools registry" {
-    test "ListTools returns 7" {
-        assert.equal(ListTools().length(), 7)
+    test "ListTools returns 13 (7 pi + 6 bais)" {
+        assert.equal(ListTools().length(), 13)
     }
 
     test "GetTool read has required path" {
