@@ -136,7 +136,10 @@ function _tool_bais_list() -> ToolSpec {
         input_schema: {
             "type": "object",
             "properties": {
-                "status": { "type": "string", "description": "Filter by status (Open/Doing/Blocked/Done/Dropped) — optional" },
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status (Open/Doing/Blocked/Done/Dropped) — optional",
+                },
             },
             "additionalProperties": false,
         },
@@ -159,10 +162,16 @@ function _tool_bais_new() -> ToolSpec {
             "type": "object",
             "properties": {
                 "title": { "type": "string", "description": "Issue title" },
-                "kind": { "type": "string", "description": "Kind: Bug/Feat/Proposal/Debt/Flake/Spike (default Feat)" },
+                "kind": {
+                    "type": "string",
+                    "description": "Kind: Bug/Feat/Proposal/Debt/Flake/Spike (default Feat)",
+                },
                 "area": { "type": "string", "description": "Area e.g. cli/bi, bridge/ffi (optional)" },
                 "body": { "type": "string", "description": "Markdown body (optional)" },
-                "status": { "type": "string", "description": "Status: Open/Doing/Blocked/Done/Dropped (default Open)" },
+                "status": {
+                    "type": "string",
+                    "description": "Status: Open/Doing/Blocked/Done/Dropped (default Open)",
+                },
             },
             "required": ["title"],
             "additionalProperties": false,

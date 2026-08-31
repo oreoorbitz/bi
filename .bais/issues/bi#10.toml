@@ -1,0 +1,19 @@
+id = "bi#10"
+title = "bi-coding-agent: full TUI/agent-loop (pi TUI differential + agent-loop)"
+status = "Open"
+kind = "Feat"
+area = "cli/bi"
+body = """
+Port pi/packages/tui (differential rendering, Component {render, handleInput, invalidate}, CURSOR_MARKER, Terminal) + pi/packages/agent agent-loop (AgentLoopConfig, AgentContext with 8 tools, EventStream, StreamFn, agentLoop/continue) into bi.
+
+Vendor: bi/vendor/pi-tui.ts (1263) + pi-agent-loop.ts (796) + pi-terminal.ts as spec.
+
+BAML owns: LoopState {Idle, Thinking, ToolUse, Done}, AgentEvent, Component interface, diff logic (pure). Host owns: Terminal, streamFn (ai.Client), TUI main-screen rendering.
+
+Acceptance: baml check green, baml test one-test→one-impl for LoopState/Component (no LLM), bi with TUI renders ready BAIS + prompt (differential, no pi drift), agentLoopContinue validates last message role.
+"""
+
+[[edge]]
+from = "bi#09"
+to = "bi#10"
+kind = "Blocks"
