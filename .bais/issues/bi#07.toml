@@ -1,6 +1,6 @@
 id = "bi#07"
 title = "Next slice: AnthropicCallOptions + thinking + temperature passthrough"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "ai/provider"
 body = """
