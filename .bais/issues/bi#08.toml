@@ -1,0 +1,15 @@
+id = "bi#08"
+title = "bi-coding-agent: Phase 1 cli_args (pi → bi namespace)"
+status = "Open"
+kind = "Feat"
+area = "cli/bi"
+body = """
+Port pi/packages/coding-agent/src/cli/args.ts Args + parseArgs into bi/baml_src/cli_args.baml under bi namespace.
+
+- APP_NAME pi -> bi, CONFIG_DIR_NAME .pi -> .bi, env PI_* -> BI_*
+- ThinkingLevel off/minimal/low/medium/high/xhigh/max as BAML enum, Mode text/json/rpc
+- parseArgs: string[] -> Args (provider/model/thinking/help/version/mode/continue/resume/session/tools/etc., unknownFlags as map<string,string>, diagnostics)
+- vendor pi/src/cli/args.ts as spec (no fork on pi arg grammar) — keep help text bi [options] not pi
+
+Acceptance: baml check green, baml test on literal string[] for --provider/--model --thinking --tools --mode --print etc. (one-test→one-impl), bi --help matches pi --help with bi renames. Blocked on nothing; next is session/trust.
+"""
