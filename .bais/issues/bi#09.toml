@@ -1,6 +1,6 @@
 id = "bi#09"
 title = "bi-coding-agent: Phase 2 session header + trust (bi namespace)"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "cli/bi"
 body = """
