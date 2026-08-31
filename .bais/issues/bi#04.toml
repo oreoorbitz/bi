@@ -1,10 +1,12 @@
 id = "bi#04"
 title = "FFI: ai.tools.Tool handle round-trip (plain-data ToolSpec)"
-status = "Open"
+status = "Done"
 kind = "Proposal"
 area = "bridge/ffi"
 source = "baml.errors.TypeMismatch"
 body = """
 ai.tools.Tool (ai.tools.raw_tool with closure) fails when built in one call and passed as arg.
 Workaround: ToolSpec plain data, build_toolbox inside VM. See proposals/08-ffi-tool-handle-round-trip-failure.md.
+
+Closed for bi: workaround is sufficient — bi never crosses FFI with ai.tools.Tool. TS passes ToolSpec {name,description,input_schema} plain data, BAML builds real ai.tools.Tool inside same call via build_toolbox (see tools.baml ListTools). Upstream repro still open until bridge preserves raw_handler (proposals/08 acceptance).
 """
