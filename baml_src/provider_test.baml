@@ -62,4 +62,19 @@ testset "provider registry" {
     test "RefreshAllModels returns provider count" {
         assert.equal(RefreshAllModels(), 3)
     }
+
+    test "RefreshModelsWithResult static vs remote vs unknown" {
+        let a = RefreshModelsWithResult("anthropic");
+        assert.is_true(a.refreshed);
+        assert.equal(a.source, "static");
+        assert.equal(a.model_count, 3);
+        let b = RefreshModelsWithResult("anthropic", allow_network = true, remote_count = 7);
+        assert.is_true(b.refreshed);
+        assert.equal(b.source, "remote");
+        assert.equal(b.model_count, 3);
+        let c = RefreshModelsWithResult("bogus", allow_network = true, remote_count = 5);
+        assert.is_true(!c.refreshed);
+        assert.equal(c.source, "unknown");
+        assert.equal(c.model_count, 0)
+    }
 }

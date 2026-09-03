@@ -70,3 +70,72 @@ function RefreshModels(provider: string) -> bool {
 function RefreshAllModels() -> int {
     ListProviders().length()
 }
+
+class ModelsRefreshResult {
+    provider: string,
+    refreshed: bool,
+    model_count: int,
+    source: string @description("'static' | 'remote' | 'unknown'"),
+}
+
+function RefreshModelsWithResult(
+    provider: string,
+    allow_network: bool = false,
+    remote_count: int? = null,
+) -> ModelsRefreshResult {
+    let exists = ProviderExists(provider);
+    if (!exists) {
+        ModelsRefreshResult {
+            provider: provider,
+            refreshed: false,
+            model_count: 0,
+            source: "unknown",
+        }
+    } else if (allow_network && remote_count is null == false) {
+        // remote catalog path — compose base + remote overlay via provider_composer
+        // For tracer, remote_count is the remote model count (host will fetch via bais/bagl style).
+        // Real pi does `withRemoteCatalog` + `ModelRuntime` fetch; bi proves via `compose_provider`.
+        let base = ComposedProvider {
+            id: provider,
+            name: provider,
+            base_url: GetProvider(provider)?.base_url,
+            api: GetProvider(provider)?.api,
+            headers: null,
+            models: ListModels(provider).map((m) -> {
+                ComposedModel {
+                    id: m.id,
+                    name: m.name,
+                    api: m.api,
+                    provider: m.provider,
+                    base_url: m.base_url,
+                    reasoning: m.reasoning,
+                    context_window: m.context_window,
+                    max_tokens: m.max_tokens,
+                    headers: null,
+                }
+            }),
+        };
+        let ext = ProviderExtension {
+            name: null,
+            base_url: null,
+            api: null,
+            headers: null,
+            model_overrides: null,
+            models: null,
+        };
+        let composed = compose_provider(provider, base, ext);
+        ModelsRefreshResult {
+            provider: provider,
+            refreshed: true,
+            model_count: composed.models.length(),
+            source: "remote",
+        }
+    } else {
+        ModelsRefreshResult {
+            provider: provider,
+            refreshed: true,
+            model_count: ListModels(provider).length(),
+            source: "static",
+        }
+    }
+}

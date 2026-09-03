@@ -53,9 +53,9 @@ function diff_lines(old: string[], new_lines: string[]) -> string[] {
 }
 
 interface Component {
-    function render(self, width: int) -> string[]
-    function handle_input(self, data: string) -> void
-    function invalidate(self) -> void
+    function render(self, width: int) -> string[] throws never
+    function handle_input(self, data: string) -> void throws never
+    function invalidate(self) -> void throws never
 }
 
 class TextComponent {
