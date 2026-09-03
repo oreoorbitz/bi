@@ -1,6 +1,6 @@
 id = "bi#16"
 title = "Retry transient failures + AbortController through the turn loop"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "reliability"
 body = """
