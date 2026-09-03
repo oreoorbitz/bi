@@ -5,6 +5,7 @@
 import { CreateMixedTurn_async, CreateTextTurn_async, CreateToolUseTurn_async, TurnFailure, ai } from "../baml_sdk/index.js";
 import { GetModel_async, RefreshModels_async } from "../baml_sdk/index.js";
 import { toHistory, type ConversationTurn } from "./conversation.js";
+import { maybeCompactHistory, type CompactionOptions } from "./compaction.js";
 import { SendTurn_async } from "../baml_sdk/index.js";
 import { toToolSpecs, type ToolSpec } from "./conversation.js";
 
@@ -53,7 +54,7 @@ function defaultLlmFn(options: AgentOptions): LlmFn {
 
 export async function runAgent(
 	prompt: string,
-	options: AgentOptions & { tools?: ToolSpec[]; toolHandler?: ToolHandler; history?: ConversationTurn[]; llmFn?: LlmFn },
+	options: AgentOptions & { tools?: ToolSpec[]; toolHandler?: ToolHandler; history?: ConversationTurn[]; llmFn?: LlmFn; compaction?: CompactionOptions },
 ): Promise<AgentResult> {
 	// Wire to Provider/Models refresh — mirrors pi's `await models.refreshModels({allowNetwork:false})`
 	// that validates the provider/model before the first turn. For bi's static catalog this
@@ -85,6 +86,22 @@ export async function runAgent(
 	const turns: AgentTurn[] = [];
 	let currentText = prompt;
 	let maxTurns = options.maxTurns ?? 5;
+	// bi#11: mid-run compaction. The summarizer reuses this run's llmFn (same
+	// creds); a failed summary skips the splice — history is never truncated
+	// without a summary to preserve the active goal.
+	const summarize = async (summaryPrompt: string): Promise<string> => {
+		const res = await llmFn(summaryPrompt, [], []);
+		if (res instanceof TurnFailure) throw new Error(`compaction summary failed: ${res.kind} ${res.message}`);
+		return res.terminal_text() ?? "";
+	};
+	const maybeCompact = async (): Promise<void> => {
+		try {
+			const out = await maybeCompactHistory(history, summarize, options.compaction);
+			history = out.messages;
+		} catch {
+			// Summarizer failed — continue uncompacted rather than lose history.
+		}
+	};
 
 	for (let turn = 0; turn < maxTurns; turn += 1) {
 		// eslint-disable-next-line no-await-in-loop
@@ -98,6 +115,7 @@ export async function runAgent(
 			const text = result.terminal_text() ?? "";
 			history = [...history, { role: "assistant", text, clientId: `${options.provider ?? "anthropic"}/${options.model}` }];
 			turns.push({ turn: result, toolResults: [] });
+			await maybeCompact();
 			return { messages: history, turns };
 		}
 		// ToolUse — add assistant turn with tool calls (preserve text if any)
@@ -125,6 +143,7 @@ export async function runAgent(
 		turns.push({ turn: result, toolResults });
 		// Next prompt is empty — continuation from tool results
 		currentText = "";
+		await maybeCompact();
 		if (turn === maxTurns - 1) {
 			return { messages: history, turns };
 		}
