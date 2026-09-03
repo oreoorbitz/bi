@@ -1,0 +1,26 @@
+id = "bi#25"
+title = "Per-provider env-key mapping + missing-key precheck"
+status = "Open"
+kind = "Feat"
+area = "providers/auth"
+body = """
+Port pi `packages/ai/src/env-api-keys.ts`. This is the unblocked half of bi#17's auth scope — land it first so every provider names its var.
+
+## Scope
+- BAML owns: `EnvKeyFor(provider_id) -> string?` pure mapping + `MissingKeyMessage(provider_id) -> string` precheck text (extends the bi#13 precheck to all providers), offline `baml test` per provider.
+- Host owns: reading the mapped var at `getAuth()` time; precheck runs before any fetch so a missing key never becomes a network call.
+- Covers all bi providers from provider.baml (anthropic/openai/google/azure/openrouter/xai/bedrock-via-env/etc.); gateway/CN sets from bi#15 reuse the same mapping.
+
+## Pi source
+- `../pi/packages/ai/src/env-api-keys.ts`
+
+## Acceptance
+- `baml test --project bi` covers every provider id in the mapping (unknown id → `None`, never a panic).
+- A turn with an unset var fails fast naming the exact var (PTY smoke, no network).
+- `baml check --project bi` + `npm run typecheck --prefix bi` green.
+"""
+
+[[edge]]
+from = "bi#25"
+to = "bi#17"
+kind = "DependsOn"

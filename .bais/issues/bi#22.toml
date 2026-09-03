@@ -1,0 +1,31 @@
+id = "bi#22"
+title = "OAuth core (PKCE + loopback + device-code + serialized refresh)"
+status = "Open"
+kind = "Feat"
+area = "providers/auth"
+body = """
+Port pi `oauth.ts` + `bun-oauth.ts` + `auth/oauth/{pkce,device-code,oauth-page,load}.ts`. Bun-specific server code becomes `node:http` loopback.
+
+## Scope
+- BAML owns: OAuth token shapes (`OAuthCredentials {refresh, access, expires}` already in bi#18), authorize-URL building + `expires` arithmetic as pure functions with offline tests. Secrets stay host-side.
+- Host owns: PKCE (S256 code_verifier/challenge), loopback `node:http` listener with random port (replaces `Bun.serve`), device-code polling loop with AbortSignal, callback HTML page, token exchange + refresh via fetch, refresh executed inside bi#18 `modify` so concurrent requests cannot double-refresh.
+- `AuthOperationOptions {signal?}` cancellation threads through public auth operations.
+
+## Pi source
+- `../pi/packages/ai/src/oauth.ts`, `bun-oauth.ts`
+- `../pi/packages/ai/src/auth/oauth/pkce.ts`, `device-code.ts`, `oauth-page.ts`, `load.ts`
+
+## Acceptance
+- OAuth flow completes against a local stub IdP in tests (no live provider needed): authorize URL parses, loopback captures code, exchange stores credential, expired access triggers exactly one refresh under concurrency.
+- `baml test --project bi` covers URL/expiry pure arms; `npm run typecheck --prefix bi` green.
+"""
+
+[[edge]]
+from = "bi#22"
+to = "bi#17"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#22"
+to = "bi#18"
+kind = "DependsOn"

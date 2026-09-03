@@ -1,0 +1,31 @@
+id = "bi#24"
+title = "Provider OAuth flows batch 2 (xai, openrouter, copilot, kimi, radius)"
+status = "Open"
+kind = "Feat"
+area = "providers/auth"
+body = """
+Remaining pi provider flows on top of bi#22 core + bi#23 registry. xai first — it already advertises `lazyOAuth` in bi `provider.baml`, so it is the promised "second OAuth-requiring provider" from bi#17.
+
+## Scope
+- Port `auth/oauth/xai.ts`, `openrouter.ts`, `github-copilot.ts`, `kimi-coding.ts`, `radius.ts` as registry entries (no core changes expected; if a flow needs a new core primitive, split it back into bi#22).
+- xai `lazyOAuth` wires into bi provider auth so the deferred-OAuth path resolves instead of erroring.
+- Copilot flow notes its GitHub-device-code particulars in the registry entry.
+
+## Pi source
+- `../pi/packages/ai/src/auth/oauth/xai.ts`, `openrouter.ts`, `github-copilot.ts`, `kimi-coding.ts`, `radius.ts`
+
+## Acceptance
+- Each flow completes against a local stub IdP; no regressions to batch-1 flows.
+- bi#17 auth half closes when xai OAuth lands here (images half already landed).
+- `baml check --project bi` + `npm run typecheck --prefix bi` green.
+"""
+
+[[edge]]
+from = "bi#24"
+to = "bi#17"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#24"
+to = "bi#22"
+kind = "DependsOn"

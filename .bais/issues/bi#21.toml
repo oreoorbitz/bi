@@ -1,0 +1,32 @@
+id = "bi#21"
+title = "REPL /login + auth-guidance on TurnFailure"
+status = "Open"
+kind = "Feat"
+area = "providers/auth"
+body = """
+Port pi coding-agent `slash-commands.ts` login command + `auth-guidance.ts` + `login-dialog.ts` / `oauth-selector.ts` (TUI-aware).
+
+## Scope
+- REPL `/login [provider]` slash reusing the bi#20 flow (HostTui-aware prompting; plain-`readline` fallback when no TTY).
+- Auth-guidance: provider/auth TurnFailures render the fix, not just the error — missing key names the var (extends bi#13/bi#25 precheck), expired OAuth points at `bi login`, wrong credential type says so explicitly.
+- BAML owns: guidance text shaping (`GuidanceFor(failure) -> string` pure function, offline tests per failure arm). Host owns: slash dispatch + TTY prompting.
+
+## Pi source
+- `../pi/packages/coding-agent/src/core/slash-commands.ts` (login)
+- `../pi/packages/coding-agent/src/core/auth-guidance.ts`
+- `../pi/packages/coding-agent/src/modes/interactive/components/login-dialog.ts`, `oauth-selector.ts`
+
+## Acceptance
+- REPL smoke: `/login` stores a key; a turn with no usable credential prints guidance naming the exact next step.
+- `baml test --project bi` covers guidance arms offline; `npm run typecheck --prefix bi` green.
+"""
+
+[[edge]]
+from = "bi#21"
+to = "bi#17"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#21"
+to = "bi#20"
+kind = "DependsOn"

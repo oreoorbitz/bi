@@ -1,0 +1,27 @@
+id = "bi#18"
+title = "Auth credential store (auth.json file store + Credential shapes)"
+status = "Open"
+kind = "Feat"
+area = "providers/auth"
+body = """
+Port pi `packages/ai/src/auth/types.ts` (store half) + `credential-store.ts` + coding-agent `AuthStorage`.
+
+## Scope
+- BAML owns: `Credential = ApiKeyCredential {key?, env?} | OAuthCredential {refresh, access, expires}` shapes (plain-data FFI boundary), `CredentialInfo {providerId, type}` redacted listing, `validate_provider_id` + `redact_key` pure policy with offline `baml test`.
+- Host owns: `bi/src/auth.ts` file store at `~/.bi/auth.json` (0600, one credential per provider id), serialized read-modify-write (`modify` is the only write path so OAuth refresh in bi#22 cannot double-refresh), `read` resolves `undefined` for missing entries and rejects only on storage failure.
+
+## Pi source
+- `../pi/packages/ai/src/auth/types.ts` (CredentialStore interface, Credential, CredentialInfo)
+- `../pi/packages/ai/src/auth/credential-store.ts`
+- coding-agent `AuthStorage` (best-effort in-memory view + persistence errors recorded internally)
+
+## Acceptance
+- `baml check --project bi` green; new `auth.baml` + `auth_test.baml` cover shapes/redaction/provider validation offline.
+- Node round-trip script: write → read → list (no secrets in list output) → modify serialization; file created 0600.
+- `npm run typecheck --prefix bi` green.
+"""
+
+[[edge]]
+from = "bi#18"
+to = "bi#17"
+kind = "DependsOn"

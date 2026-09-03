@@ -1,0 +1,38 @@
+id = "bi#20"
+title = "bi login/logout/status CLI (API-key login now, OAuth hook later)"
+status = "Open"
+kind = "Feat"
+area = "providers/auth"
+body = """
+Login/logout orchestration is app-owned in pi — port that orchestration as `bi` CLI commands.
+
+## Scope
+- `bi login [provider]` — prompts for API key on `/dev/tty` with echo disabled (never `readline` visible echo, never in shell history, never logged), persists via bi#18 store. No provider arg lists known providers.
+- `bi logout [provider]` — removes stored credential; errors cleanly when nothing stored.
+- `bi auth status` — redacted per-provider table (type + set/unset only, via `CredentialInfo`), never prints secrets.
+- OAuth-capable providers print "OAuth not yet supported — see bi#22" instead of silently storing a key where a token belongs (xai advertises `lazyOAuth`, see provider.baml).
+
+## Pi source
+- coding-agent login/logout orchestration around `CredentialStore.modify`
+- `../pi/packages/ai/src/auth/types.ts` (`CredentialInfo` account/status enumeration)
+
+## Acceptance
+- PTY smoke: login stores, status shows redacted entry, logout clears; auth.json stays 0600.
+- Stored key is honored by provider turns per bi#19 precedence (stored beats env).
+- `npm run typecheck --prefix bi` green; `baml check --project bi` green.
+"""
+
+[[edge]]
+from = "bi#20"
+to = "bi#17"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#20"
+to = "bi#18"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#20"
+to = "bi#19"
+kind = "DependsOn"

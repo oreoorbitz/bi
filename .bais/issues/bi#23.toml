@@ -1,0 +1,33 @@
+id = "bi#23"
+title = "Provider OAuth flows batch 1 (anthropic + openai-codex)"
+status = "Open"
+kind = "Feat"
+area = "providers/auth"
+body = """
+First provider flows on top of bi#22 core. Start with the two providers bi users hit first.
+
+## Scope
+- Port `auth/oauth/anthropic.ts` (Anthropic OAuth: endpoints, scopes, token→`Authorization: Bearer` mapping, expiry handling).
+- Port `auth/oauth/openai-codex.ts` (Codex OAuth flow likewise).
+- Per-flow config stays data: client ids, authorize/token URLs, scopes as constants beside the flow, registered in a flow registry keyed by provider id so bi#24 only adds entries.
+- `bi login anthropic --oauth` / `--oauth` flag routes API-key login (bi#20) to the OAuth flow; without the flag keeps API-key behavior.
+
+## Pi source
+- `../pi/packages/ai/src/auth/oauth/anthropic.ts`
+- `../pi/packages/ai/src/auth/oauth/openai-codex.ts`
+
+## Acceptance
+- Both flows complete against a local stub IdP; stored `OAuthCredential` round-trips through bi#18 store and resolves via bi#19 precedence.
+- Live-provider check is manual (key required) and documented in the issue body on close.
+- `baml check --project bi` + `npm run typecheck --prefix bi` green.
+"""
+
+[[edge]]
+from = "bi#23"
+to = "bi#17"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#23"
+to = "bi#22"
+kind = "DependsOn"

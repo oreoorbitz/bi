@@ -1,0 +1,32 @@
+id = "bi#19"
+title = "Auth resolution precedence (stored owns provider, env fallback)"
+status = "Open"
+kind = "Feat"
+area = "providers/auth"
+body = """
+Port pi `packages/ai/src/auth/resolve.ts` + `context.ts` + `helpers.ts`.
+
+## Scope
+- Pi semantics verbatim: a stored credential owns the provider — ambient/env is consulted only when nothing is stored. No silent env fallback after a failed refresh or for a credential type without a matching handler.
+- BAML owns: `ResolveAuth(provider_id, stored?, env_key?, override_key?) -> {source: Stored|Env|Override|None}` pure precedence function + `ModelsError {code: auth|oauth|...}` shape, offline `baml test` per precedence arm.
+- Host owns: wiring resolution into provider `getAuth()` call sites (extends bi#13/bi#25 missing-key precheck), `minOAuthValidityMs` (default 5 min) plumbing for bi#22 refresh.
+
+## Pi source
+- `../pi/packages/ai/src/auth/resolve.ts` (resolveProviderAuth, AuthResolutionOverrides, ModelsError)
+- `../pi/packages/ai/src/auth/context.ts`, `helpers.ts`
+
+## Acceptance
+- `baml test --project bi` covers stored-beats-env, env-when-nothing-stored, override-beats-stored, none-when-empty arms.
+- Provider call sites resolve through one shared `getAuth` path; error surfaces `error.message` only (cause detail folded in, per pi `withCauseDetail`).
+- `npm run typecheck --prefix bi` green.
+"""
+
+[[edge]]
+from = "bi#19"
+to = "bi#17"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#19"
+to = "bi#18"
+kind = "DependsOn"
