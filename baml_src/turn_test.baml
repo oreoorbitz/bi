@@ -157,6 +157,70 @@ testset "turn plumbing" {
         }
     }
 
+    test "moonshotai invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("moonshotai", "kimi-k2-0711-preview", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "nvidia invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("nvidia", "meta/llama-3.3-70b-instruct", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "zai invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("zai", "glm-4.5", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "huggingface invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("huggingface", "moonshotai/Kimi-K2-Instruct", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "baseten invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("baseten", "Qwen/Qwen3-32B", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "mistral invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("mistral", "mistral-small-latest", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "mistral invoke_stream reaches the wire and classifies transport failure" {
+        let result = StreamTurn("mistral", "mistral-small-latest", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    // Fireworks exercises the anthropic-messages compat arm (a different
+    // constructor path than batch 1's ChatClient), so it gets both invoke
+    // and invoke_stream coverage.
+    test "fireworks invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn(
+            "fireworks",
+            "accounts/fireworks/models/llama-v3p3-70b-instruct",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "fireworks invoke_stream reaches the wire and classifies transport failure" {
+        let result = StreamTurn(
+            "fireworks",
+            "accounts/fireworks/models/llama-v3p3-70b-instruct",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
     test "an unknown provider tag is a clean InvalidArgument, not a panic" {
         let outcome = SendTurn("bogus", "some-model", "test-key", "hi", [], []) catch_all (e) {
             _ => e.to_string(),

@@ -66,6 +66,63 @@ function _providers() -> Provider[] {
             api: "openai-completions",
             auth_env: "CEREBRAS_API_KEY",
         },
+        Provider {
+            id: "moonshotai",
+            name: "Moonshot AI",
+            base_url: "https://api.moonshot.ai/v1",
+            api: "openai-completions",
+            auth_env: "MOONSHOT_API_KEY",
+        },
+        Provider {
+            id: "nvidia",
+            name: "NVIDIA NIM",
+            base_url: "https://integrate.api.nvidia.com/v1",
+            api: "openai-completions",
+            auth_env: "NVIDIA_API_KEY",
+        },
+        Provider {
+            id: "zai",
+            name: "Z.AI",
+            base_url: "https://api.z.ai/api/coding/paas/v4",
+            api: "openai-completions",
+            auth_env: "ZAI_API_KEY",
+        },
+        Provider {
+            id: "huggingface",
+            name: "Hugging Face",
+            base_url: "https://router.huggingface.co/v1",
+            api: "openai-completions",
+            auth_env: "HF_TOKEN",
+        },
+        Provider {
+            id: "baseten",
+            name: "Baseten",
+            base_url: "https://inference.baseten.co/v1",
+            api: "openai-completions",
+            auth_env: "BASETEN_API_KEY",
+        },
+        // DIVERGENCE from pi: pi's mistral provider uses a custom
+        // mistralConversationsApi against https://api.mistral.ai. bi routes
+        // Mistral through its OpenAI-compatible /v1 endpoint instead, so no
+        // new wire format is needed — same ChatClient path as the rest.
+        Provider {
+            id: "mistral",
+            name: "Mistral",
+            base_url: "https://api.mistral.ai/v1",
+            api: "openai-completions",
+            auth_env: "MISTRAL_API_KEY",
+        },
+        // pi's fireworks provider is dual-api (anthropic-messages +
+        // openai-completions per model). bi pins the anthropic-messages arm:
+        // the catalog base_url is already the inference endpoint that
+        // serves it, and the compat routing covers the constructor.
+        Provider {
+            id: "fireworks",
+            name: "Fireworks",
+            base_url: "https://api.fireworks.ai/inference",
+            api: "anthropic-messages",
+            auth_env: "FIREWORKS_API_KEY",
+        },
     ]
 }
 

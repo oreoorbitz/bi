@@ -1,6 +1,6 @@
 testset "provider registry" {
-    test "ListProviders returns 7" {
-        assert.equal(ListProviders().length(), 7)
+    test "ListProviders returns 14" {
+        assert.equal(ListProviders().length(), 14)
     }
 
     test "GetProvider groq has chat-completions api and auth env" {
@@ -31,6 +31,15 @@ testset "provider registry" {
         match (ProviderAuthEnv("openai_responses")) {
             null => assert.is_true(false),
             let v: string => assert.equal(v, "OPENAI_API_KEY"),
+        }
+        // Non-KEY-suffixed var name also resolves (token, not key).
+        match (ProviderAuthEnv("huggingface")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "HF_TOKEN"),
+        }
+        match (ProviderAuthEnv("fireworks")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "FIREWORKS_API_KEY"),
         }
         assert.is_true(ProviderAuthEnv("bogus") is null)
     }
@@ -92,7 +101,7 @@ testset "provider registry" {
     }
 
     test "RefreshAllModels returns provider count" {
-        assert.equal(RefreshAllModels(), 7)
+        assert.equal(RefreshAllModels(), 14)
     }
 
     test "RefreshModelsWithResult static vs remote vs unknown" {

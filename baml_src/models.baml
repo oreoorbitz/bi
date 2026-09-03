@@ -270,6 +270,27 @@ function ListAllModels() -> Model[] {
     for (let m in _cerebras_models()) {
         out.push(m)
     }
+    for (let m in _moonshotai_models()) {
+        out.push(m)
+    }
+    for (let m in _nvidia_models()) {
+        out.push(m)
+    }
+    for (let m in _zai_models()) {
+        out.push(m)
+    }
+    for (let m in _huggingface_models()) {
+        out.push(m)
+    }
+    for (let m in _baseten_models()) {
+        out.push(m)
+    }
+    for (let m in _mistral_models()) {
+        out.push(m)
+    }
+    for (let m in _fireworks_models()) {
+        out.push(m)
+    }
     out
 }
 
@@ -283,8 +304,218 @@ function ListModels(provider: string) -> Model[] {
         "deepseek" => _deepseek_models(),
         "together" => _together_models(),
         "cerebras" => _cerebras_models(),
+        "moonshotai" => _moonshotai_models(),
+        "nvidia" => _nvidia_models(),
+        "zai" => _zai_models(),
+        "huggingface" => _huggingface_models(),
+        "baseten" => _baseten_models(),
+        "mistral" => _mistral_models(),
+        "fireworks" => _fireworks_models(),
         _ => [],
     }
+}
+
+function _moonshotai_models() -> Model[] {
+    [
+        Model {
+            id: "kimi-k2-0711-preview",
+            name: "Kimi K2",
+            api: "openai-completions",
+            provider: "moonshotai",
+            base_url: "https://api.moonshot.ai/v1",
+            reasoning: false,
+            input: ["text"],
+            context_window: 256000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 0.6, output: 3.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "moonshot-v1-8k",
+            name: "Moonshot v1 8K",
+            api: "openai-completions",
+            provider: "moonshotai",
+            base_url: "https://api.moonshot.ai/v1",
+            reasoning: false,
+            input: ["text"],
+            context_window: 8000,
+            max_tokens: 4096,
+            cost: ModelCost { input: 1.6, output: 1.6, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+function _nvidia_models() -> Model[] {
+    [
+        Model {
+            id: "moonshotai/kimi-k2-instruct",
+            name: "Kimi K2 Instruct (NIM)",
+            api: "openai-completions",
+            provider: "nvidia",
+            base_url: "https://integrate.api.nvidia.com/v1",
+            reasoning: false,
+            input: ["text"],
+            context_window: 256000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 1.0, output: 3.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "meta/llama-3.3-70b-instruct",
+            name: "Llama 3.3 70B Instruct (NIM)",
+            api: "openai-completions",
+            provider: "nvidia",
+            base_url: "https://integrate.api.nvidia.com/v1",
+            reasoning: false,
+            input: ["text"],
+            context_window: 128000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 0.6, output: 0.8, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+function _zai_models() -> Model[] {
+    [
+        Model {
+            id: "glm-4.5",
+            name: "GLM 4.5",
+            api: "openai-completions",
+            provider: "zai",
+            base_url: "https://api.z.ai/api/coding/paas/v4",
+            reasoning: false,
+            input: ["text"],
+            context_window: 128000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 0.11, output: 0.28, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "glm-4.5-air",
+            name: "GLM 4.5 Air",
+            api: "openai-completions",
+            provider: "zai",
+            base_url: "https://api.z.ai/api/coding/paas/v4",
+            reasoning: false,
+            input: ["text"],
+            context_window: 128000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 0.03, output: 0.03, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+function _huggingface_models() -> Model[] {
+    [
+        Model {
+            id: "moonshotai/Kimi-K2-Instruct",
+            name: "Kimi K2 Instruct (HF router)",
+            api: "openai-completions",
+            provider: "huggingface",
+            base_url: "https://router.huggingface.co/v1",
+            reasoning: false,
+            input: ["text"],
+            context_window: 256000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 1.0, output: 3.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "meta-llama/Llama-3.3-70B-Instruct",
+            name: "Llama 3.3 70B Instruct (HF router)",
+            api: "openai-completions",
+            provider: "huggingface",
+            base_url: "https://router.huggingface.co/v1",
+            reasoning: false,
+            input: ["text"],
+            context_window: 128000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 0.6, output: 0.8, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+function _baseten_models() -> Model[] {
+    [
+        Model {
+            id: "moonshotai/Kimi-K2-Instruct",
+            name: "Kimi K2 Instruct (Baseten)",
+            api: "openai-completions",
+            provider: "baseten",
+            base_url: "https://inference.baseten.co/v1",
+            reasoning: false,
+            input: ["text"],
+            context_window: 256000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 1.0, output: 3.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "Qwen/Qwen3-32B",
+            name: "Qwen 3 32B (Baseten)",
+            api: "openai-completions",
+            provider: "baseten",
+            base_url: "https://inference.baseten.co/v1",
+            reasoning: false,
+            input: ["text"],
+            context_window: 128000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 0.4, output: 0.8, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+function _mistral_models() -> Model[] {
+    [
+        Model {
+            id: "mistral-large-latest",
+            name: "Mistral Large",
+            api: "openai-completions",
+            provider: "mistral",
+            base_url: "https://api.mistral.ai/v1",
+            reasoning: false,
+            input: ["text"],
+            context_window: 128000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 2.0, output: 6.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "mistral-small-latest",
+            name: "Mistral Small",
+            api: "openai-completions",
+            provider: "mistral",
+            base_url: "https://api.mistral.ai/v1",
+            reasoning: false,
+            input: ["text"],
+            context_window: 128000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 0.1, output: 0.3, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+function _fireworks_models() -> Model[] {
+    [
+        Model {
+            id: "accounts/fireworks/models/kimi-k2-instruct",
+            name: "Kimi K2 Instruct (Fireworks)",
+            api: "anthropic-messages",
+            provider: "fireworks",
+            base_url: "https://api.fireworks.ai/inference",
+            reasoning: false,
+            input: ["text"],
+            context_window: 200000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 1.2, output: 3.6, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "accounts/fireworks/models/llama-v3p3-70b-instruct",
+            name: "Llama 3.3 70B Instruct (Fireworks)",
+            api: "anthropic-messages",
+            provider: "fireworks",
+            base_url: "https://api.fireworks.ai/inference",
+            reasoning: false,
+            input: ["text"],
+            context_window: 128000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 0.9, output: 0.9, cache_read: null, cache_write: null },
+        },
+    ]
 }
 
 function GetModel(id: string) -> Model? {
