@@ -58,6 +58,36 @@ testset "turn plumbing" {
         assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
     }
 
+    test "azure missing resource fails fast naming the opt and env" {
+        SendTurn("azure-openai-responses", "gpt-4o", "test-key", "hi", [], []) catch (e) {
+            baml.errors.InvalidArgument => {
+                assert.is_true(e.message.includes("AZURE_OPENAI_RESOURCE"))
+            },
+        }
+    }
+
+    test "azure missing deployment fails fast naming the opt and env" {
+        SendTurn(
+            "azure-openai-responses",
+            "gpt-4o",
+            "test-key",
+            "hi",
+            [],
+            [],
+            azure_resource = "test-resource",
+        ) catch (e) {
+            baml.errors.InvalidArgument => {
+                assert.is_true(e.message.includes("AZURE_OPENAI_DEPLOYMENT"))
+            },
+        }
+    }
+
+    // No closed-port wire test for azure: the client's endpoint derives
+    // from the resource (a base_url override is rejected client-side), and
+    // Azure's wildcard DNS answers any resource with HTTP 404 — verified
+    // live as failure:invalid_request, which goes network-flaky offline.
+    // Wire coverage lives in the CLI smoke (see bi#15).
+
     test "google invoke_stream reaches the wire and classifies transport failure" {
         let result = StreamTurn("google", "gemini-2.0-flash", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
         assert.equal(turn_result_label(result), "failure:network:retry_safe=true")

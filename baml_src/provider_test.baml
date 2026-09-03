@@ -1,6 +1,6 @@
 testset "provider registry" {
-    test "ListProviders returns 19" {
-        assert.equal(ListProviders().length(), 19)
+    test "ListProviders returns 20" {
+        assert.equal(ListProviders().length(), 20)
     }
 
     test "GetProvider groq has chat-completions api and auth env" {
@@ -56,6 +56,25 @@ testset "provider registry" {
                 assert.equal(prov.base_url, "https://api.x.ai/v1");
                 assert.equal(prov.api, "openai-responses")
             },
+            _ => assert.is_true(false),
+        }
+    }
+
+    test "GetProvider azure has empty base_url sentinel and azure arm" {
+        let p = GetProvider("azure-openai-responses");
+        assert.not_null(p);
+        match (p) {
+            let prov: Provider => {
+                assert.equal(prov.base_url, "");
+                assert.equal(prov.api, "azure-responses")
+            },
+            _ => assert.is_true(false),
+        }
+    }
+
+    test "ProviderAuthEnv azure names AZURE_OPENAI_API_KEY" {
+        match (ProviderAuthEnv("azure-openai-responses")) {
+            let v: string => assert.equal(v, "AZURE_OPENAI_API_KEY"),
             _ => assert.is_true(false),
         }
     }
@@ -117,7 +136,7 @@ testset "provider registry" {
     }
 
     test "RefreshAllModels returns provider count" {
-        assert.equal(RefreshAllModels(), 19)
+        assert.equal(RefreshAllModels(), 20)
     }
 
     test "RefreshModelsWithResult static vs remote vs unknown" {

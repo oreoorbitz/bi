@@ -5,7 +5,8 @@
 // this var is read per request (see resolve_credential in turn.baml), else
 // the client falls back to its own canonical env var. api uses pi's own
 // vocabulary ("openai-completions" | "anthropic-messages" |
-// "openai-responses" | "google") so turn.baml routes catalog-driven.
+// "openai-responses" | "google") plus bi's "azure-responses" so turn.baml
+// routes catalog-driven.
 
 class Provider {
     id: string,
@@ -167,6 +168,19 @@ function _providers() -> Provider[] {
             base_url: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
             api: "openai-completions",
             auth_env: "QWEN_TOKEN_PLAN_API_KEY",
+        },
+        // Azure has no fixed endpoint: every call is scoped to the user's
+        // resource + deployment (explicit azure_* opts win, else
+        // AZURE_OPENAI_RESOURCE / AZURE_OPENAI_DEPLOYMENT env — see the
+        // azure-responses arm in turn.baml). base_url stays an empty
+        // sentinel and never reaches the client; a host --base-url
+        // override still routes through it for closed-port probes.
+        Provider {
+            id: "azure-openai-responses",
+            name: "Azure OpenAI",
+            base_url: "",
+            api: "azure-responses",
+            auth_env: "AZURE_OPENAI_API_KEY",
         },
     ]
 }

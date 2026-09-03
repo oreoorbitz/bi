@@ -181,6 +181,10 @@ function resolve_credential(provider: string, api_key: string?) -> ai.Credential
     }
 }
 
+// Azure scoping (bi#15): resource/deployment/api-version ride explicit
+// opts with AZURE_OPENAI_* env fallback (see azure_client_resource /
+// azure_client_deployment). Every entry point below threads the same
+// three opts to both builders.
 function build_client(
     provider: string,
     model: string,
@@ -188,6 +192,9 @@ function build_client(
     base_url: string?,
     temperature: float? = null,
     thinking: anthropic.ThinkingConfig? = null,
+    azure_resource: string? = null,
+    azure_deployment: string? = null,
+    azure_api_version: string? = null,
 ) -> ai.Client {
     match (provider) {
         "anthropic" => {
@@ -249,6 +256,16 @@ function build_client(
                         base_url = url,
                         temperature = temperature,
                     )
+                } else if (p.api == "azure-responses") {
+                    openai.AzureClient.new(
+                        model = model,
+                        api_key = cred,
+                        resource_name = azure_client_resource(azure_resource),
+                        deployment_id = azure_client_deployment(azure_deployment),
+                        api_version = azure_api_version ?? baml.env.get("AZURE_OPENAI_API_VERSION"),
+                        base_url = base_url,
+                        temperature = temperature,
+                    )
                 } else {
                     throw baml.errors.InvalidArgument {
                         message: `provider ${other} has unsupported api: ${p.api}`,
@@ -259,6 +276,31 @@ function build_client(
     }
 }
 
+// Azure endpoint resolution: explicit opt wins, else AZURE_OPENAI_* env.
+// Split into throwing helpers so both builders share the fail-fast naming
+// (a missing resource/deployment names the opt AND the env var).
+function azure_client_resource(azure_resource: string?) -> string {
+    match (azure_resource ?? baml.env.get("AZURE_OPENAI_RESOURCE")) {
+        null => {
+            throw baml.errors.InvalidArgument {
+                message: "azure-openai-responses needs a resource: pass azure_resource or set AZURE_OPENAI_RESOURCE",
+            }
+        },
+        let resource: string => resource,
+    }
+}
+
+function azure_client_deployment(azure_deployment: string?) -> string {
+    match (azure_deployment ?? baml.env.get("AZURE_OPENAI_DEPLOYMENT")) {
+        null => {
+            throw baml.errors.InvalidArgument {
+                message: "azure-openai-responses needs a deployment: pass azure_deployment or set AZURE_OPENAI_DEPLOYMENT",
+            }
+        },
+        let deployment: string => deployment,
+    }
+}
+
 function build_streaming_client(
     provider: string,
     model: string,
@@ -266,6 +308,9 @@ function build_streaming_client(
     base_url: string?,
     temperature: float? = null,
     thinking: anthropic.ThinkingConfig? = null,
+    azure_resource: string? = null,
+    azure_deployment: string? = null,
+    azure_api_version: string? = null,
 ) -> ai.stream.StreamingClient {
     match (provider) {
         "anthropic" => {
@@ -324,6 +369,16 @@ function build_streaming_client(
                         base_url = url,
                         temperature = temperature,
                     )
+                } else if (p.api == "azure-responses") {
+                    openai.AzureClient.new(
+                        model = model,
+                        api_key = cred,
+                        resource_name = azure_client_resource(azure_resource),
+                        deployment_id = azure_client_deployment(azure_deployment),
+                        api_version = azure_api_version ?? baml.env.get("AZURE_OPENAI_API_VERSION"),
+                        base_url = base_url,
+                        temperature = temperature,
+                    )
                 } else {
                     throw baml.errors.InvalidArgument {
                         message: `provider ${other} has unsupported api: ${p.api}`,
@@ -344,8 +399,21 @@ function SendTurn(
     base_url: string? = null,
     temperature: float? = null,
     thinking: anthropic.ThinkingConfig? = null,
+    azure_resource: string? = null,
+    azure_deployment: string? = null,
+    azure_api_version: string? = null,
 ) -> ai.ModelTurn | TurnFailure {
-    let cl = build_client(provider, model, api_key, base_url, temperature = temperature, thinking = thinking);
+    let cl = build_client(
+        provider,
+        model,
+        api_key,
+        base_url,
+        temperature = temperature,
+        thinking = thinking,
+        azure_resource = azure_resource,
+        azure_deployment = azure_deployment,
+        azure_api_version = azure_api_version,
+    );
     let spec = TurnPrompt@spec(text);
     cl.invoke(
         ai.ModelTurnInput {
@@ -375,8 +443,21 @@ function StartTurnStream(
     base_url: string? = null,
     temperature: float? = null,
     thinking: anthropic.ThinkingConfig? = null,
+    azure_resource: string? = null,
+    azure_deployment: string? = null,
+    azure_api_version: string? = null,
 ) -> ai.stream.TurnStream | TurnFailure {
-    let cl = build_streaming_client(provider, model, api_key, base_url, temperature = temperature, thinking = thinking);
+    let cl = build_streaming_client(
+        provider,
+        model,
+        api_key,
+        base_url,
+        temperature = temperature,
+        thinking = thinking,
+        azure_resource = azure_resource,
+        azure_deployment = azure_deployment,
+        azure_api_version = azure_api_version,
+    );
     let spec = TurnPrompt@spec(text);
     cl.invoke_stream(
         ai.ModelTurnInput {
@@ -435,8 +516,21 @@ function StartIncrementalStream(
     base_url: string? = null,
     temperature: float? = null,
     thinking: anthropic.ThinkingConfig? = null,
+    azure_resource: string? = null,
+    azure_deployment: string? = null,
+    azure_api_version: string? = null,
 ) -> ai.stream.Stream<string, string> | TurnFailure {
-    let cl = build_streaming_client(provider, model, api_key, base_url, temperature = temperature, thinking = thinking);
+    let cl = build_streaming_client(
+        provider,
+        model,
+        api_key,
+        base_url,
+        temperature = temperature,
+        thinking = thinking,
+        azure_resource = azure_resource,
+        azure_deployment = azure_deployment,
+        azure_api_version = azure_api_version,
+    );
     let spec = TurnPrompt@spec(text);
     let turns = cl.invoke_stream(
         ai.ModelTurnInput {
@@ -494,10 +588,23 @@ function SendTurnWithImage(
     base_url: string? = null,
     temperature: float? = null,
     thinking: anthropic.ThinkingConfig? = null,
+    azure_resource: string? = null,
+    azure_deployment: string? = null,
+    azure_api_version: string? = null,
 ) -> ai.ModelTurn | TurnFailure {
     let media = CreateMediaBlock(image_base64, image_mime);
     let history: ai.events.Event[] = [ai.events.AssistantMessage { content: [media], client_id: client_id }];
-    let cl = build_client(provider, model, api_key, base_url, temperature = temperature, thinking = thinking);
+    let cl = build_client(
+        provider,
+        model,
+        api_key,
+        base_url,
+        temperature = temperature,
+        thinking = thinking,
+        azure_resource = azure_resource,
+        azure_deployment = azure_deployment,
+        azure_api_version = azure_api_version,
+    );
     let spec = TurnPrompt@spec(text);
     cl.invoke(
         ai.ModelTurnInput {
@@ -523,8 +630,21 @@ function StreamTurn(
     base_url: string? = null,
     temperature: float? = null,
     thinking: anthropic.ThinkingConfig? = null,
+    azure_resource: string? = null,
+    azure_deployment: string? = null,
+    azure_api_version: string? = null,
 ) -> ai.ModelTurn | TurnFailure {
-    let cl = build_streaming_client(provider, model, api_key, base_url, temperature = temperature, thinking = thinking);
+    let cl = build_streaming_client(
+        provider,
+        model,
+        api_key,
+        base_url,
+        temperature = temperature,
+        thinking = thinking,
+        azure_resource = azure_resource,
+        azure_deployment = azure_deployment,
+        azure_api_version = azure_api_version,
+    );
     let spec = TurnPrompt@spec(text);
     cl
         .invoke_stream(

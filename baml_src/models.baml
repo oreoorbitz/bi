@@ -306,6 +306,9 @@ function ListAllModels() -> Model[] {
     for (let m in _qwen_token_plan_models()) {
         out.push(m)
     }
+    for (let m in _azure_models()) {
+        out.push(m)
+    }
     out
 }
 
@@ -331,6 +334,7 @@ function ListModels(provider: string) -> Model[] {
         "kimi-coding" => _kimi_coding_models(),
         "openrouter" => _openrouter_models(),
         "qwen-token-plan" => _qwen_token_plan_models(),
+        "azure-openai-responses" => _azure_models(),
         _ => [],
     }
 }
@@ -679,6 +683,39 @@ function _fireworks_models() -> Model[] {
             context_window: 128000,
             max_tokens: 8192,
             cost: ModelCost { input: 0.9, output: 0.9, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+// Azure serves the user's own deployments, not a fixed model list — these
+// are the well-known OpenAI models commonly deployed there (any deployment
+// id works; the catalog is advisory). No pi data JSON to transcribe;
+// ids below are stable public model names.
+function _azure_models() -> Model[] {
+    [
+        Model {
+            id: "gpt-4o",
+            name: "GPT-4o (Azure deployment)",
+            api: "azure-responses",
+            provider: "azure-openai-responses",
+            base_url: "",
+            reasoning: false,
+            input: ["text"],
+            context_window: 128000,
+            max_tokens: 16384,
+            cost: ModelCost { input: 2.5, output: 10.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "gpt-4o-mini",
+            name: "GPT-4o mini (Azure deployment)",
+            api: "azure-responses",
+            provider: "azure-openai-responses",
+            base_url: "",
+            reasoning: false,
+            input: ["text"],
+            context_window: 128000,
+            max_tokens: 16384,
+            cost: ModelCost { input: 0.15, output: 0.6, cache_read: null, cache_write: null },
         },
     ]
 }

@@ -11,8 +11,15 @@ testset "model catalog" {
         assert.equal(ListModels("openai").length(), 2)
     }
 
-    test "ListAllModels returns 39" {
-        assert.equal(ListAllModels().length(), 39)
+    test "ListAllModels returns 41" {
+        assert.equal(ListAllModels().length(), 41)
+    }
+
+    test "ListModels azure returns advisory deployments" {
+        let ms = ListModels("azure-openai-responses");
+        assert.equal(ms.length(), 2);
+        assert.equal(ms[0].api, "azure-responses");
+        assert.equal(ms[0].provider, "azure-openai-responses")
     }
 
     test "ListModels compat providers return 2 each" {
