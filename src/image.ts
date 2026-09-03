@@ -1,7 +1,18 @@
 // Thin host wrapper for image generation via openai.ImageClient.
 // Mirrors pi/packages/ai's images.ts (openai/gpt-image-1).
 
-import { GenerateImage_async, type TurnFailure, ai } from "../baml_sdk/index.js";
+import { GenerateImage_async, ListImageModels_async, type TurnFailure, ai } from "../baml_sdk/index.js";
+
+export interface ImageModel {
+	id: string;
+	name: string;
+	provider: string;
+	base_url: string;
+}
+
+export async function listImageModels(provider?: string | null): Promise<ImageModel[]> {
+	return (await ListImageModels_async(provider ?? null)) as ImageModel[];
+}
 
 export interface GenerateImageOptions {
 	model?: string;

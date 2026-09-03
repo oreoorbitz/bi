@@ -9,6 +9,7 @@ import { getProvider, listProviders } from "./provider.js";
 import { runAgent } from "./agent.js";
 import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, moveBaisIssue, checkBaisIssues, graphBaisIssues } from "./bais.js";
 import { listTools, handleTool } from "./tools.js";
+import { listImageModels } from "./image.js";
 import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, type Skill } from "./skills.js";
 import { runResultToJsonLines, finalText } from "./events.js";
@@ -48,6 +49,7 @@ function printHelp(): void {
 	console.log(`\nBi extensions (BAML-owns-LLM, .bais is first-class):
   bi list-providers
   bi list-models [--provider <id>]
+  bi list-image-models [--provider <id>]
   bi get-model <id>
   bi run <prompt> [--provider <id>] [--model <id>] [--api-key <key>] [--base-url <url>] [--temperature <n>] [--max-turns <n>]
                    [--azure-resource <r> --azure-deployment <d> [--azure-api-version <v>]]
@@ -382,6 +384,18 @@ async function main(): Promise<void> {
 		}
 		for (const m of models) {
 			console.log(`${m.id}\t${m.provider}\t${m.api}\t${m.name}\treasoning=${m.reasoning}\t${m.context_window}ctx`);
+		}
+		return;
+	}
+	if (cmd === "list-image-models") {
+		const provider = getFlag(args, "--provider") ?? null;
+		const models = await listImageModels(provider);
+		if (provider && models.length === 0) {
+			console.error(`Unknown image provider: ${provider}`);
+			process.exit(1);
+		}
+		for (const m of models) {
+			console.log(`${m.id}\t${m.provider}\t${m.name}`);
 		}
 		return;
 	}
