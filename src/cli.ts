@@ -13,6 +13,30 @@ import { parse_args, format_help, is_valid_thinking_level, builtin_slash_command
 import { loadSkills, formatSkills, skillBody, resolveSlash, type Skill } from "./skills.js";
 import { runResultToJsonLines, finalText } from "./events.js";
 import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow } from "./session.js";
+import { createInterface } from "node:readline";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+// REPL input history (~/.bi/history, next to the sessions dir). One line
+// per entry, oldest-first on disk; readline wants most-recent-first live.
+function historyFile(): string {
+	return join(dirname(getBiSessionsDir()), "history");
+}
+
+function readHistoryFile(file: string): string[] {
+	try {
+		if (!existsSync(file)) return [];
+		const lines = readFileSync(file, "utf8").split("\n").map((l) => l.trimEnd()).filter((l) => l.length > 0);
+		return lines.slice(-200);
+	} catch { return []; }
+}
+
+function writeHistoryFile(file: string, oldestFirst: string[]): void {
+	try {
+		mkdirSync(dirname(file), { recursive: true });
+		writeFileSync(file, oldestFirst.slice(-200).join("\n") + "\n");
+	} catch {}
+}
 import { HostTui, renderReadyScreen } from "./tui.js";
 import { runBiLoop } from "./agent_loop.js";
 
@@ -122,32 +146,67 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	return result.messages;
 }
 
-// One readline question. "\x03" sentinel = Ctrl-C at the prompt (hint,
-// keep looping); rejects with EOF when stdin closes (Ctrl-D / piped input
-// ends) so the REPL exits.
-async function readReplLine(prompt: string): Promise<string> {
-	const rl = await import("node:readline");
-	const r = rl.createInterface({ input: process.stdin, output: process.stdout });
-	return new Promise<string>((resolve, reject) => {
-		let settled = false;
-		r.on("SIGINT", () => {
-			if (settled) return;
-			settled = true;
-			r.close();
-			resolve("\x03");
+// One readline interface for the whole REPL session, so ↑ history works
+// across turns and persists to ~/.bi/history (next to the sessions dir).
+// ask() resolves "\x03" on Ctrl-C at the prompt (hint, keep looping) and
+// rejects with EOF when stdin closes (Ctrl-D / piped input ends).
+class ReplReader {
+	private r: any;
+	private historyFile: string;
+	private submitted: string[] = [];
+	private pending: { resolve: (v: string) => void; reject: (e: Error) => void } | null = null;
+	constructor() {
+		this.historyFile = historyFile();
+		const lines = readHistoryFile(this.historyFile);
+		this.r = createInterface({ input: process.stdin, output: process.stdout, historySize: 200 });
+		// File is oldest-first; unshifting in file order leaves the newest
+		// at the head, which is where Up starts (verified live: a fresh
+		// process recalls the file's last line first).
+		for (const l of lines) (this.r as any).history.unshift(l);
+		this.r.on("SIGINT", () => this.pending?.resolve("\x03"));
+		this.r.on("close", () => this.pending?.reject(new Error("EOF")));
+	}
+	ask(prompt: string): Promise<string> {
+		return new Promise<string>((resolve, reject) => {
+			this.pending = { resolve, reject };
+			this.r.question(prompt, (a: string) => {
+				this.pending = null;
+				if (a.trim().length > 0) this.submitted.push(a);
+				resolve(a);
+			});
 		});
-		r.on("close", () => {
-			if (settled) return;
-			settled = true;
-			reject(new Error("EOF"));
-		});
-		r.question(prompt, (a) => {
-			if (settled) return;
-			settled = true;
-			r.close();
-			resolve(a);
-		});
-	});
+	}
+	// Trailing backslash continues onto the next line ("... " prompt),
+	// so multi-line prompts survive the line editor.
+	async askMultiline(prompt: string): Promise<string> {
+		const parts: string[] = [];
+		let p = prompt;
+		for (;;) {
+			const line = await this.ask(p);
+			if (line === "\x03") return "\x03";
+			if (line.endsWith("\\") && !line.endsWith("\\\\")) {
+				parts.push(line.slice(0, -1));
+				p = "... ";
+				continue;
+			}
+			parts.push(line);
+			return parts.join("\n");
+		}
+	}
+	close(): void {
+		// Persist from our own submission log (chronological by
+		// construction) merged over the loaded file — never trust the
+		// live array's endianness for the on-disk order.
+		try {
+			const prior = readHistoryFile(this.historyFile);
+			const merged = [...prior, ...this.submitted.map((l) => l.replace(/\s*\n\s*/g, " ").trim()).filter((l) => l.length > 0)];
+			const seen = new Set<string>();
+			const deduped = merged.filter((l) => (seen.has(l) ? false : (seen.add(l), true)));
+			writeHistoryFile(this.historyFile, deduped);
+		} catch {}
+		try { this.r.close(); } catch {}
+		this.pending = null;
+	}
 }
 
 // Persistent REPL: one session file, conversation history threaded across
@@ -157,30 +216,35 @@ async function readReplLine(prompt: string): Promise<string> {
 async function repl(skills: Skill[]): Promise<void> {
 	const sessFile = createSessionFile({ cwd: process.cwd() });
 	console.error(`[bi] new session ${sessFile}`);
+	const reader = new ReplReader();
 	let history: any[] = [];
 	let turn = 0;
-	for (;;) {
-		let line: string;
-		try {
-			line = await readReplLine(`bi[${turn}]> `);
-		} catch {
-			console.error("\n[bi] EOF — session kept at " + sessFile);
-			return;
+	try {
+		for (;;) {
+			let line: string;
+			try {
+				line = await reader.askMultiline(`bi[${turn}]> `);
+			} catch {
+				console.error("\n[bi] EOF — session kept at " + sessFile);
+				return;
+			}
+			if (line === "\x03" || !line.trim()) {
+				if (line === "\x03") console.error("(Ctrl-D or /quit to exit)");
+				continue;
+			}
+			const out = await runOnePrompt(line.trim(), skills, history);
+			if (out === "quit") {
+				console.error(`[bi] session kept at ${sessFile} (${history.length} messages)`);
+				return;
+			}
+			// Slash/empty lines return the same history — only real turns advance.
+			if (out !== history) {
+				history = out;
+				turn += 1;
+			}
 		}
-		if (line === "\x03" || !line.trim()) {
-			if (line === "\x03") console.error("(Ctrl-D or /quit to exit)");
-			continue;
-		}
-		const out = await runOnePrompt(line.trim(), skills, history);
-		if (out === "quit") {
-			console.error(`[bi] session kept at ${sessFile} (${history.length} messages)`);
-			return;
-		}
-		// Slash/empty lines return the same history — only real turns advance.
-		if (out !== history) {
-			history = out;
-			turn += 1;
-		}
+	} finally {
+		reader.close();
 	}
 }
 
@@ -216,7 +280,7 @@ async function main(): Promise<void> {
 		// session hint — bi native .bi (not .pi), validated via BAML SessionHeader
 		console.log(`\nSessions: ${getBiSessionsDir()} (${listSessions().length} saved) — try \`bi --continue\` or \`bi run "hello"\``);
 		console.log("`bi --help` for commands, `bi bais new \"title\"` to add, `bi run \"prompt\"` to run agent");
-		if (process.stdin.isTTY && process.stdout.isTTY) console.log("interactive REPL below — /help for slashes, /quit or Ctrl-D to leave");
+		if (process.stdin.isTTY && process.stdout.isTTY) console.log("interactive REPL below — ↑ history, trailing \\ continues lines, /help slashes, /quit or Ctrl-D to leave");
 		// interactive REPL: persistent loop with cross-turn history (Ctrl-D or
 		// /quit to leave, Ctrl-C at the prompt re-prompts, Ctrl-C mid-turn aborts)
 		if (process.stdin.isTTY && process.stdout.isTTY && !hasFlag(args, "--print") && !hasFlag(args, "-p")) {
