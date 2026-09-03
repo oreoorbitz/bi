@@ -34,4 +34,23 @@ testset "image generation" {
             _ => assert.is_true(false),
         }
     }
+
+    test "ListImageModels returns the advisory catalog" {
+        assert.equal(ListImageModels(null).length(), 2);
+        assert.equal(ListImageModels("openai").length(), 2);
+        assert.equal(ListImageModels("nope").length(), 0);
+        match (GetImageModel("gpt-image-1")) {
+            let m: ImageModel => assert.equal(m.base_url, "https://api.openai.com/v1"),
+            _ => assert.is_true(false),
+        }
+        assert.is_true(GetImageModel("dall-e-9") is null);
+    }
+
+    test "GenerateImage unknown model fails fast naming the id" {
+        GenerateImage("hi", model = "dall-e-9", api_key = "test-key") catch (e) {
+            baml.errors.InvalidArgument => {
+                assert.is_true(e.message.includes("dall-e-9"))
+            },
+        }
+    }
 }

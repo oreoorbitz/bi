@@ -45,6 +45,60 @@ testset "provider registry" {
             null => assert.is_true(false),
             let v: string => assert.equal(v, "XAI_API_KEY"),
         }
+        // Full-table parity with pi's envApiKeyAuth single-var lists
+        // (bi#17): every ported provider names exactly pi's var.
+        match (ProviderAuthEnv("google")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "GEMINI_API_KEY"),
+        }
+        match (ProviderAuthEnv("together")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "TOGETHER_API_KEY"),
+        }
+        match (ProviderAuthEnv("cerebras")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "CEREBRAS_API_KEY"),
+        }
+        match (ProviderAuthEnv("moonshotai")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "MOONSHOT_API_KEY"),
+        }
+        match (ProviderAuthEnv("nvidia")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "NVIDIA_API_KEY"),
+        }
+        match (ProviderAuthEnv("zai")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "ZAI_API_KEY"),
+        }
+        match (ProviderAuthEnv("baseten")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "BASETEN_API_KEY"),
+        }
+        match (ProviderAuthEnv("mistral")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "MISTRAL_API_KEY"),
+        }
+        match (ProviderAuthEnv("minimax")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "MINIMAX_API_KEY"),
+        }
+        match (ProviderAuthEnv("kimi-coding")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "KIMI_API_KEY"),
+        }
+        match (ProviderAuthEnv("openrouter")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "OPENROUTER_API_KEY"),
+        }
+        match (ProviderAuthEnv("qwen-token-plan")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "QWEN_TOKEN_PLAN_API_KEY"),
+        }
+        match (ProviderAuthEnv("azure-openai-responses")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "AZURE_OPENAI_API_KEY"),
+        }
         assert.is_true(ProviderAuthEnv("bogus") is null)
     }
 
