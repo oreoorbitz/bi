@@ -25,6 +25,66 @@ function visible_width(line: string) -> int {
     line.replace_all(marker, "").length()
 }
 
+// Live turn status (host renders in place on stderr; BAML owns the text so
+// the shape is pinned by baml test, not by eyeballing terminal output).
+// elapsed_ms renders as 0.4s / 12s / 3m04s — compact, fixed shape.
+function format_elapsed(elapsed_ms: int) -> string {
+    if (elapsed_ms < 1000) {
+        `${elapsed_ms}ms`
+    } else if (elapsed_ms < 60000) {
+        let whole = elapsed_ms / 1000;
+        let frac = (elapsed_ms - whole * 1000) / 100;
+        `${whole}.${frac}s`
+    } else {
+        let mins = elapsed_ms / 60000;
+        let secs = (elapsed_ms - mins * 60000) / 1000;
+        let pad = if (secs < 10) {
+            "0"
+        } else {
+            ""
+        };
+        `${mins}m${pad}${secs}s`
+    }
+}
+
+// `⠋ thinking · 4.2s · loop:Thinking` — spinner frame picked by the host,
+// everything else pure here so the line shape is stable under test.
+function format_status(spinner: string, label: string, elapsed_ms: int, event: string) -> string {
+    let ev = if (event == "") {
+        "…"
+    } else {
+        event
+    };
+    `${spinner} ${label} · ${format_elapsed(elapsed_ms)} · ${ev}`
+}
+
+// Final line replacing the status: `✓ done · 3 turns · 6.1s` /
+// `✗ TurnFailure <kind> · 2 turns · 6.1s`. Host passes counts, BAML shapes.
+function format_turn_summary(
+    failed: bool,
+    detail: string,
+    turns: int,
+    messages: int,
+    elapsed_ms: int,
+) -> string {
+    let head = if (failed) {
+        `✗ ${detail}`
+    } else {
+        "✓ done"
+    };
+    let tm = if (turns == 1) {
+        "1 turn"
+    } else {
+        `${turns} turns`
+    };
+    let mm = if (messages == 1) {
+        "1 message"
+    } else {
+        `${messages} messages`
+    };
+    `${head} · ${tm} · ${mm} · ${format_elapsed(elapsed_ms)}`
+}
+
 function diff_lines(old: string[], new_lines: string[]) -> string[] {
     // Pure diff helper: returns indices where lines differ (as strings of indices)
     // For BAML test: collect differing line numbers as strings

@@ -40,6 +40,39 @@ testset "tui" {
         assert.equal(lines, ["hi"]);
     }
 
+    test "format_elapsed shapes" {
+        assert.equal(format_elapsed(0), "0ms");
+        assert.equal(format_elapsed(999), "999ms");
+        assert.equal(format_elapsed(1000), "1.0s");
+        assert.equal(format_elapsed(4200), "4.2s");
+        assert.equal(format_elapsed(59999), "59.9s");
+        assert.equal(format_elapsed(60000), "1m00s");
+        assert.equal(format_elapsed(184000), "3m04s");
+    }
+
+    test "format_status line shape" {
+        assert.equal(
+            format_status("⠋", "thinking", 4200, "loop:Thinking"),
+            "⠋ thinking · 4.2s · loop:Thinking",
+        );
+        assert.equal(format_status("⠋", "thinking", 300, ""), "⠋ thinking · 300ms · …");
+    }
+
+    test "format_turn_summary shapes" {
+        assert.equal(
+            format_turn_summary(false, "", 3, 6, 6100),
+            "✓ done · 3 turns · 6 messages · 6.1s",
+        );
+        assert.equal(
+            format_turn_summary(false, "", 1, 1, 500),
+            "✓ done · 1 turn · 1 message · 500ms",
+        );
+        assert.equal(
+            format_turn_summary(true, "TurnFailure api", 2, 3, 60000),
+            "✗ TurnFailure api · 2 turns · 3 messages · 1m00s",
+        );
+    }
+
     test "FocusableTextComponent emits marker when focused" {
         let comp = FocusableTextComponent { text: "hi", focused: true };
         let lines = comp.render(80);
