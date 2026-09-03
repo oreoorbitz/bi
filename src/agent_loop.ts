@@ -15,6 +15,7 @@ export async function runBiLoop(
 		onEvent?: (e: string) => void;
 		tools?: ToolSpec[];
 		toolHandler?: ToolHandler;
+		history?: any[];
 	},
 ): Promise<{ messages: any[]; failure?: { kind: string; message: string } }> {
 	const ctx = loop_context_new(opts.maxTurns ?? 5, Math.random().toString(16).slice(2, 8));
@@ -35,6 +36,7 @@ export async function runBiLoop(
 		maxTurns: opts.maxTurns ?? 5,
 		tools: opts.tools,
 		toolHandler: opts.toolHandler,
+		history: opts.history,
 	});
 
 	// Update BAML loop state via next_loop_state
