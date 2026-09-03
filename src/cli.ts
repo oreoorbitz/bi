@@ -85,17 +85,26 @@ async function warnBaisFailures(): Promise<void> {
 	);
 }
 
+// Abort cooperation (bi#16): fetch lives inside the BAML VM with no signal
+// passthrough, so mid-turn Ctrl-C cannot cancel the socket — it abandons the
+// turn instead. The flag is set by the REPL race; runOnePrompt checks it
+// after the turn resolves and discards late results.
+export interface TurnSignal {
+	aborted: boolean;
+}
+
 // Slash dispatch (bi#12): /builtin + /skill-name in the interactive prompt.
 // Skill slashes expand the SKILL.md body into the prompt (pi runs skill
-// content as the prompt); builtins execute directly. "quit" ends the REPL,
-// "handled" consumed the line, "none" is an ordinary prompt.
-async function handleSlash(line: string, skills: Skill[]): Promise<"quit" | "handled" | "none"> {
+// content as the prompt); builtins execute directly. Returns the (possibly
+// advanced) history, "quit" to end the REPL, "none" for ordinary prompts.
+// History threads through so skill turns join the transcript like any turn.
+async function handleSlash(line: string, skills: Skill[], history: any[], signal?: TurnSignal): Promise<any[] | "quit" | "none"> {
 	// Decision (BAML-backed) lives in skills.ts; this keeps only effects.
 	const t = await resolveSlash(line, skills);
 	if (t.kind === "none") return "none";
 	if (t.kind === "unknown") {
 		console.error(`unknown slash /${t.word} — /help lists commands`);
-		return "handled";
+		return history;
 	}
 	if (t.kind === "builtin") {
 		if (t.name === "quit") return "quit";
@@ -104,29 +113,31 @@ async function handleSlash(line: string, skills: Skill[]): Promise<"quit" | "han
 			console.log("slash commands:");
 			for (const b of builtins) console.log(`  /${b.name} — ${b.description}`);
 			for (const s of skills) console.log(`  /${s.name} — ${s.description} (skill)`);
-			return "handled";
+			return history;
 		}
 		if (t.name === "reload") {
 			const fresh = await loadSkills();
 			console.error(`[bi] reloaded ${fresh.skills.length} skill(s)`);
-			return "handled";
+			return history;
 		}
 		if (t.name === "compact") {
 			console.error("[bi] per-run compaction already ran inside each turn (history is never truncated without a summary)");
-			return "handled";
+			return history;
 		}
-		return "handled";
+		return history;
 	}
-	const r = await runOnePrompt(`${skillBody(t.skill)}\n\n${t.args}`.trim(), skills);
-	return r === "quit" ? "quit" : "handled";
+	return runOnePrompt(`${skillBody(t.skill)}\n\n${t.args}`.trim(), skills, history, signal ? { signal } : undefined);
 }
 
 // One prompt through the loop. Returns the full message history (prior +
 // this turn) so the REPL threads conversation across turns, or "quit".
-async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []): Promise<any[] | "quit"> {
-	const slash = await handleSlash(q, skills);
+// opts.aborted resolves when the user hits Ctrl-C mid-turn: the turn is
+// abandoned (flagged via opts.signal), the spinner stops now, and the late
+// VM result is discarded on arrival — transcript and prompt survive.
+async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = [], opts: { signal?: TurnSignal; aborted?: Promise<void> } = {}): Promise<any[] | "quit"> {
+	const slash = await handleSlash(q, skills, history, opts.signal);
 	if (slash === "quit") return "quit";
-	if (slash === "handled") return history;
+	if (slash !== "none") return slash;
 	const skillsSection = skills.length ? `\n\n${await formatSkills(skills)}` : "";
 	const fullPrompt = q + skillsSection + `\n\n[BAIS ready]\n${(await readyBaisIssues()).map((f) => `- ${f.issue.id} ${f.issue.title}`).join("\n")}`;
 	// BAML loop validation — runBiLoop wraps runAgent with LoopContext (agent_loop.baml).
@@ -142,7 +153,34 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	// BAML shapes every line, the host only schedules repaints.
 	const status = new HostStatus("thinking", { formatStatus: format_status, formatSummary: format_turn_summary });
 	status.start();
-	const result = await runBiLoop(fullPrompt, { provider: "anthropic", model: "claude-haiku-4-5", maxTurns: 5, onEvent: (e) => status.onEvent(e), tools: loopTools, toolHandler: async (name, args) => handleTool(name, args), history });
+	// BI_BASE_URL lets the REPL talk to a local gateway/proxy (and makes
+	// slow-turn behavior testable without real provider latency).
+	const turnP = runBiLoop(fullPrompt, { provider: "anthropic", model: "claude-haiku-4-5", maxTurns: 5, baseUrl: process.env.BI_BASE_URL ?? null, onEvent: (e) => status.onEvent(e), tools: loopTools, toolHandler: async (name, args) => handleTool(name, args), history });
+	type Settled = { done: true; result: Awaited<typeof turnP> } | { done: false };
+	let settled: Settled;
+	if (opts.aborted) {
+		settled = await Promise.race([
+			turnP.then((result) => ({ done: true as const, result })),
+			opts.aborted.then(() => ({ done: false as const })),
+		]);
+	} else {
+		settled = { done: true, result: await turnP };
+	}
+	if (!settled.done) {
+		if (opts.signal) opts.signal.aborted = true;
+		status.stop({ failed: true, detail: "aborted", turns: 0, messages: history.length });
+		console.error("[bi] turn aborted — transcript unchanged (a late VM result is discarded on arrival)");
+		void turnP.then(
+			() => console.error("[bi] late turn result discarded"),
+			(e) => console.error(`[bi] late turn failed: ${String(e?.message ?? e).split("\n")[0]}`),
+		);
+		return history;
+	}
+	const result = settled.result;
+	if (opts.signal?.aborted) {
+		console.error("[bi] turn finished after abort — result discarded");
+		return history;
+	}
 	const assistantCount = result.messages.filter((m: any) => m.role === "assistant").length;
 	if (result.failure) {
 		status.stop({ failed: true, detail: `TurnFailure ${result.failure.kind}`, turns: Math.max(assistantCount, 1), messages: result.messages.length });
@@ -163,6 +201,7 @@ class ReplReader {
 	private historyFile: string;
 	private submitted: string[] = [];
 	private pending: { resolve: (v: string) => void; reject: (e: Error) => void } | null = null;
+	onMidTurnInterrupt: (() => void) | null = null;
 	constructor() {
 		this.historyFile = historyFile();
 		const lines = readHistoryFile(this.historyFile);
@@ -171,7 +210,13 @@ class ReplReader {
 		// at the head, which is where Up starts (verified live: a fresh
 		// process recalls the file's last line first).
 		for (const l of lines) (this.r as any).history.unshift(l);
-		this.r.on("SIGINT", () => this.pending?.resolve("\x03"));
+		// Ctrl-C with no question pending means mid-turn: the REPL arms
+		// onMidTurnInterrupt per turn to abandon it (bi#16). At the prompt
+		// the pending question resolves "\x03" and the loop re-prompts.
+		this.r.on("SIGINT", () => {
+			if (this.pending) this.pending.resolve("\x03");
+			else this.onMidTurnInterrupt?.();
+		});
 		this.r.on("close", () => this.pending?.reject(new Error("EOF")));
 	}
 	ask(prompt: string): Promise<string> {
@@ -240,7 +285,15 @@ async function repl(skills: Skill[]): Promise<void> {
 				if (line === "\x03") console.error("(Ctrl-D or /quit to exit)");
 				continue;
 			}
-			const out = await runOnePrompt(line.trim(), skills, history);
+			// Mid-turn Ctrl-C abandons the turn (bi#16): the VM request has
+			// no signal passthrough, so the turn is orphaned and discarded
+			// on arrival — the prompt and transcript survive.
+			const signal: TurnSignal = { aborted: false };
+			let fireAbort: () => void = () => {};
+			const aborted = new Promise<void>((res) => { fireAbort = res; });
+			reader.onMidTurnInterrupt = () => fireAbort();
+			const out = await runOnePrompt(line.trim(), skills, history, { signal, aborted });
+			reader.onMidTurnInterrupt = null;
 			if (out === "quit") {
 				console.error(`[bi] session kept at ${sessFile} (${history.length} messages)`);
 				return;

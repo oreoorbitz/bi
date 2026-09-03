@@ -16,6 +16,7 @@ export async function runBiLoop(
 		tools?: ToolSpec[];
 		toolHandler?: ToolHandler;
 		history?: any[];
+		baseUrl?: string | null;
 	},
 ): Promise<{ messages: any[]; failure?: { kind: string; message: string } }> {
 	const ctx = loop_context_new(opts.maxTurns ?? 5, Math.random().toString(16).slice(2, 8));
@@ -33,6 +34,7 @@ export async function runBiLoop(
 		provider: opts.provider ?? "anthropic",
 		model: opts.model ?? "claude-haiku-4-5",
 		apiKey: opts.apiKey ?? null,
+		baseUrl: opts.baseUrl ?? null,
 		maxTurns: opts.maxTurns ?? 5,
 		tools: opts.tools,
 		toolHandler: opts.toolHandler,
