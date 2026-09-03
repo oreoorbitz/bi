@@ -37,7 +37,8 @@ function writeHistoryFile(file: string, oldestFirst: string[]): void {
 		writeFileSync(file, oldestFirst.slice(-200).join("\n") + "\n");
 	} catch {}
 }
-import { HostTui, renderReadyScreen } from "./tui.js";
+import { HostTui, HostStatus, renderReadyScreen } from "./tui.js";
+import { format_status, format_turn_summary } from "../baml_sdk/index.js";
 import { runBiLoop } from "./agent_loop.js";
 
 function printHelp(): void {
@@ -137,11 +138,18 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	try {
 		loopTools = await listTools();
 	} catch {}
-	const result = await runBiLoop(fullPrompt, { provider: "anthropic", model: "claude-haiku-4-5", maxTurns: 5, onEvent: (e) => console.error(`[loop] ${e}`), tools: loopTools, toolHandler: async (name, args) => handleTool(name, args), history });
+	// Live status on stderr (in-place spinner on TTY, plain lines on pipes);
+	// BAML shapes every line, the host only schedules repaints.
+	const status = new HostStatus("thinking", { formatStatus: format_status, formatSummary: format_turn_summary });
+	status.start();
+	const result = await runBiLoop(fullPrompt, { provider: "anthropic", model: "claude-haiku-4-5", maxTurns: 5, onEvent: (e) => status.onEvent(e), tools: loopTools, toolHandler: async (name, args) => handleTool(name, args), history });
+	const assistantCount = result.messages.filter((m: any) => m.role === "assistant").length;
 	if (result.failure) {
+		status.stop({ failed: true, detail: `TurnFailure ${result.failure.kind}`, turns: Math.max(assistantCount, 1), messages: result.messages.length });
 		console.error(`TurnFailure ${result.failure.message}`);
 		return withUser;
 	}
+	status.stop({ failed: false, detail: "", turns: Math.max(assistantCount, 1), messages: result.messages.length });
 	for (const m of result.messages) if ((m as any).role === "assistant") console.log((m as any).text ?? JSON.stringify((m as any).content));
 	return result.messages;
 }
