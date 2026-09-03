@@ -1,6 +1,6 @@
 id = "bi#18"
 title = "Auth credential store (auth.json file store + Credential shapes)"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "providers/auth"
 body = """
