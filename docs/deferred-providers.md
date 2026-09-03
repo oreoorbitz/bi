@@ -7,7 +7,7 @@ except where noted — most are auth or endpoint-shape work.
 
 | pi provider id | pi api | blocker | unblocks when |
 |---|---|---|---|
-| `azure-openai-responses` | `azureOpenAIResponsesApi` | Deployment URLs are per-user (`{resource}.openai.azure.com/openai/deployments/{id}`); no fixed catalog `base_url` fits the `Provider` shape | Host `--base-url` override design + `openai.AzureClient` arm (builtin exists) |
+| `azure-openai-responses` | `azureOpenAIResponsesApi` | ~~Deployment URLs are per-user; no fixed catalog `base_url`~~ LANDED: `azure-responses` api arm over `openai.AzureClient` (resource/deployment/api-version as explicit opts with `AZURE_OPENAI_*` env fallback, empty-`base_url` sentinel row, fail-fast naming opt+env) | — |
 | `amazon-bedrock` | `bedrockConverseStreamApi` | AWS credential chain / IAM signing (profiles, bearer tokens, ambient chain) | Host-side SigV4 signer; new wire format (ConverseStream) |
 | `google-vertex` | `googleVertexApi` | ADC / service-account / API-key trinity, project-scoped endpoints | Host-side GCP auth; new wire format |
 | `github-copilot` | `anthropic-messages` + completions | Device-flow OAuth is primary; token path needs Copilot-specific headers | OAuth layer (see below) + header support |

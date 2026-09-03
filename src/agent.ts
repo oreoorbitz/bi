@@ -32,6 +32,9 @@ export interface AgentOptions {
 	baseUrl?: string | null;
 	temperature?: number | null;
 	maxTurns?: number;
+	azureResource?: string | null;
+	azureDeployment?: string | null;
+	azureApiVersion?: string | null;
 }
 
 // For testing without network — inject a fake LLM that returns canned turns.
@@ -55,6 +58,9 @@ function defaultLlmFn(options: AgentOptions): LlmFn {
 			SendTurn_async(options.provider ?? "anthropic", options.model, options.apiKey ?? null, text, h, t, {
 				base_url: options.baseUrl ?? null,
 				temperature: options.temperature ?? null,
+				azure_resource: options.azureResource ?? null,
+				azure_deployment: options.azureDeployment ?? null,
+				azure_api_version: options.azureApiVersion ?? null,
 			}),
 		);
 	};

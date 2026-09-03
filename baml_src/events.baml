@@ -57,7 +57,12 @@ function make_assistant_text(text: string, turn_index: int) -> RunEvent {
     }
 }
 
-function make_tool_call(tool_call_id: string, tool_name: string, tool_args_json: string, turn_index: int) -> RunEvent {
+function make_tool_call(
+    tool_call_id: string,
+    tool_name: string,
+    tool_args_json: string,
+    turn_index: int,
+) -> RunEvent {
     RunEvent {
         type: "tool_call",
         turn_index: turn_index,
@@ -73,7 +78,12 @@ function make_tool_call(tool_call_id: string, tool_name: string, tool_args_json:
     }
 }
 
-function make_tool_result(tool_call_id: string, tool_name: string, tool_output: string, turn_index: int) -> RunEvent {
+function make_tool_result(
+    tool_call_id: string,
+    tool_name: string,
+    tool_output: string,
+    turn_index: int,
+) -> RunEvent {
     RunEvent {
         type: "tool_result",
         turn_index: turn_index,
@@ -131,8 +141,18 @@ function validate_event(event: RunEvent) -> bool {
     match (event.type) {
         "run_start" => event.provider != null && event.model != null,
         "assistant_text" => event.text != null && event.turn_index != null,
-        "tool_call" => event.tool_call_id != null && event.tool_name != null && event.tool_args_json != null && event.turn_index != null,
-        "tool_result" => event.tool_call_id != null && event.tool_name != null && event.tool_output != null && event.turn_index != null,
+        "tool_call" => {
+            event.tool_call_id != null
+                && event.tool_name != null
+                && event.tool_args_json != null
+                && event.turn_index != null
+        },
+        "tool_result" => {
+            event.tool_call_id != null
+                && event.tool_name != null
+                && event.tool_output != null
+                && event.turn_index != null
+        },
         "run_end" => event.text != null,
         "run_failed" => event.failure_kind != null && event.failure_message != null,
         _ => false,

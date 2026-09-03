@@ -50,6 +50,7 @@ function printHelp(): void {
   bi list-models [--provider <id>]
   bi get-model <id>
   bi run <prompt> [--provider <id>] [--model <id>] [--api-key <key>] [--base-url <url>] [--temperature <n>] [--max-turns <n>]
+                   [--azure-resource <r> --azure-deployment <d> [--azure-api-version <v>]]
   bi bais list [--json]
   bi bais ready [--json]
   bi bais new "title" --kind <Kind> [--area <area>] [--status <Status>] [--body <md>]
@@ -421,6 +422,11 @@ async function main(): Promise<void> {
 		const temperature = tempStr != null ? Number(tempStr) : null;
 		const maxTurnsStr = getFlag(args, "--max-turns");
 		const maxTurns = maxTurnsStr != null ? Number(maxTurnsStr) : 5;
+		// Azure scoping (bi#15): explicit flags win, else AZURE_OPENAI_*
+		// env inside the VM (see turn.baml azure-responses arm).
+		const azureResource = getFlag(args, "--azure-resource") ?? null;
+		const azureDeployment = getFlag(args, "--azure-deployment") ?? null;
+		const azureApiVersion = getFlag(args, "--azure-api-version") ?? null;
 
 		const providerInfo = await getProvider(provider);
 		if (!providerInfo) {
@@ -478,6 +484,9 @@ async function main(): Promise<void> {
 			baseUrl,
 			temperature,
 			maxTurns,
+			azureResource,
+			azureDeployment,
+			azureApiVersion,
 			tools: runTools,
 			toolHandler: async (name, args) => handleTool(name, args),
 		});
