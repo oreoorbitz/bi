@@ -1,6 +1,6 @@
 id = "bi#25"
 title = "Per-provider env-key mapping + missing-key precheck"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "providers/auth"
 body = """

@@ -171,6 +171,35 @@ testset "provider registry" {
         assert.is_true(GetProvider("bogus") is null)
     }
 
+    test "MissingKeyMessage names the var for known providers" {
+        assert.equal(
+            MissingKeyMessage("groq"),
+            "groq needs an API key: pass --api-key, or set GROQ_API_KEY",
+        );
+        assert.equal(
+            MissingKeyMessage("openai_responses"),
+            "openai_responses needs an API key: pass --api-key, or set OPENAI_API_KEY",
+        );
+        assert.equal(
+            MissingKeyMessage("huggingface"),
+            "huggingface needs an API key: pass --api-key, or set HF_TOKEN",
+        );
+        assert.equal(
+            MissingKeyMessage("azure-openai-responses"),
+            "azure-openai-responses needs an API key: pass --api-key, or set AZURE_OPENAI_API_KEY",
+        )
+    }
+
+    test "MissingKeyMessage says unknown for unmapped ids, never a panic" {
+        assert.equal(
+            MissingKeyMessage("bogus"),
+            "unknown provider \"bogus\": no auth mapping (see ListProviders)",
+        );
+        // bi#15 ids reuse this arm until they land in the catalog.
+        assert.is_true(MissingKeyMessage("amazon-bedrock").includes("unknown provider"));
+        assert.is_true(MissingKeyMessage("google-vertex").includes("unknown provider"))
+    }
+
     test "ProviderExists true for known, false for unknown" {
         assert.is_true(ProviderExists("google"));
         assert.is_true(!ProviderExists("bogus"))

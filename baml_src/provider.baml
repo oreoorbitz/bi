@@ -216,6 +216,17 @@ function ListProviders() -> Provider[] {
     _providers()
 }
 
+// bi#25: fail-fast precheck text (pi's env-api-keys.ts missing-key path).
+// A known provider names its exact var; an unknown id says so instead of
+// naming a misleading var. bi#15 gateway/CN ids reuse this once they land
+// in _providers (ProviderAuthEnv returns null for them until then).
+function MissingKeyMessage(provider: string) -> string {
+    match (ProviderAuthEnv(provider)) {
+        null => `unknown provider "${provider}": no auth mapping (see ListProviders)`,
+        let v: string => `${provider} needs an API key: pass --api-key, or set ${v}`,
+    }
+}
+
 function GetProvider(id: string) -> Provider? {
     for (let p in _providers()) {
         if (p.id == id) {

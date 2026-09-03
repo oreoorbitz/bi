@@ -8,16 +8,23 @@
 // stored-credential layer: explicit --api-key wins, else env, else a
 // classified failure.
 
-import { ProviderAuthEnv_async, TurnFailure } from "../baml_sdk/index.js";
+import { MissingKeyMessage_async, ProviderAuthEnv_async, TurnFailure } from "../baml_sdk/index.js";
 
 export async function missingKeyFailure(provider: string, apiKey?: string | null): Promise<TurnFailure | null> {
 	if (apiKey) return null;
 	const v = await ProviderAuthEnv_async(provider);
-	if (!v) return null;
+	if (!v) {
+		// bi#25: unknown provider fails fast too, naming no misleading var.
+		return new TurnFailure({
+			kind: "invalid_argument",
+			message: await MissingKeyMessage_async(provider),
+			retry_safe: false,
+		});
+	}
 	if (process.env[v]) return null;
 	return new TurnFailure({
 		kind: "invalid_argument",
-		message: `${provider} needs an API key: pass --api-key, or set ${v}`,
+		message: await MissingKeyMessage_async(provider),
 		retry_safe: false,
 	});
 }
