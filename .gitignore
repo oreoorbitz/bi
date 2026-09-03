@@ -26,3 +26,5 @@ target
 #.idea/
 baml_sdk/
 bin/
+# BAIS projection — rebuildable via `bais ingest`, never commit
+.bais/store.db
