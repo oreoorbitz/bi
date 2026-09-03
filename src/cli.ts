@@ -11,6 +11,7 @@ import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, mo
 import { listTools, handleTool } from "./tools.js";
 import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, type Skill } from "./skills.js";
+import { runResultToJsonLines, finalText } from "./events.js";
 import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow } from "./session.js";
 import { HostTui, renderReadyScreen } from "./tui.js";
 import { runBiLoop } from "./agent_loop.js";
@@ -289,9 +290,28 @@ async function main(): Promise<void> {
 			toolHandler: async (name, args) => handleTool(name, args),
 		});
 
+		// bi#14 run modes: --mode json emits one JSON RunEvent per line on
+		// stdout (schema in events.baml, BAML-validated); --print/-p emits
+		// final text only. Default prints human-readable text + tool lines.
+		// RPC stays out of scope (see port-gap report) — rejected explicitly.
+		const mode = getFlag(args, "--mode");
+		if (mode === "rpc") {
+			console.error("bi run --mode rpc is out of scope (no client/server/protocol — see port-gap report)");
+			process.exit(1);
+		}
+		if (mode === "json") {
+			const lines = await runResultToJsonLines(result, provider, model);
+			for (const l of lines) console.log(l);
+			process.exit(result.failure ? 1 : 0);
+		}
 		if (result.failure) {
 			console.error(`TurnFailure: kind=${result.failure.kind} retry_safe=${result.failure.retry_safe} message=${result.failure.message}`);
 			process.exit(1);
+		}
+		if (hasFlag(args, "--print") || hasFlag(args, "-p")) {
+			const t = finalText(result);
+			if (t) console.log(t);
+			return;
 		}
 		for (const msg of result.messages) {
 			if (msg.role === "assistant" && "text" in msg) {
