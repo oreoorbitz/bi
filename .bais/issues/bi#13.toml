@@ -1,0 +1,20 @@
+id = "bi#13"
+title = "Port provider backends + auth layer"
+status = "Open"
+kind = "Feat"
+area = "providers/auth"
+body = """
+Port pi's remaining provider backends into bi. Pi ships ~30 (bedrock, azure,
+mistral, groq, deepseek, xai, openrouter, vertex, copilot, fireworks,
+together, cerebras, kimi, minimax, moonshot, nvidia, qwen, xiaomi, zai,
+huggingface, baseten, cloudflare, opencode); bi wires 3 (anthropic,
+openai-responses, google). The harness generalizes already: SendTurn takes a
+string provider tag, the composer resolves it — each addition is one backend
++ catalog entries + tests. Include pi's auth layer (oauth, bun-oauth,
+env-api-keys, auth-storage, runtime-credentials); bi currently passes raw API
+keys only. Add the OAuth flow when the second OAuth-requiring provider lands.
+
+Acceptance per provider: baml check green, turn-plumbing test reaching the
+wire (offline, classified failure), catalog entry, `bi run --provider <name>`
+dispatches. Out of scope: nothing — but keep the thin-host rule (no provider
+SDK deps, fetch only)."""

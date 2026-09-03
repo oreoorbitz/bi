@@ -1,0 +1,16 @@
+id = "bi#11"
+title = "Port session compaction (coding-agent + harness)"
+status = "Open"
+kind = "Feat"
+area = "agent/session"
+body = """
+Port pi's session compaction into bi: coding-agent/src/core/compaction
+(compaction.ts, branch-summarization.ts, utils.ts) + agent/src/harness/compaction.
+Without it long sessions die at the context limit.
+
+BAML owns: compaction trigger rule (token threshold), summary schema.
+Host owns: the summarization call + session rewrite.
+
+Acceptance: baml check green, baml test one-test→one-impl for trigger rule
+and branch summarization (no LLM), a long session compacts and continues
+without losing the active goal."""

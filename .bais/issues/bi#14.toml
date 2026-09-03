@@ -1,0 +1,14 @@
+id = "bi#14"
+title = "Port print / json-event run modes"
+status = "Open"
+kind = "Feat"
+area = "cli/bi"
+body = """
+Port pi's print-mode and json-event run modes (coding-agent/src/modes/) into
+bi. bi has `run` + the basic interactive loop; scripting consumers need
+non-interactive print output and machine-readable JSON events.
+
+Acceptance: `bi run --print` emits final text only; json-event mode emits one
+JSON object per agent event on stdout (validated against a schema); baml test
+for the event serialization (no LLM). RPC mode stays out of scope with
+client/server/protocol (see port-gap report)."""

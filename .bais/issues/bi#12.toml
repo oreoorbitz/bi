@@ -1,0 +1,13 @@
+id = "bi#12"
+title = "Port skills + slash-commands"
+status = "Open"
+kind = "Feat"
+area = "agent/tools"
+body = """
+Port pi's skills (coding-agent/src/core/skills.ts, agent/src/harness/skills.ts)
+and slash-commands (coding-agent/src/core/slash-commands.ts) into bi. They are
+how pi's agent discovers tools, adjacent to bi's tool registry (tools.baml).
+
+Acceptance: baml check green, baml test for skill registration + slash
+dispatch (no LLM), `bi run` lists skill-provided tools alongside the 15
+built-ins."""
