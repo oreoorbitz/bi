@@ -3,11 +3,19 @@
 // This wraps bi's existing pi-like Turn loop (src/agent.ts runAgent) with BAML state validation.
 
 import { loop_context_new, validate_continue, next_loop_state, LoopState } from "../baml_sdk/index.js";
-import { runAgent, type ToolHandler } from "./agent.js";
+import { runAgent, type ToolHandler, type ToolSpec } from "./agent.js";
 
 export async function runBiLoop(
 	prompt: string,
-	opts: { provider?: string; model?: string; apiKey?: string | null; maxTurns?: number; onEvent?: (e: string) => void },
+	opts: {
+		provider?: string;
+		model?: string;
+		apiKey?: string | null;
+		maxTurns?: number;
+		onEvent?: (e: string) => void;
+		tools?: ToolSpec[];
+		toolHandler?: ToolHandler;
+	},
 ): Promise<{ messages: any[]; failure?: { kind: string; message: string } }> {
 	const ctx = loop_context_new(opts.maxTurns ?? 5, Math.random().toString(16).slice(2, 8));
 	// BAML is validator — ensure we can start (not assistant)
@@ -25,6 +33,8 @@ export async function runBiLoop(
 		model: opts.model ?? "claude-haiku-4-5",
 		apiKey: opts.apiKey ?? null,
 		maxTurns: opts.maxTurns ?? 5,
+		tools: opts.tools,
+		toolHandler: opts.toolHandler,
 	});
 
 	// Update BAML loop state via next_loop_state

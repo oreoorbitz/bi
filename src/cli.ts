@@ -7,7 +7,8 @@
 import { getModel, listAllModels, listModels } from "./models.js";
 import { getProvider, listProviders } from "./provider.js";
 import { runAgent } from "./agent.js";
-import { listBaisIssues, readyBaisIssues, createBaisIssue, moveBaisIssue, checkBaisIssues, graphBaisIssues } from "./bais.js";
+import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, moveBaisIssue, checkBaisIssues, graphBaisIssues } from "./bais.js";
+import { listTools, handleTool } from "./tools.js";
 import { parse_args, format_help, is_valid_thinking_level } from "../baml_sdk/index.js";
 import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow } from "./session.js";
 import { HostTui, renderReadyScreen } from "./tui.js";
@@ -45,6 +46,18 @@ function hasFlag(args: string[], name: string): boolean {
 	return args.includes(name);
 }
 
+// Unparseable .bais files no longer masquerade as issues (see loadBaisIssues),
+// so a bad file simply drops out of list/ready. Say so on stderr — a silently
+// short list is the failure mode we traded the fabrication for, and it should
+// not also be an invisible one.
+async function warnBaisFailures(): Promise<void> {
+	const { failures } = await loadBaisIssues();
+	if (!failures.length) return;
+	console.error(
+		`[bais] skipped ${failures.length} unparseable file(s): ${failures.map((f) => f.file).join(", ")} — \`bi bais check\` for details`,
+	);
+}
+
 async function main(): Promise<void> {
 	const args = process.argv.slice(2);
 	const cmd = args[0];
@@ -63,6 +76,7 @@ async function main(): Promise<void> {
 		if (parsed.help) { printHelp(); process.exit(0); }
 	} catch {}
 	if (!cmd) {
+		await warnBaisFailures();
 		const ready = await readyBaisIssues();
 		// HostTui differential — BAML owns Component/diff_lines, host renders (pi TUI spec)
 		const tui = new HostTui();
@@ -86,8 +100,13 @@ async function main(): Promise<void> {
 				const sessFile = createSessionFile({ cwd: process.cwd() });
 				console.error(`[bi] new session ${sessFile}`);
 				const fullPrompt = q.trim() + `\n\n[BAIS ready]\n${(await readyBaisIssues()).map((f) => `- ${f.issue.id} ${f.issue.title}`).join("\n")}`;
-				// BAML loop validation — runBiLoop wraps runAgent with LoopContext (agent_loop.baml)
-				const result = await runBiLoop(fullPrompt, { provider: "anthropic", model: "claude-haiku-4-5", maxTurns: 5, onEvent: (e) => console.error(`[loop] ${e}`) });
+				// BAML loop validation — runBiLoop wraps runAgent with LoopContext (agent_loop.baml).
+				// Same first-class tools as `bi run` so the interactive agent manages .bais too.
+				let loopTools: any[] = [];
+				try {
+					loopTools = await listTools();
+				} catch {}
+				const result = await runBiLoop(fullPrompt, { provider: "anthropic", model: "claude-haiku-4-5", maxTurns: 5, onEvent: (e) => console.error(`[loop] ${e}`), tools: loopTools, toolHandler: async (name, args) => handleTool(name, args) });
 				if (result.failure) console.error(`TurnFailure ${result.failure.message}`);
 				else for (const m of result.messages) if ((m as any).role === "assistant") console.log((m as any).text ?? JSON.stringify((m as any).content));
 			}
@@ -180,6 +199,7 @@ async function main(): Promise<void> {
 		let baisContext = "";
 		let baisReadyCount = 0;
 		try {
+			await warnBaisFailures();
 			const ready = await readyBaisIssues();
 			if (ready.length) {
 				baisReadyCount = ready.length;
@@ -188,7 +208,16 @@ async function main(): Promise<void> {
 		} catch {}
 
 		const fullPrompt = prompt + baisContext;
-		console.error(`bi run — provider=${provider} model=${model} prompt="${prompt}"${baisContext ? ` (+${baisReadyCount} BAIS ready)` : ""}`);
+		// First-class BAIS: the agent gets all 15 tools (7 pi + 8 bais_*) with
+		// the host executors, so it can list → ready → new → move issues itself
+		// instead of only reading the injected ready list.
+		let runTools: any[] = [];
+		try {
+			runTools = await listTools();
+		} catch (e: any) {
+			console.error(`[bi] tool registry unavailable (${String(e?.message ?? e).split("\n")[0]}) — running tool-free`);
+		}
+		console.error(`bi run — provider=${provider} model=${model} prompt="${prompt}"${baisContext ? ` (+${baisReadyCount} BAIS ready)` : ""} tools=${runTools.length}`);
 		const result = await runAgent(fullPrompt, {
 			provider,
 			model,
@@ -196,6 +225,8 @@ async function main(): Promise<void> {
 			baseUrl,
 			temperature,
 			maxTurns,
+			tools: runTools,
+			toolHandler: async (name, args) => handleTool(name, args),
 		});
 
 		if (result.failure) {
@@ -219,20 +250,26 @@ async function main(): Promise<void> {
 		const sub = args[1];
 		const asJson = hasFlag(args, "--json");
 		if (sub === "list") {
-			const files = await listBaisIssues();
-			if (asJson) console.log(JSON.stringify(files, null, 2));
+			const { issues: files, failures } = await loadBaisIssues();
+			if (asJson) console.log(JSON.stringify({ issues: files, unparseable: failures }, null, 2));
 			else {
 				for (const f of files) console.log(`${f.issue.id}\t${f.issue.status}\t${f.issue.kind}\t${f.issue.title}`);
-				if (files.length === 0) console.error("(no .bais/issues/*.toml — run bais init or add issues)");
+				for (const b of failures) console.log(`bad\t${b.file}\t${b.error}`);
+				if (files.length === 0 && failures.length === 0) console.error("(no .bais/issues/*.toml — run bais init or add issues)");
 			}
 			return;
 		}
 		if (sub === "ready") {
-			const files = await readyBaisIssues();
-			if (asJson) console.log(JSON.stringify(files, null, 2));
+			// JSON shape matches `bais ready --json`: {ready, unparseable}.
+			// Unparseable files are absent from the graph, so both the ready
+			// set and the edges that would have constrained it are short.
+			const { issues, failures } = await loadBaisIssues();
+			const ready = filterReadyIssues(issues);
+			if (asJson) console.log(JSON.stringify({ ready, unparseable: failures }, null, 2));
 			else {
-				for (const f of files) console.log(`${f.issue.id}\t${f.issue.title}`);
-				if (files.length === 0) console.log("(no ready issues)");
+				for (const f of ready) console.log(`${f.issue.id}\t${f.issue.title}`);
+				if (ready.length === 0) console.log("(no ready issues)");
+				if (failures.length) console.error(`[bais] ${failures.length} unparseable file(s) excluded — \`bi bais check\` for details`);
 			}
 			return;
 		}
@@ -256,13 +293,27 @@ async function main(): Promise<void> {
 			return;
 		}
 		if (sub === "check") {
-			const { ok, bad } = await checkBaisIssues();
-			if (asJson) console.log(JSON.stringify({ ok: ok.length, bad }, null, 2));
+			const { ok, bad, dangling, cycles } = await checkBaisIssues();
+			const missing = dangling.filter((d) => d.status === "Missing");
+			const external = dangling.filter((d) => d.status === "External");
+			if (asJson) console.log(JSON.stringify({ ok: ok.length, bad, dangling, cycles }, null, 2));
 			else {
 				for (const f of ok) console.log(`ok\t${f.issue.id}`);
 				for (const b of bad) console.log(`bad\t${b.file}\t${b.error}`);
-				if (bad.length) process.exit(1);
+				// A Blocks edge naming an id that does not exist parks its target
+				// indefinitely — is_blocked treats an unresolvable blocker as
+				// blocking — so a missing reference is a defect, not a warning.
+				for (const d of missing) console.log(`dangling\t${d.declaredBy}\t${d.side}=${d.id}\t${d.kind} ${d.from} -> ${d.to}`);
+				// Another project's id is not resolvable from here. Reported so a
+				// typo'd prefix stays visible, but not a failure.
+				for (const d of external) console.log(`external\t${d.declaredBy}\t${d.side}=${d.id}\t${d.kind} ${d.from} -> ${d.to}`);
+				// Nothing in a dependency cycle can ever become ready — and
+				// ready_issues reports that as silence. cycles is the diagnosis.
+				if (cycles.length) console.log(`cycle\t${cycles.join(", ")}`);
 			}
+			// Applies to both output modes — --json previously always exited 0,
+			// which made it useless as a CI gate. External alone never fails.
+			if (bad.length || missing.length || cycles.length) process.exit(1);
 			return;
 		}
 		if (sub === "graph") {

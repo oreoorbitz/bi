@@ -9,6 +9,7 @@ import { SendTurn_async } from "../baml_sdk/index.js";
 import { toToolSpecs, type ToolSpec } from "./conversation.js";
 
 export type ToolHandler = (name: string, args: Record<string, unknown>) => Promise<string>;
+export type { ToolSpec } from "./conversation.js";
 
 export interface AgentTurn {
 	turn: ai.ModelTurn;

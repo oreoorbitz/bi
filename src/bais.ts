@@ -7,7 +7,7 @@
 // as the validator even without a BAML-level import.
 
 import { readdirSync, readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 export type BaisIssue = {
 	id: string;
@@ -54,85 +54,132 @@ function resolveIssuesDir(from: string = process.cwd()): string | null {
 // dependency on bais's baml_sdk — hidden behind eval to avoid tsc's
 // rootDir check (bais/baml_sdk lives outside bi). BAML remains validator.
 // Resolution must work both from bi/src (dev, ts-node) and bi/dist/src (compiled).
-async function validateViaBaisBaml(text: string): Promise<BaisFile> {
-	const { pathToFileURL } = await import("node:url");
-	const candidates = [
-		// compiled: bi/dist/src/bais.js -> orion-learn-baml/bais/dist/src/toml.js
-		join(resolve(process.cwd(), "../bais"), "dist", "src", "toml.js"),
-		join(resolve(process.cwd(), "../bais"), "src", "toml.ts"),
-		join(resolve(process.cwd(), "../../bais"), "dist", "src", "toml.js"),
-		// dev: bi/src/bais.ts -> ../bais/src/toml.ts
-		resolve(join(resolve(process.cwd(), "bais"), "dist", "src", "toml.js")),
-		resolve(join(resolve(process.cwd(), "..", "bais"), "dist", "src", "toml.js")),
-	];
-	for (const p of candidates) {
-		if (!existsSync(p)) continue;
+// Resolve bais's TS wrapper once and memoise it. Hidden behind eval so tsc's
+// rootDir check does not follow it — bais/baml_sdk lives outside this project.
+// Resolution must work from src (dev, ts-node) and dist/src (compiled).
+let baisTomlModule: Promise<any> | null = null;
+function loadBaisTomlModule(): Promise<any> {
+	if (baisTomlModule) return baisTomlModule;
+	baisTomlModule = (async () => {
+		const { pathToFileURL } = await import("node:url");
+		const candidates = [
+			// compiled: bi/dist/src/bais.js -> orion-learn-baml/bais/dist/src/toml.js
+			join(resolve(process.cwd(), "../bais"), "dist", "src", "toml.js"),
+			join(resolve(process.cwd(), "../bais"), "src", "toml.ts"),
+			join(resolve(process.cwd(), "../../bais"), "dist", "src", "toml.js"),
+			// dev: bi/src/bais.ts -> ../bais/src/toml.ts
+			resolve(join(resolve(process.cwd(), "bais"), "dist", "src", "toml.js")),
+			resolve(join(resolve(process.cwd(), "..", "bais"), "dist", "src", "toml.js")),
+		];
+		for (const p of candidates) {
+			if (!existsSync(p)) continue;
+			try {
+				const mod = await (Function("u", "return import(u)") as any)(pathToFileURL(p).href);
+				if (mod?.parseBaisFile) return mod;
+			} catch {}
+		}
+		// last resort: relative spec hidden from tsc (may work in some layouts)
 		try {
-			const url = pathToFileURL(p).href;
-			const mod = await (Function("u", "return import(u)") as any)(url);
-			if (mod?.parseBaisFile) return (await mod.parseBaisFile(text)) as BaisFile;
+			const mod = await (Function("s", "return import(s)") as any)("../../../bais/dist/src/toml.js");
+			if (mod?.parseBaisFile) return mod;
 		} catch {}
-	}
-	// last resort: relative spec hidden from tsc (may work in some layouts)
-	try {
-		const spec = "../../../bais/dist/src/toml.js";
-		const mod = await (Function("s", "return import(s)") as any)(spec);
-		if (mod?.parseBaisFile) return (await mod.parseBaisFile(text)) as BaisFile;
-	} catch {}
-	throw new Error(`BAIS parser not found — tried ${candidates.join(", ")}`);
+		baisTomlModule = null; // let a later call retry once bais is built
+		throw new Error(`BAIS parser not found — tried ${candidates.join(", ")}`);
+	})();
+	return baisTomlModule;
 }
 
-export async function listBaisIssues(
-	dir?: string,
-): Promise<BaisFile[]> {
-	const issuesDir = dir ?? resolveIssuesDir() ?? resolve(process.cwd(), "../bais/.bais/issues");
-	if (!existsSync(issuesDir)) return [];
+// Validate a raw .toml string through bais's BAML parser (the ground truth).
+// The resolver's catch-and-continue above deliberately stops at module load:
+// once we have a module, a throw from parseBaisFile is a real parse error about
+// the caller's file and must propagate verbatim. Folding it into the loop meant
+// every malformed issue was reported as "BAIS parser not found", which is both
+// wrong and unactionable.
+async function validateViaBaisBaml(text: string): Promise<BaisFile> {
+	const mod = await loadBaisTomlModule();
+	return (await mod.parseBaisFile(text)) as BaisFile;
+}
+
+function issuesDirOrDefault(dir?: string): string {
+	return dir ?? resolveIssuesDir() ?? resolve(process.cwd(), "../bais/.bais/issues");
+}
+
+// A file under .bais/issues that the BAML parser rejected. Kept as its own
+// shape rather than being coerced into a BaisIssue: a file we could not parse
+// has no trustworthy id, status or edges, and anything we invent for those
+// fields is a lie the rest of the graph will act on.
+export type BaisLoadFailure = { file: string; error: string };
+export type BaisLoad = { issues: BaisFile[]; failures: BaisLoadFailure[] };
+
+// The single loader for a .bais/issues directory — every other read path is
+// expressed in terms of this one, so "what counts as a valid issue" is decided
+// in exactly one place.
+//
+// Parse failures are returned, never swallowed and never faked. The previous
+// behaviour synthesised `{status: "Open", kind: "Proposal", body: <raw text>}`
+// from an unparseable file, which meant a corrupt or half-written .toml showed
+// up as ready work: readyBaisIssues would hand it to an agent, and any edges it
+// declared were dropped, so it could also unblock issues it was meant to block.
+export async function loadBaisIssues(dir?: string): Promise<BaisLoad> {
+	const issuesDir = issuesDirOrDefault(dir);
+	if (!existsSync(issuesDir)) return { issues: [], failures: [] };
 	const files = readdirSync(issuesDir).filter((f) => f.endsWith(".toml"));
-	const out: BaisFile[] = [];
+	const issues: BaisFile[] = [];
+	const failures: BaisLoadFailure[] = [];
 	for (const f of files) {
-		const text = readFileSync(join(issuesDir, f), "utf8");
 		try {
-			const parsed = await validateViaBaisBaml(text);
-			out.push(parsed);
-		} catch {
-			// Fallback: minimal front-matter parse for non-BAIS-valid files
-			// (keeps `bi bais list` useful even if bais's BAML parser is stricter).
-			const id = f.replace(/\.toml$/, "");
-			out.push({
-				issue: {
-					id,
-					title: f,
-					status: "Open",
-					kind: "Proposal",
-					area: null,
-					severity: null,
-					source: null,
-					body: text,
-				},
-				edges: [],
-			});
+			const text = readFileSync(join(issuesDir, f), "utf8");
+			issues.push(await validateViaBaisBaml(text));
+		} catch (e: any) {
+			failures.push({ file: f, error: String(e?.message ?? e) });
 		}
 	}
-	return out;
+	return { issues, failures };
 }
 
-export async function readyBaisIssues(dir?: string): Promise<BaisFile[]> {
-	const all = await listBaisIssues(dir);
-	// BAML's ready_issues is (issues, edges) where blocked = incoming Blocks from non-Done/Dropped.
-	// Mirror it in TS so `bi bais ready` works without a BAML call; for provable path,
-	// call bais's BAML ready_issues via its SDK when available.
+// Valid issues only. Callers that need to know about unparseable files (the CLI
+// and the bais_check/bais_list tools) use loadBaisIssues directly — a silent
+// short list is better than a fabricated issue, but it is still worth surfacing.
+export async function listBaisIssues(dir?: string): Promise<BaisFile[]> {
+	return (await loadBaisIssues(dir)).issues;
+}
+
+// Mirror of BAML `ready_issues` / `is_blocked` (bais/baml_src/main.baml).
+//
+// Deliberately a hand-mirror rather than a delegation: calling bais's BAML
+// `ready_issues` across FFI returns silently wrong results today. An enum nested
+// in a class field (Issue.status, Edge.kind) is encoded as a bare string on the
+// inbound path, so inside the VM every `==` against an enum literal evaluates
+// false and every `!=` true — `ready_issues` comes back empty and `is_blocked`
+// always false, with no error raised. proposals/05 covers the direct-parameter
+// form of the same encode gap (which at least panics). Until that is fixed BAML
+// owns the *definition*, proved by `baml test`, and this mirrors it — keep the
+// two in step.
+//
+// Ready = Open, and no Blocks edge points at it from an issue that is neither
+// Done nor Dropped. A Blocks edge naming an id we cannot see (cross-project
+// edge, typo, directory not loaded) is unresolvable and blocks: we cannot prove
+// the blocker is closed, so we do not hand the node out as work. The previous
+// behaviour skipped such edges, which silently turned a dangling blocker into a
+// ready issue. A typo'd edge therefore parks until fixed — `bais check` reports
+// it as Missing so the park is loud, not silent.
+export function filterReadyIssues(all: BaisFile[]): BaisFile[] {
 	const issues = all.map((f) => f.issue);
 	const edges = all.flatMap((f) => f.edges);
+	const byId = new Map(issues.map((i) => [i.id, i]));
 	const blocked = new Set<string>();
 	for (const e of edges) {
-		if (e.kind === "Blocks") {
-			const blocker = issues.find((i) => i.id === e.from);
-			if (blocker && blocker.status !== "Done" && blocker.status !== "Dropped") {
-				blocked.add(e.to);
-			}
+		if (e.kind !== "Blocks") continue;
+		const blocker = byId.get(e.from);
+		if (!blocker || (blocker.status !== "Done" && blocker.status !== "Dropped")) {
+			blocked.add(e.to);
 		}
 	}
 	return all.filter((f) => f.issue.status === "Open" && !blocked.has(f.issue.id));
+}
+
+export async function readyBaisIssues(dir?: string): Promise<BaisFile[]> {
+	return filterReadyIssues(await listBaisIssues(dir));
 }
 
 function nextBaisId(dir: string, prefix = "bi"): string {
@@ -150,28 +197,16 @@ function nextBaisId(dir: string, prefix = "bi"): string {
 	return `${prefix}#${n}`;
 }
 
+// Same rule as validateViaBaisBaml: a throw from serializeBaisFile is a real
+// error about `file` and propagates. The hand-rolled fallback below is only for
+// the case where bais itself is not built.
 async function serializeViaBaisBaml(file: BaisFile): Promise<string> {
-	const { pathToFileURL } = await import("node:url");
-	const candidates = [
-		join(resolve(process.cwd(), "../bais"), "dist", "src", "toml.js"),
-		join(resolve(process.cwd(), "../bais"), "src", "toml.ts"),
-		join(resolve(process.cwd(), "../../bais"), "dist", "src", "toml.js"),
-		resolve(join(resolve(process.cwd(), "bais"), "dist", "src", "toml.js")),
-		resolve(join(resolve(process.cwd(), "..", "bais"), "dist", "src", "toml.js")),
-	];
-	for (const p of candidates) {
-		if (!existsSync(p)) continue;
-		try {
-			const url = pathToFileURL(p).href;
-			const mod = await (Function("u", "return import(u)") as any)(url);
-			if (mod?.serializeBaisFile) return (await mod.serializeBaisFile(file)) as string;
-		} catch {}
-	}
 	try {
-		const spec = "../../../bais/dist/src/toml.js";
-		const mod = await (Function("s", "return import(s)") as any)(spec);
+		const mod = await loadBaisTomlModule();
 		if (mod?.serializeBaisFile) return (await mod.serializeBaisFile(file)) as string;
-	} catch {}
+	} catch (e: any) {
+		if (!String(e?.message ?? e).startsWith("BAIS parser not found")) throw e;
+	}
 	// fallback: minimal TOML (still valid per BAIS.md, but BAML is preferred)
 	const i = file.issue;
 	let out = `id = "${i.id}"\ntitle = "${i.title.replace(/"/g, '\\"')}"\nstatus = "${i.status}"\nkind = "${i.kind}"\n`;
@@ -197,7 +232,9 @@ export async function createBaisIssue(opts: {
 	const issuesDir = existsSync(dir) ? dir : join(process.cwd(), "bi/.bais/issues");
 	if (!existsSync(issuesDir)) mkdirSync(issuesDir, { recursive: true });
 	const targetDir = existsSync(dir) ? dir : issuesDir;
-	const id = nextBaisId(targetDir);
+	// New ids carry the owning project's scope (bi#11 in bi, tt#01 in tt) —
+	// a hardcoded "bi" prefix would mis-scope every other project's issues.
+	const id = nextBaisId(targetDir, baisProjectName(targetDir));
 	const file: BaisFile = {
 		issue: {
 			id,
@@ -233,22 +270,114 @@ export async function moveBaisIssue(id: string, status: string, dir?: string): P
 	return file;
 }
 
-export async function checkBaisIssues(dir?: string): Promise<{ ok: BaisFile[]; bad: { file: string; error: string }[] }> {
-	const issuesDir = dir ?? resolveIssuesDir() ?? join(process.cwd(), "bi/.bais/issues");
-	if (!existsSync(issuesDir)) return { ok: [], bad: [] };
-	const files = readdirSync(issuesDir).filter((f) => f.endsWith(".toml"));
-	const ok: BaisFile[] = [];
-	const bad: { file: string; error: string }[] = [];
-	for (const f of files) {
-		const text = readFileSync(join(issuesDir, f), "utf8");
+// Directory scope of an id: "bi#04" -> "bi". An id with no "#" has no scope.
+// Mirror of BAML id_project.
+function idProject(id: string): string {
+	const i = id.indexOf("#");
+	return i === -1 ? "" : id.slice(0, i);
+}
+
+// The project that owns a .bais directory, from .bais/config.toml
+// (`project = "bi"`), falling back to the directory containing .bais — the
+// layout every project here uses. Only this one key is read, so a regex is
+// enough; routing config.toml through the BAML parser would mean forcing it
+// into the Issue shape it deliberately is not.
+function baisProjectName(issuesDir: string): string {
+	const cfg = join(resolve(issuesDir, ".."), "config.toml");
+	if (existsSync(cfg)) {
 		try {
-			const file = await validateViaBaisBaml(text);
-			ok.push(file);
-		} catch (e: any) {
-			bad.push({ file: f, error: String(e?.message ?? e) });
+			const m = readFileSync(cfg, "utf8").match(/^\s*project\s*=\s*"([^"]*)"/m);
+			if (m) return m[1];
+		} catch {}
+	}
+	return basename(resolve(issuesDir, "..", ".."));
+}
+
+export type BaisRefStatus = "Missing" | "External";
+export type BaisDanglingRef = {
+	declaredBy: string ; // id of the issue whose file declared the edge
+	from: string;
+	to: string;
+	kind: string;
+	id: string;
+	side: "from" | "to";
+	status: BaisRefStatus;
+};
+
+// Mirror of BAML `dangling_edge_refs` (bais/baml_src/main.baml) — a mirror for
+// the same FFI reason as filterReadyIssues above (proposals/05: enums nested
+// in class fields compare silently-false inbound). BAML owns the rule and
+// proves it with `baml test`; this reproduces it. Keep the two in step.
+//
+// Per-file parsing cannot catch these: an edge naming an id that does not exist
+// is only visible once the whole directory is loaded. It matters because
+// is_blocked treats an unresolvable blocker as blocking, so an unreported typo
+// parks an issue indefinitely and silently.
+export function danglingRefsIn(issues: BaisFile[], project: string): BaisDanglingRef[] {
+	const known = new Set(issues.map((f) => f.issue.id));
+	const out: BaisDanglingRef[] = [];
+	for (const f of issues) {
+		for (const e of f.edges) {
+			for (const side of ["from", "to"] as const) {
+				const id = e[side];
+				if (known.has(id)) continue;
+				const scope = idProject(id);
+				out.push({
+					declaredBy: f.issue.id,
+					from: e.from,
+					to: e.to,
+					kind: e.kind,
+					id,
+					side,
+					// An unscoped id is Missing, not excused as another project's.
+					status: scope !== "" && scope !== project ? "External" : "Missing",
+				});
+			}
 		}
 	}
-	return { ok, bad };
+	return out;
+}
+
+export async function danglingBaisRefs(dir?: string): Promise<BaisDanglingRef[]> {
+	const issuesDir = issuesDirOrDefault(dir);
+	if (!existsSync(issuesDir)) return [];
+	const { issues } = await loadBaisIssues(issuesDir);
+	return danglingRefsIn(issues, baisProjectName(issuesDir));
+}
+
+// Mirror of BAML `cyclic_ids` (bais/baml_src/main.baml) — Kahn's algorithm
+// keeping the leftovers: whatever cannot be dropped is in a dependency cycle
+// or downstream of one. Same mirror rationale as readyBaisIssues above.
+function precedesEdge(e: BaisEdge, before: string, after: string): boolean {
+	if (e.kind === "Blocks") return e.from === before && e.to === after;
+	if (e.kind === "DependsOn") return e.to === before && e.from === after;
+	return false;
+}
+
+export function cyclicIssueIds(all: BaisFile[]): string[] {
+	const edges = all.flatMap((f) => f.edges);
+	let remaining = all.map((f) => f.issue.id);
+	for (;;) {
+		const next = remaining.filter((id) => edges.some((e) => remaining.some((other) => precedesEdge(e, other, id))));
+		if (next.length === remaining.length) return next;
+		remaining = next;
+	}
+}
+
+// Same traversal as loadBaisIssues, named for the CLI's ok/bad reporting, plus
+// the graph-level passes that per-file validation cannot do (dangling refs,
+// cycles). Shape matches `bais check --json` plus the bais SPEC §4.3 contract.
+export async function checkBaisIssues(
+	dir?: string,
+): Promise<{ ok: BaisFile[]; bad: BaisLoadFailure[]; dangling: BaisDanglingRef[]; cycles: string[] }> {
+	const issuesDir = issuesDirOrDefault(dir);
+	const { issues, failures } = await loadBaisIssues(issuesDir);
+	return {
+		ok: issues,
+		bad: failures,
+		dangling: danglingRefsIn(issues, baisProjectName(issuesDir)),
+		cycles: cyclicIssueIds(issues),
+	};
 }
 
 export async function graphBaisIssues(fromId: string, dir?: string): Promise<BaisFile[]> {

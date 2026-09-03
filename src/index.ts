@@ -25,12 +25,19 @@ export { listTools, getTool, type ToolSpec as AgentToolSpec } from "./tools.js";
 export { TurnFailure } from "../baml_sdk/index.js";
 export {
 	listBaisIssues,
+	loadBaisIssues,
 	readyBaisIssues,
 	createBaisIssue,
 	moveBaisIssue,
 	checkBaisIssues,
+	danglingBaisRefs,
+	danglingRefsIn,
 	graphBaisIssues,
 	type BaisIssue,
 	type BaisEdge,
 	type BaisFile,
+	type BaisLoad,
+	type BaisLoadFailure,
+	type BaisDanglingRef,
+	type BaisRefStatus,
 } from "./bais.js";
