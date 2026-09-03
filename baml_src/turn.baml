@@ -164,11 +164,12 @@ function build_toolbox(specs: ToolSpec[]) -> ai.tools.Toolbox {
     )
 }
 
-// Auth resolution (bi#13, mirrors pi's envApiKeyAuth precedence minus the
-// stored-credential layer): an explicit key wins; else a late-bound
-// baml.env.Ref to the catalog's auth_env is read per request (the Ref
-// carries the var NAME only, never the secret); else null and the client
-// falls back to its own canonical env var.
+// Auth resolution (bi#13 host precheck, bi#19 full chain): the api_key
+// slot carries the ResolveAuth winner (explicit --api-key ?? stored
+// ~/.bi/auth.json secret, decided in auth.baml). A non-null key wins;
+// else a late-bound baml.env.Ref to the catalog's auth_env is read per
+// request (the Ref carries the var NAME only, never the secret); else
+// null and the client falls back to its own canonical env var.
 function resolve_credential(provider: string, api_key: string?) -> ai.Credential? {
     match (api_key) {
         null => {

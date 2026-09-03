@@ -85,4 +85,36 @@ testset "auth credential policy (bi#18)" {
         assert.equal(CredentialStatusLine(info, true), "groq (api_key): set");
         assert.equal(CredentialStatusLine(info, false), "groq (api_key): missing secret")
     }
+
+    test "ResolveAuth override beats stored beats env" {
+        let d = ResolveAuth("groq", "flag-key", "stored-key", true);
+        assert.equal(d.source, "override");
+        assert.equal(d.key, "flag-key")
+    }
+
+    test "ResolveAuth stored owns the provider over env" {
+        let d = ResolveAuth("groq", null, "stored-key", true);
+        assert.equal(d.source, "stored");
+        assert.equal(d.key, "stored-key")
+    }
+
+    test "ResolveAuth env only when nothing stored" {
+        let d = ResolveAuth("groq", null, null, true);
+        assert.equal(d.source, "env");
+        assert.is_true(d.key is null)
+    }
+
+    test "ResolveAuth none when nothing anywhere" {
+        let d = ResolveAuth("groq", null, null, false);
+        assert.equal(d.source, "none");
+        assert.is_true(d.key is null)
+    }
+
+    test "ResolveAuth none for unknown provider despite env presence" {
+        // has_env is host-observed; the catalog recheck keeps an unknown
+        // id from resolving to "env" (never a misleading source).
+        let d = ResolveAuth("bogus", null, null, true);
+        assert.equal(d.source, "none");
+        assert.is_true(d.key is null)
+    }
 }

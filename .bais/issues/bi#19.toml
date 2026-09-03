@@ -1,6 +1,6 @@
 id = "bi#19"
 title = "Auth resolution precedence (stored owns provider, env fallback)"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "providers/auth"
 body = """

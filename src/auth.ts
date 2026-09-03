@@ -13,32 +13,47 @@ import { dirname, join } from "node:path";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 
 import {
+	AuthDecision,
 	Credential,
 	CredentialInfo,
 	MissingKeyMessage_async,
 	ProviderAuthEnv_async,
+	ResolveAuth_async,
 	TurnFailure,
+	ValidateCredential_async,
 } from "../baml_sdk/index.js";
 
-export { Credential, CredentialInfo } from "../baml_sdk/index.js";
+export { AuthDecision, Credential, CredentialInfo } from "../baml_sdk/index.js";
 
-export async function missingKeyFailure(provider: string, apiKey?: string | null): Promise<TurnFailure | null> {
-	if (apiKey) return null;
+// bi#19: pi resolveProviderAuth precedence over host-observed inputs. A
+// stored credential owns the provider: the canonical env var's PRESENCE
+// (never its value — env secrets stay late-bound in BAML via
+// baml.env.ref) is consulted only when nothing is stored. Storage
+// failures propagate; a corrupt store must never silently fall back.
+export async function getAuth(provider: string, apiKey?: string | null): Promise<AuthDecision> {
+	const stored = await readCredential(provider);
+	const valid = stored && (await ValidateCredential_async(stored)) ? stored : null;
+	// bi#22 owns expiry-aware refresh: until then, a valid stored
+	// credential without a usable secret (hand-written oauth without
+	// access) falls through the chain below. No UI can produce that
+	// state yet; refresh-or-fail closes it.
+	const storedKey = valid ? (valid.key ?? valid.access ?? null) : null;
 	const v = await ProviderAuthEnv_async(provider);
-	if (!v) {
-		// bi#25: unknown provider fails fast too, naming no misleading var.
-		return new TurnFailure({
-			kind: "invalid_argument",
-			message: await MissingKeyMessage_async(provider),
-			retry_safe: false,
-		});
-	}
-	if (process.env[v]) return null;
+	const hasEnv = !!v && !!process.env[v];
+	return ResolveAuth_async(provider, apiKey ?? null, storedKey, hasEnv);
+}
+
+export async function authFailure(provider: string, auth: AuthDecision): Promise<TurnFailure | null> {
+	if (auth.source != "none") return null;
 	return new TurnFailure({
 		kind: "invalid_argument",
 		message: await MissingKeyMessage_async(provider),
 		retry_safe: false,
 	});
+}
+
+export async function missingKeyFailure(provider: string, apiKey?: string | null): Promise<TurnFailure | null> {
+	return authFailure(provider, await getAuth(provider, apiKey));
 }
 
 // --- Credential store (bi#18) ---

@@ -1,7 +1,8 @@
 // Thin host wrapper for image generation via openai.ImageClient.
 // Mirrors pi/packages/ai's images.ts (openai/gpt-image-1).
 
-import { GenerateImage_async, ListImageModels_async, type TurnFailure, ai } from "../baml_sdk/index.js";
+import { GenerateImage_async, GetImageModel_async, ListImageModels_async, type TurnFailure, ai } from "../baml_sdk/index.js";
+import { authFailure, getAuth } from "./auth.js";
 
 export interface ImageModel {
 	id: string;
@@ -23,9 +24,18 @@ export interface GenerateImageOptions {
 }
 
 export async function generateImage(prompt: string, options: GenerateImageOptions = {}): Promise<ai.ModelTurn | TurnFailure> {
+	const model = options.model ?? "gpt-image-1";
+	// bi#19: image models carry their provider in the catalog; unknown
+	// models fall back to openai so GenerateImage keeps its own
+	// unknown-model error (host never invents a provider).
+	const entry = await GetImageModel_async(model);
+	const provider = entry?.provider ?? "openai";
+	const auth = await getAuth(provider, options.apiKey);
+	const authErr = await authFailure(provider, auth);
+	if (authErr) return authErr;
 	return GenerateImage_async(prompt, {
-		model: options.model ?? "gpt-image-1",
-		api_key: options.apiKey ?? null,
+		model,
+		api_key: auth.key,
 		base_url: options.baseUrl ?? null,
 		n: options.n ?? null,
 		size: options.size ?? null,

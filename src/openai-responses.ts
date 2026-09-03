@@ -8,7 +8,7 @@
 import { SendTurn_async, StreamTurn_async, type TurnFailure, ai } from "../baml_sdk/index.js";
 import { toHistory, toToolSpecs, type ConversationTurn, type ToolSpec } from "./conversation.js";
 import { callWithRetry } from "./retry.js";
-import { missingKeyFailure } from "./auth.js";
+import { authFailure, getAuth } from "./auth.js";
 
 const PROVIDER = "openai_responses";
 
@@ -25,11 +25,12 @@ export async function sendOpenAIResponsesMessage(
 	text: string,
 	options: OpenAIResponsesCallOptions,
 ): Promise<ai.ModelTurn | TurnFailure> {
-	const authErr = await missingKeyFailure(PROVIDER, options.apiKey);
+	const auth = await getAuth(PROVIDER, options.apiKey);
+	const authErr = await authFailure(PROVIDER, auth);
 	if (authErr) return authErr;
 	const history = await toHistory(options.history ?? []);
 	const tools = toToolSpecs(options.tools ?? []);
-	return callWithRetry("openai-responses", () => SendTurn_async(PROVIDER, options.model, options.apiKey, text, history, tools, {
+	return callWithRetry("openai-responses", () => SendTurn_async(PROVIDER, options.model, auth.key, text, history, tools, {
 		base_url: options.baseUrl ?? null,
 		temperature: options.temperature ?? null,
 	}));
@@ -39,11 +40,12 @@ export async function streamOpenAIResponsesMessage(
 	text: string,
 	options: OpenAIResponsesCallOptions,
 ): Promise<ai.ModelTurn | TurnFailure> {
-	const authErr = await missingKeyFailure(PROVIDER, options.apiKey);
+	const auth = await getAuth(PROVIDER, options.apiKey);
+	const authErr = await authFailure(PROVIDER, auth);
 	if (authErr) return authErr;
 	const history = await toHistory(options.history ?? []);
 	const tools = toToolSpecs(options.tools ?? []);
-	return callWithRetry("openai-responses", () => StreamTurn_async(PROVIDER, options.model, options.apiKey, text, history, tools, {
+	return callWithRetry("openai-responses", () => StreamTurn_async(PROVIDER, options.model, auth.key, text, history, tools, {
 		base_url: options.baseUrl ?? null,
 		temperature: options.temperature ?? null,
 	}));

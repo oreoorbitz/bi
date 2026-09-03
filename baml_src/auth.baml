@@ -58,3 +58,37 @@ function CredentialStatusLine(info: CredentialInfo, has_secret: bool) -> string 
     };
     `${info.provider_id} (${info.type}): ${state}`
 }
+
+// bi#19: auth resolution (pi `auth/resolve.ts` precedence, minus refresh).
+// A stored credential OWNS the provider: ambient/env is consulted only
+// when nothing is stored, and there is no silent env fallback for a
+// credential type without a matching handler. The host supplies the
+// inputs (explicit flag, stored secret from ~/.bi/auth.json, canonical
+// env-var PRESENCE only — never the value) and executes the decision by
+// passing `key` as SendTurn's api_key slot; a null key with source "env"
+// stays late-bound via baml.env.ref in resolve_credential (turn.baml).
+class AuthDecision {
+    source: string @description("\"override\" | \"stored\" | \"env\" | \"none\""),
+    key: string?,
+}
+
+function ResolveAuth(
+    provider: string,
+    override_key: string?,
+    stored_key: string?,
+    has_env: bool,
+) -> AuthDecision {
+    match (override_key) {
+        let k: string => AuthDecision { source: "override", key: k },
+        null => match (stored_key) {
+            let k: string => AuthDecision { source: "stored", key: k },
+            null => {
+                if (has_env && ProviderAuthEnv(provider) is null == false) {
+                    AuthDecision { source: "env", key: null }
+                } else {
+                    AuthDecision { source: "none", key: null }
+                }
+            },
+        },
+    }
+}
