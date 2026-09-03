@@ -6,7 +6,7 @@
 // (bais/src/toml.ts → bais/baml_src/ns_toml/toml.baml), which keeps BAML
 // as the validator even without a BAML-level import.
 
-import { readdirSync, readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
 export type BaisIssue = {
@@ -178,8 +178,97 @@ export function filterReadyIssues(all: BaisFile[]): BaisFile[] {
 	return all.filter((f) => f.issue.status === "Open" && !blocked.has(f.issue.id));
 }
 
+// bais/dist/src/store.js, resolved the same way as the TOML wrapper above:
+// dynamic import hidden from tsc, memoised, retryable when bais is built
+// later. The store is what makes ready lease-aware (hub claims land there).
+let baisStoreModule: Promise<any> | null = null;
+function loadBaisStoreModule(): Promise<any> {
+	if (baisStoreModule) return baisStoreModule;
+	baisStoreModule = (async () => {
+		const { pathToFileURL } = await import("node:url");
+		const candidates = [
+			join(resolve(process.cwd(), "../bais"), "dist", "src", "store.js"),
+			join(resolve(process.cwd(), "../../bais"), "dist", "src", "store.js"),
+			resolve(join(resolve(process.cwd(), "bais"), "dist", "src", "store.js")),
+			resolve(join(resolve(process.cwd(), "..", "bais"), "dist", "src", "store.js")),
+		];
+		for (const p of candidates) {
+			if (!existsSync(p)) continue;
+			try {
+				const mod = await (Function("u", "return import(u)") as any)(pathToFileURL(p).href);
+				if (mod?.storeReady) return mod;
+			} catch {}
+		}
+		baisStoreModule = null; // let a later call retry once bais is built
+		throw new Error(`BAIS store not found — tried ${candidates.join(", ")}`);
+	})();
+	return baisStoreModule;
+}
+
+function storeDbFor(issuesDir: string): string | null {
+	const p = join(resolve(issuesDir, ".."), "store.db");
+	return existsSync(p) ? p : null;
+}
+
+// Where ready reads from: the SQLite projection when one exists and bais
+// is built, else the TOML scan. Exported so the CLI can say which —
+// "empty" and "not synced" must stay distinguishable.
+export async function baisReadSource(dir?: string): Promise<"store" | "scan"> {
+	const issuesDir = issuesDirOrDefault(dir);
+	if (!storeDbFor(issuesDir)) return "scan";
+	try {
+		await loadBaisStoreModule();
+		return "store";
+	} catch {
+		return "scan";
+	}
+}
+
+// True when any issue file is newer than the store build: the store is a
+// cache and TOML is truth until per-actor logs land (Phase 4), so a stale
+// store falls back to the scan rather than serve a silently short list.
+function scanNewerThan(issuesDir: string, wallTs: string): boolean {
+	const wall = Date.parse(wallTs);
+	if (!Number.isFinite(wall)) return true;
+	let files: string[] = [];
+	try {
+		files = readdirSync(issuesDir).filter((f) => f.endsWith(".toml"));
+	} catch {
+		return true;
+	}
+	for (const f of files) {
+		try {
+			if (statSync(join(issuesDir, f)).mtimeMs > wall) return true;
+		} catch {}
+	}
+	return false;
+}
+
+// Projection-first ready: the store rule already excludes live leases and
+// unclosed blockers, so its id set IS the answer; joining the scanned files
+// keeps edges (bais_ready serializes whole BaisFiles) and drops files the
+// parser rejects. No store, no built bais, unreadable store, or a store
+// older than the scan → the hand-mirror over the TOML files.
 export async function readyBaisIssues(dir?: string): Promise<BaisFile[]> {
-	return filterReadyIssues(await listBaisIssues(dir));
+	const scan = async (): Promise<BaisFile[]> => filterReadyIssues(await listBaisIssues(dir));
+	const issuesDir = issuesDirOrDefault(dir);
+	if (!storeDbFor(issuesDir)) return scan();
+	let mod: any;
+	try {
+		mod = await loadBaisStoreModule();
+	} catch {
+		return scan();
+	}
+	let store: { ready: { entity: string }[]; as_of: { wall_ts: string } };
+	try {
+		store = mod.storeReady(issuesDir);
+	} catch {
+		return scan();
+	}
+	if (scanNewerThan(issuesDir, store.as_of.wall_ts)) return scan();
+	const ids = new Set(store.ready.map((t) => t.entity));
+	const { issues } = await loadBaisIssues(issuesDir);
+	return issues.filter((f) => ids.has(f.issue.id));
 }
 
 function nextBaisId(dir: string, prefix = "bi"): string {
