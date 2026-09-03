@@ -1,0 +1,7 @@
+id = "bi#16"
+title = "Retry transient failures + AbortController through the turn loop"
+status = "Open"
+kind = "Feat"
+area = "reliability"
+body = """
+bi surfaces retry_safe on TurnFailure but never retries, and threads no abort signal: every transient 429/5xx fails the run, and Ctrl-C mid-turn kills the process instead of cancelling the request. pi has utils/retry.ts, provider-retry.ts, abort.ts, abort-signals.ts. BAML owns the retry policy shape (attempts/backoff/jitter, retry_safe-gated, 429/5xx only) with baml tests; host owns timers + fetch + signal. CLI: Ctrl-C mid-turn cancels the in-flight request and keeps the REPL alive with transcript intact. Acceptance: offline retry-policy tests, live 429-retry observed once, Ctrl-C mid-turn returns to bi[N]> prompt."""

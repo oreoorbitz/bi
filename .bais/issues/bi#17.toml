@@ -1,0 +1,7 @@
+id = "bi#17"
+title = "Auth beyond raw keys + images model registry"
+status = "Open"
+kind = "Feat"
+area = "providers/auth"
+body = """
+bi#13's auth half never landed: bi passes raw API keys only. pi has oauth.ts, bun-oauth, env-api-keys.ts, auth-storage, runtime-credentials. Add env-api-keys mapping per provider now; add the OAuth flow when the second OAuth-requiring provider lands (xai already advertises lazyOAuth, see provider.baml). Images: bi covers openai/gpt-image-1 only; pi has images-api-registry + image-models catalog. Acceptance: per-provider env-key mapping with missing-key precheck naming the var (extends bi#13 precheck), OAuth for xai or copilot, image catalog entries with offline plumbing tests."""

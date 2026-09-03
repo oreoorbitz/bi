@@ -1,0 +1,7 @@
+id = "bi#15"
+title = "Port remaining pi provider backends (batch 4)"
+status = "Open"
+kind = "Feat"
+area = "providers"
+body = """
+pi ships ~35 provider backends; bi wires 19 (bi#13). Still missing: amazon-bedrock, azure-openai-responses, cloudflare-ai-gateway, cloudflare-workers-ai, github-copilot, google-vertex, openai-codex, opencode, opencode-go, radius, vercel-ai-gateway, xiaomi (+ams/cn/sgp token plans), ant-ling, CN variants (minimax-cn, moonshotai-cn, qwen-token-plan-cn/individual, zai-coding-cn), openrouter-images. Same harness as batches 1-3: string provider tag + composer resolve, one backend + catalog entries + tests each. Acceptance per bi#13: baml check green, turn-plumbing test reaching the wire (offline, classified failure), catalog entry, bi run --provider <name> dispatches. Non-goals: provider SDK deps (fetch only, thin-host rule); full pi CN-variant matrix only if cheap."""

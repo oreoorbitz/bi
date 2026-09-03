@@ -432,10 +432,11 @@ async function main(): Promise<void> {
 		// bi#14 run modes: --mode json emits one JSON RunEvent per line on
 		// stdout (schema in events.baml, BAML-validated); --print/-p emits
 		// final text only. Default prints human-readable text + tool lines.
-		// RPC stays out of scope (see port-gap report) — rejected explicitly.
+		// RPC stays out of scope by design (single-binary agent, no
+		// client/server/protocol) — rejected explicitly.
 		const mode = getFlag(args, "--mode");
 		if (mode === "rpc") {
-			console.error("bi run --mode rpc is out of scope (no client/server/protocol — see port-gap report)");
+			console.error("bi run --mode rpc is out of scope by design (no client/server/protocol — bi is a single-binary agent)");
 			process.exit(1);
 		}
 		if (mode === "json") {
