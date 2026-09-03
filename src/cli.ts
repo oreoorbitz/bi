@@ -62,55 +62,126 @@ async function warnBaisFailures(): Promise<void> {
 
 // Slash dispatch (bi#12): /builtin + /skill-name in the interactive prompt.
 // Skill slashes expand the SKILL.md body into the prompt (pi runs skill
-// content as the prompt); builtins execute directly. Returns true when the
-// line was a slash command (handled), false for ordinary prompts.
-async function handleSlash(line: string, skills: Skill[]): Promise<boolean> {
+// content as the prompt); builtins execute directly. "quit" ends the REPL,
+// "handled" consumed the line, "none" is an ordinary prompt.
+async function handleSlash(line: string, skills: Skill[]): Promise<"quit" | "handled" | "none"> {
 	// Decision (BAML-backed) lives in skills.ts; this keeps only effects.
 	const t = await resolveSlash(line, skills);
-	if (t.kind === "none") return false;
+	if (t.kind === "none") return "none";
 	if (t.kind === "unknown") {
 		console.error(`unknown slash /${t.word} — /help lists commands`);
-		return true;
+		return "handled";
 	}
 	if (t.kind === "builtin") {
-		if (t.name === "quit") process.exit(0);
+		if (t.name === "quit") return "quit";
 		if (t.name === "help") {
 			const builtins = await builtin_slash_commands_async();
 			console.log("slash commands:");
 			for (const b of builtins) console.log(`  /${b.name} — ${b.description}`);
 			for (const s of skills) console.log(`  /${s.name} — ${s.description} (skill)`);
-			return true;
+			return "handled";
 		}
 		if (t.name === "reload") {
 			const fresh = await loadSkills();
 			console.error(`[bi] reloaded ${fresh.skills.length} skill(s)`);
-			return true;
+			return "handled";
 		}
 		if (t.name === "compact") {
-			console.error("[bi] nothing to compact — the interactive prompt is single-shot (history lives inside one runBiLoop call)");
-			return true;
+			console.error("[bi] per-run compaction already ran inside each turn (history is never truncated without a summary)");
+			return "handled";
 		}
-		return true;
+		return "handled";
 	}
-	await runOnePrompt(`${skillBody(t.skill)}\n\n${t.args}`.trim());
-	return true;
+	const r = await runOnePrompt(`${skillBody(t.skill)}\n\n${t.args}`.trim(), skills);
+	return r === "quit" ? "quit" : "handled";
 }
 
-async function runOnePrompt(q: string, skills: Skill[] = []): Promise<void> {
-	if (await handleSlash(q, skills)) return;
-	const sessFile = createSessionFile({ cwd: process.cwd() });
-	console.error(`[bi] new session ${sessFile}`);
+// One prompt through the loop. Returns the full message history (prior +
+// this turn) so the REPL threads conversation across turns, or "quit".
+async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []): Promise<any[] | "quit"> {
+	const slash = await handleSlash(q, skills);
+	if (slash === "quit") return "quit";
+	if (slash === "handled") return history;
 	const skillsSection = skills.length ? `\n\n${await formatSkills(skills)}` : "";
 	const fullPrompt = q + skillsSection + `\n\n[BAIS ready]\n${(await readyBaisIssues()).map((f) => `- ${f.issue.id} ${f.issue.title}`).join("\n")}`;
 	// BAML loop validation — runBiLoop wraps runAgent with LoopContext (agent_loop.baml).
 	// Same first-class tools as `bi run` so the interactive agent manages .bais too.
+	// The raw user line (not the injected context) joins history — fresh BAIS
+	// context is re-injected every turn, never baked into the transcript.
+	const withUser = [...history, { role: "user", text: q }];
 	let loopTools: any[] = [];
 	try {
 		loopTools = await listTools();
 	} catch {}
-	const result = await runBiLoop(fullPrompt, { provider: "anthropic", model: "claude-haiku-4-5", maxTurns: 5, onEvent: (e) => console.error(`[loop] ${e}`), tools: loopTools, toolHandler: async (name, args) => handleTool(name, args) });
-	if (result.failure) console.error(`TurnFailure ${result.failure.message}`);
-	else for (const m of result.messages) if ((m as any).role === "assistant") console.log((m as any).text ?? JSON.stringify((m as any).content));
+	const result = await runBiLoop(fullPrompt, { provider: "anthropic", model: "claude-haiku-4-5", maxTurns: 5, onEvent: (e) => console.error(`[loop] ${e}`), tools: loopTools, toolHandler: async (name, args) => handleTool(name, args), history });
+	if (result.failure) {
+		console.error(`TurnFailure ${result.failure.message}`);
+		return withUser;
+	}
+	for (const m of result.messages) if ((m as any).role === "assistant") console.log((m as any).text ?? JSON.stringify((m as any).content));
+	return result.messages;
+}
+
+// One readline question. "\x03" sentinel = Ctrl-C at the prompt (hint,
+// keep looping); rejects with EOF when stdin closes (Ctrl-D / piped input
+// ends) so the REPL exits.
+async function readReplLine(prompt: string): Promise<string> {
+	const rl = await import("node:readline");
+	const r = rl.createInterface({ input: process.stdin, output: process.stdout });
+	return new Promise<string>((resolve, reject) => {
+		let settled = false;
+		r.on("SIGINT", () => {
+			if (settled) return;
+			settled = true;
+			r.close();
+			resolve("\x03");
+		});
+		r.on("close", () => {
+			if (settled) return;
+			settled = true;
+			reject(new Error("EOF"));
+		});
+		r.question(prompt, (a) => {
+			if (settled) return;
+			settled = true;
+			r.close();
+			resolve(a);
+		});
+	});
+}
+
+// Persistent REPL: one session file, conversation history threaded across
+// turns, /quit or Ctrl-D to leave, Ctrl-C at the prompt just re-prompts.
+// Ctrl-C mid-turn aborts the process (same as `bi run`) — the session file
+// and printed transcript remain.
+async function repl(skills: Skill[]): Promise<void> {
+	const sessFile = createSessionFile({ cwd: process.cwd() });
+	console.error(`[bi] new session ${sessFile}`);
+	let history: any[] = [];
+	let turn = 0;
+	for (;;) {
+		let line: string;
+		try {
+			line = await readReplLine(`bi[${turn}]> `);
+		} catch {
+			console.error("\n[bi] EOF — session kept at " + sessFile);
+			return;
+		}
+		if (line === "\x03" || !line.trim()) {
+			if (line === "\x03") console.error("(Ctrl-D or /quit to exit)");
+			continue;
+		}
+		const out = await runOnePrompt(line.trim(), skills, history);
+		if (out === "quit") {
+			console.error(`[bi] session kept at ${sessFile} (${history.length} messages)`);
+			return;
+		}
+		// Slash/empty lines return the same history — only real turns advance.
+		if (out !== history) {
+			history = out;
+			turn += 1;
+		}
+	}
 }
 
 async function main(): Promise<void> {
@@ -145,17 +216,13 @@ async function main(): Promise<void> {
 		// session hint — bi native .bi (not .pi), validated via BAML SessionHeader
 		console.log(`\nSessions: ${getBiSessionsDir()} (${listSessions().length} saved) — try \`bi --continue\` or \`bi run "hello"\``);
 		console.log("`bi --help` for commands, `bi bais new \"title\"` to add, `bi run \"prompt\"` to run agent");
-		// interactive skeleton: if tty, prompt once via BAML LoopState (full TUI lands next)
+		if (process.stdin.isTTY && process.stdout.isTTY) console.log("interactive REPL below — /help for slashes, /quit or Ctrl-D to leave");
+		// interactive REPL: persistent loop with cross-turn history (Ctrl-D or
+		// /quit to leave, Ctrl-C at the prompt re-prompts, Ctrl-C mid-turn aborts)
 		if (process.stdin.isTTY && process.stdout.isTTY && !hasFlag(args, "--print") && !hasFlag(args, "-p")) {
-			const rl = await import("node:readline");
-			const r = rl.createInterface({ input: process.stdin, output: process.stdout });
-			const q = await new Promise<string>((res) => r.question("bi> ", res));
-			r.close();
-			if (q.trim()) {
-				const { skills, diagnostics } = await loadSkills().catch(() => ({ skills: [], diagnostics: [] }));
-				for (const d of diagnostics) console.error(`[skills] ${d.file}: ${d.message}`);
-				await runOnePrompt(q.trim(), skills);
-			}
+			const { skills, diagnostics } = await loadSkills().catch(() => ({ skills: [], diagnostics: [] }));
+			for (const d of diagnostics) console.error(`[skills] ${d.file}: ${d.message}`);
+			await repl(skills);
 		}
 		process.exit(0);
 	}
