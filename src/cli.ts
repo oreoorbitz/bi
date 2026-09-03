@@ -9,7 +9,8 @@ import { getProvider, listProviders } from "./provider.js";
 import { runAgent } from "./agent.js";
 import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, moveBaisIssue, checkBaisIssues, graphBaisIssues } from "./bais.js";
 import { listTools, handleTool } from "./tools.js";
-import { parse_args, format_help, is_valid_thinking_level } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async } from "../baml_sdk/index.js";
+import { loadSkills, formatSkills, skillBody, resolveSlash, type Skill } from "./skills.js";
 import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow } from "./session.js";
 import { HostTui, renderReadyScreen } from "./tui.js";
 import { runBiLoop } from "./agent_loop.js";
@@ -58,6 +59,59 @@ async function warnBaisFailures(): Promise<void> {
 	);
 }
 
+// Slash dispatch (bi#12): /builtin + /skill-name in the interactive prompt.
+// Skill slashes expand the SKILL.md body into the prompt (pi runs skill
+// content as the prompt); builtins execute directly. Returns true when the
+// line was a slash command (handled), false for ordinary prompts.
+async function handleSlash(line: string, skills: Skill[]): Promise<boolean> {
+	// Decision (BAML-backed) lives in skills.ts; this keeps only effects.
+	const t = await resolveSlash(line, skills);
+	if (t.kind === "none") return false;
+	if (t.kind === "unknown") {
+		console.error(`unknown slash /${t.word} — /help lists commands`);
+		return true;
+	}
+	if (t.kind === "builtin") {
+		if (t.name === "quit") process.exit(0);
+		if (t.name === "help") {
+			const builtins = await builtin_slash_commands_async();
+			console.log("slash commands:");
+			for (const b of builtins) console.log(`  /${b.name} — ${b.description}`);
+			for (const s of skills) console.log(`  /${s.name} — ${s.description} (skill)`);
+			return true;
+		}
+		if (t.name === "reload") {
+			const fresh = await loadSkills();
+			console.error(`[bi] reloaded ${fresh.skills.length} skill(s)`);
+			return true;
+		}
+		if (t.name === "compact") {
+			console.error("[bi] nothing to compact — the interactive prompt is single-shot (history lives inside one runBiLoop call)");
+			return true;
+		}
+		return true;
+	}
+	await runOnePrompt(`${skillBody(t.skill)}\n\n${t.args}`.trim());
+	return true;
+}
+
+async function runOnePrompt(q: string, skills: Skill[] = []): Promise<void> {
+	if (await handleSlash(q, skills)) return;
+	const sessFile = createSessionFile({ cwd: process.cwd() });
+	console.error(`[bi] new session ${sessFile}`);
+	const skillsSection = skills.length ? `\n\n${await formatSkills(skills)}` : "";
+	const fullPrompt = q + skillsSection + `\n\n[BAIS ready]\n${(await readyBaisIssues()).map((f) => `- ${f.issue.id} ${f.issue.title}`).join("\n")}`;
+	// BAML loop validation — runBiLoop wraps runAgent with LoopContext (agent_loop.baml).
+	// Same first-class tools as `bi run` so the interactive agent manages .bais too.
+	let loopTools: any[] = [];
+	try {
+		loopTools = await listTools();
+	} catch {}
+	const result = await runBiLoop(fullPrompt, { provider: "anthropic", model: "claude-haiku-4-5", maxTurns: 5, onEvent: (e) => console.error(`[loop] ${e}`), tools: loopTools, toolHandler: async (name, args) => handleTool(name, args) });
+	if (result.failure) console.error(`TurnFailure ${result.failure.message}`);
+	else for (const m of result.messages) if ((m as any).role === "assistant") console.log((m as any).text ?? JSON.stringify((m as any).content));
+}
+
 async function main(): Promise<void> {
 	const args = process.argv.slice(2);
 	const cmd = args[0];
@@ -97,18 +151,9 @@ async function main(): Promise<void> {
 			const q = await new Promise<string>((res) => r.question("bi> ", res));
 			r.close();
 			if (q.trim()) {
-				const sessFile = createSessionFile({ cwd: process.cwd() });
-				console.error(`[bi] new session ${sessFile}`);
-				const fullPrompt = q.trim() + `\n\n[BAIS ready]\n${(await readyBaisIssues()).map((f) => `- ${f.issue.id} ${f.issue.title}`).join("\n")}`;
-				// BAML loop validation — runBiLoop wraps runAgent with LoopContext (agent_loop.baml).
-				// Same first-class tools as `bi run` so the interactive agent manages .bais too.
-				let loopTools: any[] = [];
-				try {
-					loopTools = await listTools();
-				} catch {}
-				const result = await runBiLoop(fullPrompt, { provider: "anthropic", model: "claude-haiku-4-5", maxTurns: 5, onEvent: (e) => console.error(`[loop] ${e}`), tools: loopTools, toolHandler: async (name, args) => handleTool(name, args) });
-				if (result.failure) console.error(`TurnFailure ${result.failure.message}`);
-				else for (const m of result.messages) if ((m as any).role === "assistant") console.log((m as any).text ?? JSON.stringify((m as any).content));
+				const { skills, diagnostics } = await loadSkills().catch(() => ({ skills: [], diagnostics: [] }));
+				for (const d of diagnostics) console.error(`[skills] ${d.file}: ${d.message}`);
+				await runOnePrompt(q.trim(), skills);
 			}
 		}
 		process.exit(0);
@@ -217,8 +262,23 @@ async function main(): Promise<void> {
 		} catch (e: any) {
 			console.error(`[bi] tool registry unavailable (${String(e?.message ?? e).split("\n")[0]}) — running tool-free`);
 		}
-		console.error(`bi run — provider=${provider} model=${model} prompt="${prompt}"${baisContext ? ` (+${baisReadyCount} BAIS ready)` : ""} tools=${runTools.length}`);
-		const result = await runAgent(fullPrompt, {
+		// Skills (bi#12): project + user SKILL.md dirs format into the prompt
+		// (XML per agentskills.io) so the model lists skill-provided guidance
+		// alongside the tool registry. Diagnostics warn, never block.
+		let skillsSection = "";
+		let skillNames: string[] = [];
+		try {
+			const { skills, diagnostics } = await loadSkills();
+			for (const d of diagnostics) console.error(`[skills] ${d.file}: ${d.message}`);
+			if (skills.length) {
+				skillsSection = `\n\n${await formatSkills(skills)}`;
+				skillNames = skills.map((s) => s.name);
+			}
+		} catch (e: any) {
+			console.error(`[bi] skills unavailable (${String(e?.message ?? e).split("\n")[0]})`);
+		}
+		console.error(`bi run — provider=${provider} model=${model} prompt="${prompt}"${baisContext ? ` (+${baisReadyCount} BAIS ready)` : ""} tools=${runTools.length} skills=${skillNames.length ? skillNames.join(",") : "none"}`);
+		const result = await runAgent(fullPrompt + skillsSection, {
 			provider,
 			model,
 			apiKey,

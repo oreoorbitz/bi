@@ -1,6 +1,6 @@
 id = "bi#12"
 title = "Port skills + slash-commands"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "agent/tools"
 body = """
