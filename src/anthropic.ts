@@ -20,6 +20,7 @@
 import { SendTurn_async, StreamTurn_async, type TurnFailure, ai } from "../baml_sdk/index.js";
 import { vendor } from "../baml_sdk/index.js";
 import { toHistory, toToolSpecs, type ConversationTurn, type ToolSpec } from "./conversation.js";
+import { missingKeyFailure } from "./auth.js";
 
 const PROVIDER = "anthropic";
 
@@ -51,6 +52,8 @@ export async function sendAnthropicMessage(
 	text: string,
 	options: AnthropicCallOptions,
 ): Promise<ai.ModelTurn | TurnFailure> {
+	const authErr = await missingKeyFailure(PROVIDER, options.apiKey);
+	if (authErr) return authErr;
 	const history = await toHistory(options.history ?? []);
 	const tools = toToolSpecs(options.tools ?? []);
 	const thinking = await toThinkingConfig(options.thinking ?? null);
@@ -65,6 +68,8 @@ export async function streamAnthropicMessage(
 	text: string,
 	options: AnthropicCallOptions,
 ): Promise<ai.ModelTurn | TurnFailure> {
+	const authErr = await missingKeyFailure(PROVIDER, options.apiKey);
+	if (authErr) return authErr;
 	const history = await toHistory(options.history ?? []);
 	const tools = toToolSpecs(options.tools ?? []);
 	const thinking = await toThinkingConfig(options.thinking ?? null);

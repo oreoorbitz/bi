@@ -7,6 +7,7 @@
 
 import { SendTurn_async, StreamTurn_async, type TurnFailure, ai } from "../baml_sdk/index.js";
 import { toHistory, toToolSpecs, type ConversationTurn, type ToolSpec } from "./conversation.js";
+import { missingKeyFailure } from "./auth.js";
 
 const PROVIDER = "openai_responses";
 
@@ -23,6 +24,8 @@ export async function sendOpenAIResponsesMessage(
 	text: string,
 	options: OpenAIResponsesCallOptions,
 ): Promise<ai.ModelTurn | TurnFailure> {
+	const authErr = await missingKeyFailure(PROVIDER, options.apiKey);
+	if (authErr) return authErr;
 	const history = await toHistory(options.history ?? []);
 	const tools = toToolSpecs(options.tools ?? []);
 	return SendTurn_async(PROVIDER, options.model, options.apiKey, text, history, tools, {
@@ -35,6 +38,8 @@ export async function streamOpenAIResponsesMessage(
 	text: string,
 	options: OpenAIResponsesCallOptions,
 ): Promise<ai.ModelTurn | TurnFailure> {
+	const authErr = await missingKeyFailure(PROVIDER, options.apiKey);
+	if (authErr) return authErr;
 	const history = await toHistory(options.history ?? []);
 	const tools = toToolSpecs(options.tools ?? []);
 	return StreamTurn_async(PROVIDER, options.model, options.apiKey, text, history, tools, {
