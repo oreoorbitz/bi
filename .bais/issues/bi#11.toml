@@ -1,6 +1,6 @@
 id = "bi#11"
 title = "Port session compaction (coding-agent + harness)"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "agent/session"
 body = """
