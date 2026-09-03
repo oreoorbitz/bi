@@ -1,6 +1,6 @@
 id = "bi#14"
 title = "Port print / json-event run modes"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "cli/bi"
 body = """
