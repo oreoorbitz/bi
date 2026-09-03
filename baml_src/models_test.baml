@@ -11,8 +11,8 @@ testset "model catalog" {
         assert.equal(ListModels("openai").length(), 2)
     }
 
-    test "ListAllModels returns 29" {
-        assert.equal(ListAllModels().length(), 29)
+    test "ListAllModels returns 39" {
+        assert.equal(ListAllModels().length(), 39)
     }
 
     test "ListModels compat providers return 2 each" {
@@ -26,7 +26,12 @@ testset "model catalog" {
         assert.equal(ListModels("huggingface").length(), 2);
         assert.equal(ListModels("baseten").length(), 2);
         assert.equal(ListModels("mistral").length(), 2);
-        assert.equal(ListModels("fireworks").length(), 2)
+        assert.equal(ListModels("fireworks").length(), 2);
+        assert.equal(ListModels("xai").length(), 2);
+        assert.equal(ListModels("minimax").length(), 2);
+        assert.equal(ListModels("kimi-coding").length(), 2);
+        assert.equal(ListModels("openrouter").length(), 2);
+        assert.equal(ListModels("qwen-token-plan").length(), 2)
     }
 
     test "GetModel fireworks pins the anthropic-messages arm" {

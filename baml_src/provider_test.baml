@@ -1,6 +1,6 @@
 testset "provider registry" {
-    test "ListProviders returns 14" {
-        assert.equal(ListProviders().length(), 14)
+    test "ListProviders returns 19" {
+        assert.equal(ListProviders().length(), 19)
     }
 
     test "GetProvider groq has chat-completions api and auth env" {
@@ -41,7 +41,23 @@ testset "provider registry" {
             null => assert.is_true(false),
             let v: string => assert.equal(v, "FIREWORKS_API_KEY"),
         }
+        match (ProviderAuthEnv("xai")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "XAI_API_KEY"),
+        }
         assert.is_true(ProviderAuthEnv("bogus") is null)
+    }
+
+    test "GetProvider xai routes the responses arm" {
+        let p = GetProvider("xai");
+        assert.not_null(p);
+        match (p) {
+            let prov: Provider => {
+                assert.equal(prov.base_url, "https://api.x.ai/v1");
+                assert.equal(prov.api, "openai-responses")
+            },
+            _ => assert.is_true(false),
+        }
     }
 
     test "GetProvider anthropic has correct base_url and api" {
@@ -101,7 +117,7 @@ testset "provider registry" {
     }
 
     test "RefreshAllModels returns provider count" {
-        assert.equal(RefreshAllModels(), 14)
+        assert.equal(RefreshAllModels(), 19)
     }
 
     test "RefreshModelsWithResult static vs remote vs unknown" {

@@ -291,6 +291,21 @@ function ListAllModels() -> Model[] {
     for (let m in _fireworks_models()) {
         out.push(m)
     }
+    for (let m in _xai_models()) {
+        out.push(m)
+    }
+    for (let m in _minimax_models()) {
+        out.push(m)
+    }
+    for (let m in _kimi_coding_models()) {
+        out.push(m)
+    }
+    for (let m in _openrouter_models()) {
+        out.push(m)
+    }
+    for (let m in _qwen_token_plan_models()) {
+        out.push(m)
+    }
     out
 }
 
@@ -311,8 +326,158 @@ function ListModels(provider: string) -> Model[] {
         "baseten" => _baseten_models(),
         "mistral" => _mistral_models(),
         "fireworks" => _fireworks_models(),
+        "xai" => _xai_models(),
+        "minimax" => _minimax_models(),
+        "kimi-coding" => _kimi_coding_models(),
+        "openrouter" => _openrouter_models(),
+        "qwen-token-plan" => _qwen_token_plan_models(),
         _ => [],
     }
+}
+
+function _xai_models() -> Model[] {
+    [
+        Model {
+            id: "grok-4",
+            name: "Grok 4",
+            api: "openai-responses",
+            provider: "xai",
+            base_url: "https://api.x.ai/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 256000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 3.0, output: 15.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "grok-code-fast-1",
+            name: "Grok Code Fast 1",
+            api: "openai-responses",
+            provider: "xai",
+            base_url: "https://api.x.ai/v1",
+            reasoning: false,
+            input: ["text"],
+            context_window: 256000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 0.2, output: 1.5, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+function _minimax_models() -> Model[] {
+    [
+        Model {
+            id: "MiniMax-M2",
+            name: "MiniMax M2",
+            api: "anthropic-messages",
+            provider: "minimax",
+            base_url: "https://api.minimax.io/anthropic",
+            reasoning: true,
+            input: ["text"],
+            context_window: 200000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 0.3, output: 1.2, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "MiniMax-M1",
+            name: "MiniMax M1",
+            api: "anthropic-messages",
+            provider: "minimax",
+            base_url: "https://api.minimax.io/anthropic",
+            reasoning: true,
+            input: ["text"],
+            context_window: 200000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 0.4, output: 0.8, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+function _kimi_coding_models() -> Model[] {
+    [
+        Model {
+            id: "kimi-k2-0711-preview",
+            name: "Kimi K2 (coding endpoint)",
+            api: "anthropic-messages",
+            provider: "kimi-coding",
+            base_url: "https://api.kimi.com/coding",
+            reasoning: false,
+            input: ["text"],
+            context_window: 256000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 0.6, output: 3.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "kimi-k2-thinking",
+            name: "Kimi K2 Thinking",
+            api: "anthropic-messages",
+            provider: "kimi-coding",
+            base_url: "https://api.kimi.com/coding",
+            reasoning: true,
+            input: ["text"],
+            context_window: 256000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 1.7, output: 6.6, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+function _openrouter_models() -> Model[] {
+    [
+        Model {
+            id: "anthropic/claude-sonnet-4-5",
+            name: "Claude Sonnet 4.5 (OpenRouter)",
+            api: "openai-completions",
+            provider: "openrouter",
+            base_url: "https://openrouter.ai/api/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 200000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 3.0, output: 15.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "google/gemini-2.5-pro",
+            name: "Gemini 2.5 Pro (OpenRouter)",
+            api: "openai-completions",
+            provider: "openrouter",
+            base_url: "https://openrouter.ai/api/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1000000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 1.25, output: 10.0, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+function _qwen_token_plan_models() -> Model[] {
+    [
+        Model {
+            id: "qwen-max",
+            name: "Qwen Max",
+            api: "openai-completions",
+            provider: "qwen-token-plan",
+            base_url: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+            reasoning: false,
+            input: ["text"],
+            context_window: 256000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 1.2, output: 4.8, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "qwen-plus",
+            name: "Qwen Plus",
+            api: "openai-completions",
+            provider: "qwen-token-plan",
+            base_url: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+            reasoning: false,
+            input: ["text"],
+            context_window: 128000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 0.1, output: 0.3, cache_read: null, cache_write: null },
+        },
+    ]
 }
 
 function _moonshotai_models() -> Model[] {

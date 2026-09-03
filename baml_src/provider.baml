@@ -123,6 +123,51 @@ function _providers() -> Provider[] {
             api: "anthropic-messages",
             auth_env: "FIREWORKS_API_KEY",
         },
+        // pi's xai provider also advertises OAuth (lazyOAuth), but the
+        // api-key path (XAI_API_KEY) works the same wire — bi takes it and
+        // routes xAI through the ResponsesClient arm (pi uses
+        // openAIResponsesApi for xai too).
+        Provider {
+            id: "xai",
+            name: "xAI",
+            base_url: "https://api.x.ai/v1",
+            api: "openai-responses",
+            auth_env: "XAI_API_KEY",
+        },
+        // pi's minimax endpoint already speaks the Anthropic messages
+        // protocol (base_url ends /anthropic), so the anthropic-messages
+        // arm covers it with no new wire format.
+        Provider {
+            id: "minimax",
+            name: "MiniMax",
+            base_url: "https://api.minimax.io/anthropic",
+            api: "anthropic-messages",
+            auth_env: "MINIMAX_API_KEY",
+        },
+        // Same shape as minimax: pi's kimi-coding endpoint speaks
+        // anthropic-messages; the KIMI_API_KEY path is taken (OAuth
+        // deferred like the stored-credential layer).
+        Provider {
+            id: "kimi-coding",
+            name: "Kimi Coding",
+            base_url: "https://api.kimi.com/coding",
+            api: "anthropic-messages",
+            auth_env: "KIMI_API_KEY",
+        },
+        Provider {
+            id: "openrouter",
+            name: "OpenRouter",
+            base_url: "https://openrouter.ai/api/v1",
+            api: "openai-completions",
+            auth_env: "OPENROUTER_API_KEY",
+        },
+        Provider {
+            id: "qwen-token-plan",
+            name: "Qwen Token Plan",
+            base_url: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+            api: "openai-completions",
+            auth_env: "QWEN_TOKEN_PLAN_API_KEY",
+        },
     ]
 }
 

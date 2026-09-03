@@ -158,12 +158,28 @@ testset "turn plumbing" {
     }
 
     test "moonshotai invoke reaches the wire and classifies transport failure" {
-        let result = SendTurn("moonshotai", "kimi-k2-0711-preview", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        let result = SendTurn(
+            "moonshotai",
+            "kimi-k2-0711-preview",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
         assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
     }
 
     test "nvidia invoke reaches the wire and classifies transport failure" {
-        let result = SendTurn("nvidia", "meta/llama-3.3-70b-instruct", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        let result = SendTurn(
+            "nvidia",
+            "meta/llama-3.3-70b-instruct",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
         assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
     }
 
@@ -173,7 +189,15 @@ testset "turn plumbing" {
     }
 
     test "huggingface invoke reaches the wire and classifies transport failure" {
-        let result = SendTurn("huggingface", "moonshotai/Kimi-K2-Instruct", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        let result = SendTurn(
+            "huggingface",
+            "moonshotai/Kimi-K2-Instruct",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
         assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
     }
 
@@ -183,12 +207,28 @@ testset "turn plumbing" {
     }
 
     test "mistral invoke reaches the wire and classifies transport failure" {
-        let result = SendTurn("mistral", "mistral-small-latest", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        let result = SendTurn(
+            "mistral",
+            "mistral-small-latest",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
         assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
     }
 
     test "mistral invoke_stream reaches the wire and classifies transport failure" {
-        let result = StreamTurn("mistral", "mistral-small-latest", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        let result = StreamTurn(
+            "mistral",
+            "mistral-small-latest",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
         assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
     }
 
@@ -218,6 +258,54 @@ testset "turn plumbing" {
             [],
             base_url = "http://127.0.0.1:1",
         );
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    // xAI exercises the openai-responses compat arm (third constructor
+    // path), so it gets both invoke and invoke_stream coverage.
+    test "xai invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("xai", "grok-4", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "xai invoke_stream reaches the wire and classifies transport failure" {
+        let result = StreamTurn("xai", "grok-4", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "minimax invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("minimax", "MiniMax-M2", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "kimi-coding invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn(
+            "kimi-coding",
+            "kimi-k2-0711-preview",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "openrouter invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn(
+            "openrouter",
+            "anthropic/claude-sonnet-4-5",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "qwen-token-plan invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("qwen-token-plan", "qwen-max", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
         assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
     }
 
