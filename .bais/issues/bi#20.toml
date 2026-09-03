@@ -1,6 +1,6 @@
 id = "bi#20"
 title = "bi login/logout/status CLI (API-key login now, OAuth hook later)"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "providers/auth"
 body = """

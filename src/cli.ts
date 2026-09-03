@@ -10,6 +10,7 @@ import { runAgent } from "./agent.js";
 import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, moveBaisIssue, checkBaisIssues, graphBaisIssues } from "./bais.js";
 import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
+import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
 import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, type Skill } from "./skills.js";
 import { runResultToJsonLines, finalText } from "./events.js";
@@ -51,6 +52,9 @@ function printHelp(): void {
   bi list-models [--provider <id>]
   bi list-image-models [--provider <id>]
   bi get-model <id>
+  bi login [provider] [--oauth]
+  bi logout <provider>
+  bi auth status
   bi run <prompt> [--provider <id>] [--model <id>] [--api-key <key>] [--base-url <url>] [--temperature <n>] [--max-turns <n>]
                    [--azure-resource <r> --azure-deployment <d> [--azure-api-version <v>]]
   bi bais list [--json]
@@ -412,6 +416,26 @@ async function main(): Promise<void> {
 			process.exit(1);
 		}
 		console.log(JSON.stringify(m, null, 2));
+		return;
+	}
+
+	// Auth commands (bi#20) — effects live in auth_cli.ts, errors surface
+	// as message + exit 1 like the blocks above.
+	if (cmd === "login" || cmd === "logout" || cmd === "auth") {
+		const sub = cmd === "auth" ? args[1] : cmd;
+		const subArgs = cmd === "auth" ? ["auth", ...args.slice(2)] : args;
+		try {
+			if (sub === "login") await runLogin(subArgs);
+			else if (sub === "logout") await runLogout(subArgs);
+			else if (sub === "status") await runAuthStatus();
+			else {
+				console.error("usage: bi login [provider] | bi logout <provider> | bi auth status");
+				process.exit(1);
+			}
+		} catch (e) {
+			console.error(e instanceof Error ? e.message : e);
+			process.exit(1);
+		}
 		return;
 	}
 

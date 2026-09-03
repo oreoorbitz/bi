@@ -117,4 +117,13 @@ testset "auth credential policy (bi#18)" {
         assert.equal(d.source, "none");
         assert.is_true(d.key is null)
     }
+
+    test "SupportsOAuth names the bi#23/24 flow providers" {
+        assert.is_true(SupportsOAuth("anthropic"));
+        assert.is_true(SupportsOAuth("xai"));
+        assert.is_true(SupportsOAuth("kimi-coding"));
+        assert.is_true(!SupportsOAuth("groq"));
+        assert.is_true(!SupportsOAuth("openai"));
+        assert.is_true(!SupportsOAuth("bogus"))
+    }
 }

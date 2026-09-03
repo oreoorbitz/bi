@@ -72,6 +72,14 @@ class AuthDecision {
     key: string?,
 }
 
+// bi#20: catalog providers whose pi counterpart also offers OAuth.
+// `bi login --oauth` (bi#22 core) and per-provider flows (bi#23 for
+// anthropic, bi#24 for xai/kimi-coding) build on this predicate; the
+// API-key path stays valid for all three meanwhile.
+function SupportsOAuth(provider: string) -> bool {
+    provider == "anthropic" || provider == "xai" || provider == "kimi-coding"
+}
+
 function ResolveAuth(
     provider: string,
     override_key: string?,
