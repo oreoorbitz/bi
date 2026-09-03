@@ -126,4 +126,39 @@ testset "auth credential policy (bi#18)" {
         assert.is_true(!SupportsOAuth("openai"));
         assert.is_true(!SupportsOAuth("bogus"))
     }
+
+    test "GuidanceFor invalid_argument names var and login" {
+        let g = GuidanceFor("invalid_argument", "groq");
+        assert.is_true(g.includes("GROQ_API_KEY"));
+        assert.is_true(g.includes("bi login groq"));
+        // No OAuth note for key-only providers.
+        assert.is_true(g.includes("OAuth") == false)
+    }
+
+    test "GuidanceFor invalid_argument adds OAuth note for flow providers" {
+        let g = GuidanceFor("invalid_argument", "xai");
+        assert.is_true(g.includes("XAI_API_KEY"));
+        assert.is_true(g.includes("bi login xai"));
+        assert.is_true(g.includes("bi#22"))
+    }
+
+    test "GuidanceFor invalid_argument points unknown providers at the catalog" {
+        let g = GuidanceFor("invalid_argument", "bogus");
+        assert.is_true(g.includes("unknown provider"));
+        assert.is_true(g.includes("bi list-providers"))
+    }
+
+    test "GuidanceFor covers rate_limited, network, invalid_request" {
+        assert.is_true(GuidanceFor("rate_limited", "groq").includes("retries"));
+        assert.is_true(GuidanceFor("network", "groq").includes("BI_BASE_URL"));
+        assert.is_true(
+            GuidanceFor("invalid_request", "groq").includes("bi list-models --provider groq"),
+        )
+    }
+
+    test "GuidanceFor stays silent where bi has no fix" {
+        assert.equal(GuidanceFor("tool_failed", "groq"), "");
+        assert.equal(GuidanceFor("step_budget_exceeded", "groq"), "");
+        assert.equal(GuidanceFor("other", "groq"), "")
+    }
 }

@@ -105,6 +105,11 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
             description: "Rescan skill directories",
             argument_hint: null,
         },
+        BuiltinSlashCommand {
+            name: "login",
+            description: "Store a provider API key in ~/.bi/auth.json",
+            argument_hint: "[provider]",
+        },
         BuiltinSlashCommand { name: "quit", description: "Quit bi", argument_hint: null },
     ]
 }
@@ -179,8 +184,9 @@ test "slash dispatch finds builtins then skills" {
         },
     ];
     assert.equal(lookup_slash("/compact", skills), "compact");
+    assert.equal(lookup_slash("/login", skills), "login");
     assert.equal(lookup_slash("/review", skills), "review");
     assert.equal(lookup_slash("review", skills), "review");
     assert.equal(lookup_slash("/nope", skills), null);
-    assert.equal(builtin_slash_commands().length(), 4)
+    assert.equal(builtin_slash_commands().length(), 5)
 }

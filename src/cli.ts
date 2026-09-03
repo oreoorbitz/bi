@@ -11,7 +11,7 @@ import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, mo
 import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, type Skill } from "./skills.js";
 import { runResultToJsonLines, finalText } from "./events.js";
 import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow } from "./session.js";
@@ -131,6 +131,17 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			console.error("[bi] per-run compaction already ran inside each turn (history is never truncated without a summary)");
 			return history;
 		}
+		if (t.name === "login") {
+			// The REPL engages on a TTY only, so the hidden prompt works;
+			// piped `bi run "/login x"` surfaces readSecret's clean
+			// refusal instead. Errors stay in-session (no process.exit).
+			try {
+				await runLogin(["login", ...t.args.split(/\s+/).filter((s) => s.length > 0)]);
+			} catch (e) {
+				console.error(e instanceof Error ? e.message : e);
+			}
+			return history;
+		}
 		return history;
 	}
 	return runOnePrompt(`${skillBody(t.skill)}\n\n${t.args}`.trim(), skills, history, signal ? { signal } : undefined);
@@ -192,6 +203,10 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	if (result.failure) {
 		status.stop({ failed: true, detail: `TurnFailure ${result.failure.kind}`, turns: Math.max(assistantCount, 1), messages: result.messages.length });
 		console.error(`TurnFailure ${result.failure.message}`);
+		// bi#21: guidance names the fix where bi knows one (the REPL loop
+		// is anthropic-pinned today, so the provider is static here).
+		const guidance = await GuidanceFor_async(result.failure.kind, "anthropic");
+		if (guidance) console.error(guidance);
 		return withUser;
 	}
 	status.stop({ failed: false, detail: "", turns: Math.max(assistantCount, 1), messages: result.messages.length });
@@ -546,6 +561,9 @@ async function main(): Promise<void> {
 		}
 		if (result.failure) {
 			console.error(`TurnFailure: kind=${result.failure.kind} retry_safe=${result.failure.retry_safe} message=${result.failure.message}`);
+			// bi#21: human mode only — --mode json stays machine-clean.
+			const guidance = await GuidanceFor_async(result.failure.kind, provider);
+			if (guidance) console.error(guidance);
 			process.exit(1);
 		}
 		if (hasFlag(args, "--print") || hasFlag(args, "-p")) {

@@ -80,6 +80,34 @@ function SupportsOAuth(provider: string) -> bool {
     provider == "anthropic" || provider == "xai" || provider == "kimi-coding"
 }
 
+// bi#21: auth-guidance (pi coding-agent `auth-guidance.ts`). Pure text
+// shaping over the TurnFailure kind + provider: names the exact next
+// step where bi knows one, "" where it has nothing actionable (the host
+// prints guidance only when non-empty, human modes only, never --json).
+function GuidanceFor(kind: string, provider: string) -> string {
+    if (kind == "invalid_argument") {
+        match (ProviderAuthEnv(provider)) {
+            null => `unknown provider "${provider}" — 'bi list-providers' lists known ids`,
+            let v: string => {
+                let oauth = if (SupportsOAuth(provider)) {
+                    " (OAuth login coming in bi#22+)"
+                } else {
+                    ""
+                };
+                `no usable credential — set ${v} or run 'bi login ${provider}'${oauth}`
+            },
+        }
+    } else if (kind == "rate_limited") {
+        "rate limited — bi retries transient failures automatically (bi#16); if it persists, wait or switch models"
+    } else if (kind == "network") {
+        "network failure — check connectivity (BI_BASE_URL points the REPL at a local gateway/proxy)"
+    } else if (kind == "invalid_request") {
+        `request rejected — often a bad model id or arguments ('bi list-models --provider ${provider}')`
+    } else {
+        ""
+    }
+}
+
 function ResolveAuth(
     provider: string,
     override_key: string?,
