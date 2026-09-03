@@ -15,6 +15,10 @@ class Credential {
     refresh: string?,
     access: string?,
     expires: int? @description("OAuth access-token expiry, epoch millis"),
+    // bi#23: pi's codex flow extracts this from the access-token JWT
+    // (chatgpt account id, needed for codex API calls). Optional:
+    // flows without an account claim leave it null.
+    account_id: string?,
 }
 
 // Non-secret metadata for account/status enumeration (bi#20 `bi auth
@@ -95,8 +99,8 @@ function BuildAuthorizeUrl(
     `${authorize_url}?code=true&client_id=${client_id}&response_type=code&redirect_uri=${redirect_uri_enc}&scope=${scope_enc}&code_challenge=${challenge}&code_challenge_method=S256&state=${state}`
 }
 
-function TokenExpiry(expires_in_s: int, now_ms: int) -> int {
-    now_ms + expires_in_s * 1000 - 5 * 60 * 1000
+function TokenExpiry(expires_in_s: int, now_ms: int, skew_ms: int = 300000) -> int {
+    now_ms + expires_in_s * 1000 - skew_ms
 }
 
 // True when the access token has less than min_validity_ms of life left

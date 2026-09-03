@@ -11,7 +11,7 @@ import {
   TurnFailure,
 } from "../baml_sdk/index.js";
 import { toHistory, toToolSpecs, type ConversationTurn, type ToolSpec } from "./conversation.js";
-import { authFailure, getAuth } from "./auth.js";
+import { resolveAuth } from "./auth.js";
 
 export type IncrementalStream = {
   next(): string | import("../baml_sdk/index.js").ai.stream.Done;
@@ -44,9 +44,9 @@ export async function startAnthropicIncremental(
   text: string,
   options: IncrementalCallOptions,
 ): Promise<IncrementalStream | TurnFailure> {
-  const auth = await getAuth(ANTHROPIC, options.apiKey);
-  const authErr = await authFailure(ANTHROPIC, auth);
-  if (authErr) return authErr;
+  const resolved = await resolveAuth(ANTHROPIC, options.apiKey);
+  if ("failure" in resolved) return resolved.failure;
+  const auth = resolved.auth;
   const history = await toHistory(options.history ?? []);
   const tools = toToolSpecs(options.tools ?? []);
   const thinking = await toThinkingConfig(options.thinking ?? null);
@@ -64,9 +64,9 @@ export async function startOpenAIResponsesIncremental(
   text: string,
   options: IncrementalCallOptions,
 ): Promise<IncrementalStream | TurnFailure> {
-  const auth = await getAuth(OPENAI_RESPONSES, options.apiKey);
-  const authErr = await authFailure(OPENAI_RESPONSES, auth);
-  if (authErr) return authErr;
+  const resolved = await resolveAuth(OPENAI_RESPONSES, options.apiKey);
+  if ("failure" in resolved) return resolved.failure;
+  const auth = resolved.auth;
   const history = await toHistory(options.history ?? []);
   const tools = toToolSpecs(options.tools ?? []);
   const res = await StartIncrementalStream_async(OPENAI_RESPONSES, options.model, auth.key, text, history, tools, {

@@ -7,6 +7,7 @@ testset "auth credential policy (bi#18)" {
             refresh: null,
             access: null,
             expires: null,
+            account_id: null,
         };
         assert.is_true(ValidateCredential(c))
     }
@@ -19,6 +20,7 @@ testset "auth credential policy (bi#18)" {
             refresh: "r-test",
             access: "a-test",
             expires: 1780000000000,
+            account_id: null,
         };
         assert.is_true(ValidateCredential(c))
     }
@@ -31,6 +33,7 @@ testset "auth credential policy (bi#18)" {
             refresh: null,
             access: null,
             expires: null,
+            account_id: null,
         };
         assert.is_true(!ValidateCredential(c))
     }
@@ -43,6 +46,7 @@ testset "auth credential policy (bi#18)" {
             refresh: null,
             access: null,
             expires: null,
+            account_id: null,
         };
         assert.is_true(!ValidateCredential(c))
     }
@@ -55,6 +59,7 @@ testset "auth credential policy (bi#18)" {
             refresh: null,
             access: null,
             expires: null,
+            account_id: null,
         };
         assert.is_true(!ValidateCredential(c))
     }
@@ -67,6 +72,7 @@ testset "auth credential policy (bi#18)" {
             refresh: null,
             access: "a-test",
             expires: null,
+            account_id: null,
         };
         assert.is_true(!ValidateCredential(c))
     }
@@ -180,6 +186,10 @@ testset "auth credential policy (bi#18)" {
         assert.equal(TokenExpiry(3600, 1000000000000), 1000000000000 + 3600000 - 300000)
     }
 
+    test "TokenExpiry honors an explicit skew (codex uses none)" {
+        assert.equal(TokenExpiry(3600, 1000000000000, skew_ms = 0), 1000000000000 + 3600000)
+    }
+
     test "OAuthNeedsRefresh honors the validity window" {
         // Healthy token: expiry far out.
         assert.is_true(!OAuthNeedsRefresh(1000000000000 + 3600000 - 300000, 1000000000000));
@@ -190,6 +200,8 @@ testset "auth credential policy (bi#18)" {
         // Unknown expiry refreshes rather than risking a dead token.
         assert.is_true(OAuthNeedsRefresh(null, 1000000000000));
         // Custom window respected (default is 300000).
-        assert.is_true(!OAuthNeedsRefresh(1000000000000 + 60000, 1000000000000, min_validity_ms = 10000))
+        assert.is_true(
+            !OAuthNeedsRefresh(1000000000000 + 60000, 1000000000000, min_validity_ms = 10000),
+        )
     }
 }

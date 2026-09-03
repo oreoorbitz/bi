@@ -60,12 +60,18 @@ export async function runLogin(args: string[]): Promise<void> {
 		for (const p of await listProviders()) console.log(`  ${p.id}`);
 		return;
 	}
-	if (!(await providerExists(provider))) {
-		throw new AuthCliError(`Unknown provider: ${provider} — bi list-providers lists known ids`);
-	}
 	if (args.includes("--oauth")) {
+		// bi#23: flow ids without a turn backend yet (openai-codex lands
+		// in bi#15) can still log in — resolution activates with the
+		// backend. API-key login stays catalog-bound below.
+		if (!(await providerExists(provider)) && !getOAuthFlow(provider)) {
+			throw new AuthCliError(`Unknown provider: ${provider} — bi list-providers lists known ids`);
+		}
 		await runOAuthLogin(provider);
 		return;
+	}
+	if (!(await providerExists(provider))) {
+		throw new AuthCliError(`Unknown provider: ${provider} — bi list-providers lists known ids`);
 	}
 	const key = readSecret(`API key for ${provider} (input hidden): `);
 	if (!key) throw new AuthCliError("No key entered — nothing stored");
@@ -76,6 +82,7 @@ export async function runLogin(args: string[]): Promise<void> {
 		refresh: null,
 		access: null,
 		expires: null,
+		account_id: null,
 	});
 	if (!(await ValidateCredential_async(cred))) {
 		throw new AuthCliError(`Refusing to store invalid credential for ${provider}`);

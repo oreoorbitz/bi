@@ -2,7 +2,7 @@
 // Mirrors pi/packages/ai's images.ts (openai/gpt-image-1).
 
 import { GenerateImage_async, GetImageModel_async, ListImageModels_async, type TurnFailure, ai } from "../baml_sdk/index.js";
-import { authFailure, getAuth } from "./auth.js";
+import { resolveAuth } from "./auth.js";
 
 export interface ImageModel {
 	id: string;
@@ -30,9 +30,9 @@ export async function generateImage(prompt: string, options: GenerateImageOption
 	// unknown-model error (host never invents a provider).
 	const entry = await GetImageModel_async(model);
 	const provider = entry?.provider ?? "openai";
-	const auth = await getAuth(provider, options.apiKey);
-	const authErr = await authFailure(provider, auth);
-	if (authErr) return authErr;
+	const resolved = await resolveAuth(provider, options.apiKey);
+	if ("failure" in resolved) return resolved.failure;
+	const auth = resolved.auth;
 	return GenerateImage_async(prompt, {
 		model,
 		api_key: auth.key,

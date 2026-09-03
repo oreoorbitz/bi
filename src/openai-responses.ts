@@ -8,7 +8,7 @@
 import { SendTurn_async, StreamTurn_async, type TurnFailure, ai } from "../baml_sdk/index.js";
 import { toHistory, toToolSpecs, type ConversationTurn, type ToolSpec } from "./conversation.js";
 import { callWithRetry } from "./retry.js";
-import { authFailure, getAuth } from "./auth.js";
+import { resolveAuth } from "./auth.js";
 
 const PROVIDER = "openai_responses";
 
@@ -25,9 +25,9 @@ export async function sendOpenAIResponsesMessage(
 	text: string,
 	options: OpenAIResponsesCallOptions,
 ): Promise<ai.ModelTurn | TurnFailure> {
-	const auth = await getAuth(PROVIDER, options.apiKey);
-	const authErr = await authFailure(PROVIDER, auth);
-	if (authErr) return authErr;
+	const resolved = await resolveAuth(PROVIDER, options.apiKey);
+	if ("failure" in resolved) return resolved.failure;
+	const auth = resolved.auth;
 	const history = await toHistory(options.history ?? []);
 	const tools = toToolSpecs(options.tools ?? []);
 	return callWithRetry("openai-responses", () => SendTurn_async(PROVIDER, options.model, auth.key, text, history, tools, {
@@ -40,9 +40,9 @@ export async function streamOpenAIResponsesMessage(
 	text: string,
 	options: OpenAIResponsesCallOptions,
 ): Promise<ai.ModelTurn | TurnFailure> {
-	const auth = await getAuth(PROVIDER, options.apiKey);
-	const authErr = await authFailure(PROVIDER, auth);
-	if (authErr) return authErr;
+	const resolved = await resolveAuth(PROVIDER, options.apiKey);
+	if ("failure" in resolved) return resolved.failure;
+	const auth = resolved.auth;
 	const history = await toHistory(options.history ?? []);
 	const tools = toToolSpecs(options.tools ?? []);
 	return callWithRetry("openai-responses", () => StreamTurn_async(PROVIDER, options.model, auth.key, text, history, tools, {

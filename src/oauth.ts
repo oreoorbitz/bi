@@ -70,10 +70,13 @@ export interface LoopbackServer {
 export async function startLoopbackServer(opts: {
 	port?: number;
 	path?: string;
+	/** Bind/URI host: pre-registered redirect URIs pin this (codex uses localhost). */
+	host?: string;
 	expectedState: string;
 	providerName?: string;
 }): Promise<LoopbackServer> {
 	const path = opts.path ?? "/callback";
+	const host = opts.host ?? "127.0.0.1";
 	const name = opts.providerName ?? "OAuth";
 	return new Promise((resolve, reject) => {
 		let settleWait: ((value: { code: string; state: string } | null) => void) | undefined;
@@ -121,11 +124,11 @@ export async function startLoopbackServer(opts: {
 			}
 		});
 		server.on("error", reject);
-		server.listen(opts.port ?? 0, "127.0.0.1", () => {
+		server.listen(opts.port ?? 0, host, () => {
 			const addr = server.address();
 			const port = typeof addr === "object" && addr ? addr.port : (opts.port ?? 0);
 			resolve({
-				redirectUri: `http://127.0.0.1:${port}${path}`,
+				redirectUri: `http://${host}:${port}${path}`,
 				waitForCode: () => waitForCodePromise,
 				cancelWait: () => settle(null),
 				close: () => new Promise((resClose) => server.close(() => resClose())),
@@ -160,6 +163,57 @@ export interface TokenSet {
 	access_token: string;
 	refresh_token: string;
 	expires_in: number;
+}
+
+// Form-encoded token endpoint (pi codex: application/x-www-form-urlencoded).
+export async function postTokenForm(
+	url: string,
+	params: Record<string, string>,
+	signal?: AbortSignal,
+): Promise<string> {
+	const timeout = AbortSignal.timeout(30_000);
+	const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+	const response = await fetch(url, {
+		method: "POST",
+		headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+		body: new URLSearchParams(params).toString(),
+		signal: combined,
+	});
+	const responseBody = await response.text();
+	if (!response.ok) {
+		throw new Error(`HTTP request failed. status=${response.status}; url=${url}; body=${responseBody}`);
+	}
+	return responseBody;
+}
+
+// JWT account claim (pi codex getAccountId): payload segment of the
+// access token. The claim path may itself contain slashes (pi codex uses
+// a URL as the top-level key), so every split point is tried longest
+// first: the left side must be an existing key, the rest walks down.
+export function decodeJwtAccountId(accessToken: string, claimPath: string): string | null {
+	try {
+		const parts = accessToken.split(".");
+		if (parts.length !== 3) return null;
+		const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as Record<string, unknown>;
+		const segs = claimPath.split("/");
+		for (let i = segs.length; i >= 1; i--) {
+			const left = segs.slice(0, i).join("/");
+			if (typeof payload !== "object" || payload === null || !(left in payload)) continue;
+			let cur: unknown = (payload as Record<string, unknown>)[left];
+			let ok = true;
+			for (const s of segs.slice(i)) {
+				if (typeof cur !== "object" || cur === null || !(s in (cur as Record<string, unknown>))) {
+					ok = false;
+					break;
+				}
+				cur = (cur as Record<string, unknown>)[s];
+			}
+			if (ok && typeof cur === "string" && cur.length > 0) return cur;
+		}
+		return null;
+	} catch {
+		return null;
+	}
 }
 
 export function parseTokenResponse(url: string, responseBody: string): TokenSet {
@@ -249,8 +303,21 @@ export interface OAuthFlow {
 	callbackPath?: string;
 	/** Pre-registered redirect URIs pin this (e.g. Anthropic :53692); 0/undefined = ephemeral. */
 	callbackPort?: number;
+	/** Pre-registered redirect host (codex uses localhost, not 127.0.0.1). */
+	callbackHost?: string;
 	extraAuthorizeParams?: Record<string, string>;
+	/** Token endpoint body: pi anthropic takes JSON, pi codex takes form. */
+	tokenBodyFormat?: "json" | "form";
+	/** Pi codex uses a separate random state; anthropic reuses the verifier. */
+	separateState?: boolean;
+	/** Pi codex requires the chatgpt account id from the access JWT. */
+	requireAccountId?: boolean;
+	accountClaimPath?: string;
+	/** TokenExpiry skew override (codex: none). Defaults to BAML's 5 minutes. */
+	expirySkewMs?: number;
 }
+
+export const DEFAULT_ACCOUNT_CLAIM_PATH = "https://api.openai.com/auth/chatgpt_account_id";
 
 const flows = new Map<string, OAuthFlow>();
 
@@ -258,8 +325,42 @@ export function registerOAuthFlow(flow: OAuthFlow): void {
 	flows.set(flow.id, flow);
 }
 
+let builtinsRegistered = false;
+
 export function getOAuthFlow(providerId: string): OAuthFlow | undefined {
+	if (!builtinsRegistered) {
+		builtinsRegistered = true;
+		registerBuiltinOAuthFlows();
+	}
 	return flows.get(providerId);
+}
+
+function tokenRequest(flow: OAuthFlow, params: Record<string, string>, signal?: AbortSignal): Promise<string> {
+	if (flow.tokenBodyFormat === "form") return postTokenForm(flow.tokenUrl, params, signal);
+	return postToken(flow.tokenUrl, params, signal);
+}
+
+async function credentialFromTokenResponse(
+	flow: OAuthFlow,
+	tokenUrl: string,
+	responseBody: string,
+): Promise<Credential> {
+	const tokens = parseTokenResponse(tokenUrl, responseBody);
+	let accountId: string | null = null;
+	if (flow.requireAccountId) {
+		accountId = decodeJwtAccountId(tokens.access_token, flow.accountClaimPath ?? DEFAULT_ACCOUNT_CLAIM_PATH);
+		if (!accountId) throw new Error(`Failed to extract account id from ${flow.name} access token`);
+	}
+	const skew = flow.expirySkewMs ?? 300000;
+	return new Credential({
+		provider_id: flow.id,
+		type: "oauth",
+		key: null,
+		refresh: tokens.refresh_token,
+		access: tokens.access_token,
+		expires: await TokenExpiry_async(tokens.expires_in, Date.now(), { skew_ms: skew }),
+		account_id: accountId,
+	});
 }
 
 export interface OAuthInteraction {
@@ -290,13 +391,17 @@ export function parseAuthorizationInput(input: string): { code?: string; state?:
 	return { code: value };
 }
 
-// PKCE authorize-code login (pi loginAnthropic, generalized over the flow).
+// PKCE authorize-code login (pi loginAnthropic/loginOpenAICodex,
+// generalized over the flow: JSON/form token bodies, verifier or separate
+// random state, account-id extraction, per-flow expiry skew).
 export async function loginPKCEFlow(flow: OAuthFlow, interaction: OAuthInteraction): Promise<Credential> {
 	const { verifier, challenge } = generatePKCE();
+	const expectedState = flow.separateState ? randomBytes(16).toString("hex") : verifier;
 	const server = await startLoopbackServer({
 		port: flow.callbackPort ?? 0,
 		path: flow.callbackPath ?? "/callback",
-		expectedState: verifier,
+		host: flow.callbackHost,
+		expectedState,
 		providerName: flow.name,
 	});
 	const manualAbort = new AbortController();
@@ -314,7 +419,7 @@ export async function loginPKCEFlow(flow: OAuthFlow, interaction: OAuthInteracti
 			encodeURIComponent(server.redirectUri),
 			encodeURIComponent(flow.scopes),
 			challenge,
-			verifier,
+			expectedState,
 		);
 		if (flow.extraAuthorizeParams) url += `&${new URLSearchParams(flow.extraAuthorizeParams).toString()}`;
 		interaction.notify({
@@ -335,9 +440,9 @@ export async function loginPKCEFlow(flow: OAuthFlow, interaction: OAuthInteracti
 		const takeManual = () => {
 			if (!manualInput) return;
 			const parsed = parseAuthorizationInput(manualInput);
-			if (parsed.state && parsed.state !== verifier) throw new Error("OAuth state mismatch");
+			if (parsed.state && parsed.state !== expectedState) throw new Error("OAuth state mismatch");
 			code = parsed.code;
-			state = parsed.state ?? verifier;
+			state = parsed.state ?? expectedState;
 		};
 		const result = await server.waitForCode();
 		if (manualError) throw manualError;
@@ -355,8 +460,8 @@ export async function loginPKCEFlow(flow: OAuthFlow, interaction: OAuthInteracti
 		if (!code) throw new Error("Missing authorization code");
 		if (!state) throw new Error("Missing OAuth state");
 		interaction.notify({ type: "progress", message: "Exchanging authorization code for tokens..." });
-		const body = await postToken(
-			flow.tokenUrl,
+		const body = await tokenRequest(
+			flow,
 			{
 				grant_type: "authorization_code",
 				client_id: flow.clientId,
@@ -367,15 +472,7 @@ export async function loginPKCEFlow(flow: OAuthFlow, interaction: OAuthInteracti
 			},
 			interaction.signal,
 		);
-		const tokens = parseTokenResponse(flow.tokenUrl, body);
-		return new Credential({
-			provider_id: flow.id,
-			type: "oauth",
-			key: null,
-			refresh: tokens.refresh_token,
-			access: tokens.access_token,
-			expires: await TokenExpiry_async(tokens.expires_in, Date.now()),
-		});
+		return credentialFromTokenResponse(flow, flow.tokenUrl, body);
 	} finally {
 		interaction.signal.removeEventListener("abort", onAbort);
 		manualAbort.abort();
@@ -396,19 +493,47 @@ export async function refreshOAuthCredential(
 	await modifyCredential(providerId, async (cur) => {
 		if (!cur || cur.type !== "oauth" || !cur.refresh) return cur;
 		if (!(await OAuthNeedsRefresh_async(cur.expires, Date.now(), { min_validity_ms: minValidity }))) return cur;
-		const body = await postToken(
-			flow.tokenUrl,
+		const body = await tokenRequest(
+			flow,
 			{ grant_type: "refresh_token", client_id: flow.clientId, refresh_token: cur.refresh },
 			opts?.signal,
 		);
-		const tokens = parseTokenResponse(flow.tokenUrl, body);
-		return new Credential({
-			provider_id: providerId,
-			type: "oauth",
-			key: null,
-			refresh: tokens.refresh_token,
-			access: tokens.access_token,
-			expires: await TokenExpiry_async(tokens.expires_in, Date.now()),
-		});
+		return credentialFromTokenResponse(flow, flow.tokenUrl, body);
+	});
+}
+
+// bi#23: builtin flows (pi `auth/oauth/{anthropic,openai-codex}.ts`
+// constants verbatim). Lazily registered on first getOAuthFlow so every
+// entry point (CLI, REPL, probes) sees them without import order games.
+export function registerBuiltinOAuthFlows(): void {
+	registerOAuthFlow({
+		id: "anthropic",
+		name: "Anthropic (Claude Pro/Max)",
+		authorizeUrl: "https://claude.ai/oauth/authorize",
+		tokenUrl: "https://platform.claude.com/v1/oauth/token",
+		clientId: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+		scopes: "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload",
+		callbackPath: "/callback",
+		callbackPort: 53692,
+	});
+	registerOAuthFlow({
+		id: "openai-codex",
+		name: "OpenAI (ChatGPT Plus/Pro)",
+		authorizeUrl: "https://auth.openai.com/oauth/authorize",
+		tokenUrl: "https://auth.openai.com/oauth/token",
+		clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
+		scopes: "openid profile email offline_access",
+		callbackPath: "/auth/callback",
+		callbackPort: 1455,
+		callbackHost: "localhost",
+		extraAuthorizeParams: {
+			id_token_add_organizations: "true",
+			codex_cli_simplified_flow: "true",
+			originator: "bi",
+		},
+		tokenBodyFormat: "form",
+		separateState: true,
+		requireAccountId: true,
+		expirySkewMs: 0,
 	});
 }

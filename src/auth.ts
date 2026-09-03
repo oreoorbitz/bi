@@ -120,6 +120,7 @@ type StoredFile = Record<string, {
 	refresh: string | null;
 	access: string | null;
 	expires: number | null;
+	account_id: string | null;
 }>;
 
 function toStored(c: Credential): StoredFile[string] {
@@ -130,7 +131,14 @@ function toStored(c: Credential): StoredFile[string] {
 		refresh: c.refresh,
 		access: c.access,
 		expires: c.expires,
+		account_id: c.account_id,
 	};
+}
+
+// Pre-account_id store files lack the field — default it on read
+// (spread would overwrite a default with a runtime undefined).
+function fromStored(raw: StoredFile[string]): Credential {
+	return new Credential({ ...raw, account_id: raw.account_id ?? null });
 }
 
 async function loadFile(): Promise<StoredFile> {
@@ -155,7 +163,7 @@ export async function readCredential(providerId: string): Promise<Credential | u
 	const data = await loadFile();
 	const raw = data[providerId];
 	if (!raw) return undefined;
-	return new Credential(raw);
+	return fromStored(raw);
 }
 
 // Metadata only — secret fields are dropped, never listed.
@@ -179,7 +187,7 @@ export function modifyCredential(
 	const run = writeChain.then(async () => {
 		const data = await loadFile();
 		const cur = data[providerId];
-		const next = await fn(cur ? new Credential(cur) : undefined);
+		const next = await fn(cur ? fromStored(cur) : undefined);
 		if (next) data[providerId] = toStored(next);
 		else delete data[providerId];
 		await saveFile(data);

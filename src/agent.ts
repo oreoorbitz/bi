@@ -3,7 +3,7 @@
 // agent: it loops SendTurn -> ToolUse -> ToolCompleted until Complete.
 
 import { CreateMixedTurn_async, CreateTextTurn_async, CreateToolUseTurn_async, TurnFailure, ai } from "../baml_sdk/index.js";
-import { authFailure, getAuth } from "./auth.js";
+import { resolveAuth } from "./auth.js";
 import { GetModel_async, RefreshModels_async } from "../baml_sdk/index.js";
 import { toHistory, type ConversationTurn } from "./conversation.js";
 import { maybeCompactHistory, type CompactionOptions } from "./compaction.js";
@@ -48,9 +48,9 @@ export type LlmFn = (
 function defaultLlmFn(options: AgentOptions): LlmFn {
 	return async (text, history, tools) => {
 		const provider = options.provider ?? "anthropic";
-		const auth = await getAuth(provider, options.apiKey);
-		const authErr = await authFailure(provider, auth);
-		if (authErr) return authErr;
+		const resolved = await resolveAuth(provider, options.apiKey);
+		if ("failure" in resolved) return resolved.failure;
+		const auth = resolved.auth;
 		const h = await toHistory(history);
 		const t = toToolSpecs(tools);
 		// Retry at the dispatch choke point (bi#16) — the per-provider

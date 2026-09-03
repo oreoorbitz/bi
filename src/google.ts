@@ -4,7 +4,7 @@
 import { SendTurn_async, StreamTurn_async, StartIncrementalStream_async, TurnFailure, ai } from "../baml_sdk/index.js";
 import { toHistory, toToolSpecs, type ConversationTurn, type ToolSpec } from "./conversation.js";
 import { callWithRetry } from "./retry.js";
-import { authFailure, getAuth } from "./auth.js";
+import { resolveAuth } from "./auth.js";
 
 const PROVIDER = "google";
 
@@ -18,9 +18,9 @@ export interface GoogleCallOptions {
 }
 
 export async function sendGoogleMessage(text: string, options: GoogleCallOptions): Promise<ai.ModelTurn | TurnFailure> {
-	const auth = await getAuth(PROVIDER, options.apiKey);
-	const authErr = await authFailure(PROVIDER, auth);
-	if (authErr) return authErr;
+	const resolved = await resolveAuth(PROVIDER, options.apiKey);
+	if ("failure" in resolved) return resolved.failure;
+	const auth = resolved.auth;
 	const history = await toHistory(options.history ?? []);
 	const tools = toToolSpecs(options.tools ?? []);
 	return callWithRetry("google", () => SendTurn_async(PROVIDER, options.model, auth.key, text, history, tools, {
@@ -30,9 +30,9 @@ export async function sendGoogleMessage(text: string, options: GoogleCallOptions
 }
 
 export async function streamGoogleMessage(text: string, options: GoogleCallOptions): Promise<ai.ModelTurn | TurnFailure> {
-	const auth = await getAuth(PROVIDER, options.apiKey);
-	const authErr = await authFailure(PROVIDER, auth);
-	if (authErr) return authErr;
+	const resolved = await resolveAuth(PROVIDER, options.apiKey);
+	if ("failure" in resolved) return resolved.failure;
+	const auth = resolved.auth;
 	const history = await toHistory(options.history ?? []);
 	const tools = toToolSpecs(options.tools ?? []);
 	return callWithRetry("google", () => StreamTurn_async(PROVIDER, options.model, auth.key, text, history, tools, {
@@ -42,9 +42,9 @@ export async function streamGoogleMessage(text: string, options: GoogleCallOptio
 }
 
 export async function startGoogleIncremental(text: string, options: GoogleCallOptions): Promise<ai.stream.Stream<string, string> | TurnFailure> {
-	const auth = await getAuth(PROVIDER, options.apiKey);
-	const authErr = await authFailure(PROVIDER, auth);
-	if (authErr) return authErr;
+	const resolved = await resolveAuth(PROVIDER, options.apiKey);
+	if ("failure" in resolved) return resolved.failure;
+	const auth = resolved.auth;
 	const history = await toHistory(options.history ?? []);
 	const tools = toToolSpecs(options.tools ?? []);
 	const res = await StartIncrementalStream_async(PROVIDER, options.model, auth.key, text, history, tools, {
