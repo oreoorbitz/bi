@@ -1,6 +1,6 @@
 id = "bi#22"
 title = "OAuth core (PKCE + loopback + device-code + serialized refresh)"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "providers/auth"
 body = """

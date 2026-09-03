@@ -18,6 +18,7 @@ First provider flows on top of bi#22 core. Start with the two providers bi users
 
 ## Acceptance
 - Both flows complete against a local stub IdP; stored `OAuthCredential` round-trips through bi#18 store and resolves via bi#19 precedence.
+- Adopts `resolveAuth` (bi#22) at all turn gate sites so refresh failures render instead of rejecting.
 - Live-provider check is manual (key required) and documented in the issue body on close.
 - `baml check --project bi` + `npm run typecheck --prefix bi` green.
 """

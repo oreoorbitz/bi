@@ -17,11 +17,13 @@ import {
 	Credential,
 	CredentialInfo,
 	MissingKeyMessage_async,
+	OAuthNeedsRefresh_async,
 	ProviderAuthEnv_async,
 	ResolveAuth_async,
 	TurnFailure,
 	ValidateCredential_async,
 } from "../baml_sdk/index.js";
+import { getOAuthFlow, refreshOAuthCredential } from "./oauth.js";
 
 export { AuthDecision, Credential, CredentialInfo } from "../baml_sdk/index.js";
 
@@ -30,17 +32,56 @@ export { AuthDecision, Credential, CredentialInfo } from "../baml_sdk/index.js";
 // (never its value — env secrets stay late-bound in BAML via
 // baml.env.ref) is consulted only when nothing is stored. Storage
 // failures propagate; a corrupt store must never silently fall back.
-export async function getAuth(provider: string, apiKey?: string | null): Promise<AuthDecision> {
-	const stored = await readCredential(provider);
-	const valid = stored && (await ValidateCredential_async(stored)) ? stored : null;
-	// bi#22 owns expiry-aware refresh: until then, a valid stored
-	// credential without a usable secret (hand-written oauth without
-	// access) falls through the chain below. No UI can produce that
-	// state yet; refresh-or-fail closes it.
+export async function getAuth(
+	provider: string,
+	apiKey?: string | null,
+	opts?: { minOAuthValidityMs?: number },
+): Promise<AuthDecision> {
+	const minValidity = opts?.minOAuthValidityMs ?? 300000;
+	let stored = await readCredential(provider);
+	let valid = stored && (await ValidateCredential_async(stored)) ? stored : null;
+	// bi#22: expiry-aware refresh inside the serialized modify, so
+	// concurrent requests refresh exactly once (re-checked under the
+	// lock). Refresh failure throws — never a silent env fallback (pi
+	// resolve.ts). No registered flow keeps the bi#19 fall-through.
+	if (valid && valid.type === "oauth" && valid.refresh && getOAuthFlow(provider)) {
+		const needs = await OAuthNeedsRefresh_async(valid.expires, Date.now(), { min_validity_ms: minValidity });
+		if (needs) {
+			await refreshOAuthCredential(provider, { minOAuthValidityMs: minValidity });
+			stored = await readCredential(provider);
+			valid = stored && (await ValidateCredential_async(stored)) ? stored : null;
+		}
+	}
 	const storedKey = valid ? (valid.key ?? valid.access ?? null) : null;
 	const v = await ProviderAuthEnv_async(provider);
 	const hasEnv = !!v && !!process.env[v];
 	return ResolveAuth_async(provider, apiKey ?? null, storedKey, hasEnv);
+}
+
+// Gate-site wrapper: resolved auth or a renderable failure, never a
+// throw for auth-layer problems. A failed OAuth refresh becomes a
+// non-retryable failure naming re-authentication (still no env
+// fallback); storage failures keep rejecting.
+export async function resolveAuth(
+	provider: string,
+	apiKey?: string | null,
+	opts?: { minOAuthValidityMs?: number },
+): Promise<{ auth: AuthDecision } | { failure: TurnFailure }> {
+	try {
+		const auth = await getAuth(provider, apiKey, opts);
+		const failure = await authFailure(provider, auth);
+		if (failure) return { failure };
+		return { auth };
+	} catch (e) {
+		const detail = e instanceof Error ? e.message : String(e);
+		return {
+			failure: new TurnFailure({
+				kind: "invalid_argument",
+				message: `OAuth refresh failed for ${provider}: ${detail} — run 'bi login ${provider} --oauth' to re-authenticate`,
+				retry_safe: false,
+			}),
+		};
+	}
 }
 
 export async function authFailure(provider: string, auth: AuthDecision): Promise<TurnFailure | null> {

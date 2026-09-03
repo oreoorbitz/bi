@@ -16,7 +16,9 @@ import {
 	ValidateCredential_async,
 } from "../baml_sdk/index.js";
 import { listCredentials, modifyCredential, readCredential } from "./auth.js";
+import { getOAuthFlow, loginPKCEFlow, type OAuthInteraction } from "./oauth.js";
 import { listProviders, providerExists } from "./provider.js";
+import { createInterface } from "node:readline";
 
 export class AuthCliError extends Error {}
 
@@ -62,7 +64,8 @@ export async function runLogin(args: string[]): Promise<void> {
 		throw new AuthCliError(`Unknown provider: ${provider} — bi list-providers lists known ids`);
 	}
 	if (args.includes("--oauth")) {
-		throw new AuthCliError(`OAuth login is not supported yet (bi#22) — run \`bi login ${provider}\` to store an API key`);
+		await runOAuthLogin(provider);
+		return;
 	}
 	const key = readSecret(`API key for ${provider} (input hidden): `);
 	if (!key) throw new AuthCliError("No key entered — nothing stored");
@@ -84,6 +87,48 @@ export async function runLogin(args: string[]): Promise<void> {
 	if (await SupportsOAuth_async(provider)) {
 		console.log(`(Note: ${provider} also supports OAuth, coming in bi#22+ — API key stored for now.)`);
 	}
+}
+
+// bi#22: PKCE login against the provider's registered OAuth flow. The
+// authorize URL prints for the browser; the code/redirect URL is read
+// visibly (it is single-use, not a stored secret).
+export async function runOAuthLogin(provider: string): Promise<void> {
+	const flow = getOAuthFlow(provider);
+	if (!flow) {
+		throw new AuthCliError(
+			`No OAuth flow registered for ${provider} yet (bi#23/24) — run \`bi login ${provider}\` to store an API key`,
+		);
+	}
+	const ctl = new AbortController();
+	const interaction: OAuthInteraction = {
+		signal: ctl.signal,
+		notify: (n) => {
+			if (n.url) console.log(`\nComplete login in your browser:\n${n.url}\n${n.instructions ?? ""}`);
+			else if (n.message) console.log(n.message);
+		},
+		prompt: (message, _placeholder, signal) =>
+			new Promise((resolve, reject) => {
+				const rl = createInterface({ input: process.stdin, output: process.stdout });
+				if (signal?.aborted) {
+					rl.close();
+					reject(new Error("Login cancelled"));
+					return;
+				}
+				const onAbort = () => {
+					rl.close();
+					reject(new Error("Login cancelled"));
+				};
+				signal?.addEventListener("abort", onAbort, { once: true });
+				rl.question(`${message} `, (answer) => {
+					signal?.removeEventListener("abort", onAbort);
+					rl.close();
+					resolve(answer.trim());
+				});
+			}),
+	};
+	const cred = await loginPKCEFlow(flow, interaction);
+	await modifyCredential(provider, () => cred);
+	console.log(`Stored oauth credential for ${provider} in ~/.bi/auth.json.`);
 }
 
 export async function runLogout(args: string[]): Promise<void> {

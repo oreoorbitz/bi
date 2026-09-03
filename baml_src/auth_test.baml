@@ -161,4 +161,35 @@ testset "auth credential policy (bi#18)" {
         assert.equal(GuidanceFor("step_budget_exceeded", "groq"), "");
         assert.equal(GuidanceFor("other", "groq"), "")
     }
+
+    test "BuildAuthorizeUrl assembles the canonical PKCE shape" {
+        assert.equal(
+            BuildAuthorizeUrl(
+                "https://idp.example/authorize",
+                "cid",
+                "http%3A%2F%2Flocalhost%3A9999%2Fcallback",
+                "a%20b",
+                "CH",
+                "ST",
+            ),
+            "https://idp.example/authorize?code=true&client_id=cid&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A9999%2Fcallback&scope=a%20b&code_challenge=CH&code_challenge_method=S256&state=ST",
+        )
+    }
+
+    test "TokenExpiry subtracts the five-minute skew" {
+        assert.equal(TokenExpiry(3600, 1000000000000), 1000000000000 + 3600000 - 300000)
+    }
+
+    test "OAuthNeedsRefresh honors the validity window" {
+        // Healthy token: expiry far out.
+        assert.is_true(!OAuthNeedsRefresh(1000000000000 + 3600000 - 300000, 1000000000000));
+        // Expiring within the window refreshes.
+        assert.is_true(OAuthNeedsRefresh(1000000000000 + 60000, 1000000000000));
+        // Already expired refreshes.
+        assert.is_true(OAuthNeedsRefresh(999999999999, 1000000000000));
+        // Unknown expiry refreshes rather than risking a dead token.
+        assert.is_true(OAuthNeedsRefresh(null, 1000000000000));
+        // Custom window respected (default is 300000).
+        assert.is_true(!OAuthNeedsRefresh(1000000000000 + 60000, 1000000000000, min_validity_ms = 10000))
+    }
 }

@@ -80,6 +80,35 @@ function SupportsOAuth(provider: string) -> bool {
     provider == "anthropic" || provider == "xai" || provider == "kimi-coding"
 }
 
+// bi#22: OAuth core pure policy (pi `auth/oauth/*` shape, host executes).
+// The host percent-encodes redirect_uri/scope BEFORE calling (encoding is
+// a platform API, not policy); BAML owns the canonical authorize shape.
+// expires arithmetic mirrors pi exactly: 5-minute skew against early use.
+function BuildAuthorizeUrl(
+    authorize_url: string,
+    client_id: string,
+    redirect_uri_enc: string,
+    scope_enc: string,
+    challenge: string,
+    state: string,
+) -> string {
+    `${authorize_url}?code=true&client_id=${client_id}&response_type=code&redirect_uri=${redirect_uri_enc}&scope=${scope_enc}&code_challenge=${challenge}&code_challenge_method=S256&state=${state}`
+}
+
+function TokenExpiry(expires_in_s: int, now_ms: int) -> int {
+    now_ms + expires_in_s * 1000 - 5 * 60 * 1000
+}
+
+// True when the access token has less than min_validity_ms of life left
+// (default 5 minutes — pi's resolveProviderAuth window). A null expiry
+// means "unknown", which refreshes rather than risks a dead token.
+function OAuthNeedsRefresh(expires: int?, now_ms: int, min_validity_ms: int = 300000) -> bool {
+    match (expires) {
+        null => true,
+        let e: int => e - now_ms < min_validity_ms,
+    }
+}
+
 // bi#21: auth-guidance (pi coding-agent `auth-guidance.ts`). Pure text
 // shaping over the TurnFailure kind + provider: names the exact next
 // step where bi knows one, "" where it has nothing actionable (the host
