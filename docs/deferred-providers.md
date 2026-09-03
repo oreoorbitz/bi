@@ -14,7 +14,7 @@ except where noted — most are auth or endpoint-shape work.
 | `openai-codex` | codex API | ChatGPT OAuth tokens, custom wire | OAuth layer + new wire format |
 | `opencode`, `opencode-go` | mixed | Per-account dynamic endpoints, no fixed `base_url` | Endpoint discovery design |
 | `vercel-ai-gateway`, `cloudflare-ai-gateway` | mixed | User gateway URLs/keys, not provider endpoints | Gateway-URL host override design |
-| `cloudflare-workers-ai` | `cloudflareStreams(openAICompletionsApi)` | Account-id-scoped URL + custom stream wrapper | Endpoint template + stream wrapper port |
+| `cloudflare-workers-ai` | `cloudflareStreams(openAICompletionsApi)` | ~~Account-id-scoped URL + custom stream wrapper~~ LANDED: the "wrapper" only substitutes the account-id URL template — `resolve_endpoint_template` does that in-VM, plain `openai-completions` arm, 2 stable `@cf/` models | — |
 | `ant-ling` | `openai-completions` | Mechanically trivial (env key + fixed URL) but model ids unknown — pi's `data/*.json` catalogs are not in the checkout and there is no public knowledge to transcribe | Re-check against pi checkout with data files present |
 | `minimax-cn`, `moonshotai-cn`, `zai-coding-cn`, `qwen-token-plan-cn`, `qwen-token-plan-individual`, `xiaomi-*`, `kimi-*` (other plans) | same as base | Regional variants of an already-wired shape | Add on demand: one registry row + models each |
 | `faux` | test fake | pi-internal test double | Never (bi uses `llmFn` injection instead) |
