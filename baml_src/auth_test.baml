@@ -128,9 +128,14 @@ testset "auth credential policy (bi#18)" {
         assert.is_true(SupportsOAuth("anthropic"));
         assert.is_true(SupportsOAuth("xai"));
         assert.is_true(SupportsOAuth("kimi-coding"));
+        assert.is_true(SupportsOAuth("openrouter"));
         assert.is_true(!SupportsOAuth("groq"));
         assert.is_true(!SupportsOAuth("openai"));
-        assert.is_true(!SupportsOAuth("bogus"))
+        assert.is_true(!SupportsOAuth("bogus"));
+        // Non-catalog flow ids stay out until their backends land (bi#15).
+        assert.is_true(!SupportsOAuth("openai-codex"));
+        assert.is_true(!SupportsOAuth("github-copilot"));
+        assert.is_true(!SupportsOAuth("radius"))
     }
 
     test "GuidanceFor invalid_argument names var and login" {

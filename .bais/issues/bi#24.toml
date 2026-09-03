@@ -1,6 +1,6 @@
 id = "bi#24"
 title = "Provider OAuth flows batch 2 (xai, openrouter, copilot, kimi, radius)"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "providers/auth"
 body = """

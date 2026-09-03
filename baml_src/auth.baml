@@ -78,10 +78,12 @@ class AuthDecision {
 
 // bi#20: catalog providers whose pi counterpart also offers OAuth.
 // `bi login --oauth` (bi#22 core) and per-provider flows (bi#23 for
-// anthropic, bi#24 for xai/kimi-coding) build on this predicate; the
-// API-key path stays valid for all three meanwhile.
+// anthropic, bi#24 for xai/kimi-coding/openrouter) build on this
+// predicate; the API-key path stays valid meanwhile. Non-catalog flow
+// ids (openai-codex, github-copilot, radius) are intentionally absent:
+// their backends land in bi#15.
 function SupportsOAuth(provider: string) -> bool {
-    provider == "anthropic" || provider == "xai" || provider == "kimi-coding"
+    provider == "anthropic" || provider == "xai" || provider == "kimi-coding" || provider == "openrouter"
 }
 
 // bi#22: OAuth core pure policy (pi `auth/oauth/*` shape, host executes).

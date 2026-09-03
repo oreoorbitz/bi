@@ -16,7 +16,7 @@ import {
 	ValidateCredential_async,
 } from "../baml_sdk/index.js";
 import { listCredentials, modifyCredential, readCredential } from "./auth.js";
-import { getOAuthFlow, loginPKCEFlow, type OAuthInteraction } from "./oauth.js";
+import { getOAuthFlow, resolveFlowLogin, type OAuthInteraction } from "./oauth.js";
 import { listProviders, providerExists } from "./provider.js";
 import { createInterface } from "node:readline";
 
@@ -65,7 +65,8 @@ export async function runLogin(args: string[]): Promise<void> {
 		// in bi#15) can still log in — resolution activates with the
 		// backend. API-key login stays catalog-bound below.
 		if (!(await providerExists(provider)) && !getOAuthFlow(provider)) {
-			throw new AuthCliError(`Unknown provider: ${provider} — bi list-providers lists known ids`);
+			const hint = provider === "radius" ? " (Radius needs RADIUS_GATEWAY set to the gateway origin)" : "";
+			throw new AuthCliError(`Unknown provider: ${provider}${hint} — bi list-providers lists known ids`);
 		}
 		await runOAuthLogin(provider);
 		return;
@@ -110,8 +111,13 @@ export async function runOAuthLogin(provider: string): Promise<void> {
 	const interaction: OAuthInteraction = {
 		signal: ctl.signal,
 		notify: (n) => {
-			if (n.url) console.log(`\nComplete login in your browser:\n${n.url}\n${n.instructions ?? ""}`);
-			else if (n.message) console.log(n.message);
+			if (n.type === "auth_url") {
+				console.log(`\nComplete login in your browser:\n${n.url}\n${n.instructions ?? ""}`);
+			} else if (n.type === "device_code") {
+				console.log(`\nEnter this code at ${n.verificationUri}:\n  ${n.userCode}\n`);
+			} else if (n.type === "progress") {
+				console.log(n.message);
+			}
 		},
 		prompt: (message, _placeholder, signal) =>
 			new Promise((resolve, reject) => {
@@ -133,7 +139,7 @@ export async function runOAuthLogin(provider: string): Promise<void> {
 				});
 			}),
 	};
-	const cred = await loginPKCEFlow(flow, interaction);
+	const cred = await resolveFlowLogin(flow)(flow, interaction);
 	await modifyCredential(provider, () => cred);
 	console.log(`Stored oauth credential for ${provider} in ~/.bi/auth.json.`);
 }
