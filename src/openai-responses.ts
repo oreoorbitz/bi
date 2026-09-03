@@ -7,6 +7,7 @@
 
 import { SendTurn_async, StreamTurn_async, type TurnFailure, ai } from "../baml_sdk/index.js";
 import { toHistory, toToolSpecs, type ConversationTurn, type ToolSpec } from "./conversation.js";
+import { callWithRetry } from "./retry.js";
 import { missingKeyFailure } from "./auth.js";
 
 const PROVIDER = "openai_responses";
@@ -28,10 +29,10 @@ export async function sendOpenAIResponsesMessage(
 	if (authErr) return authErr;
 	const history = await toHistory(options.history ?? []);
 	const tools = toToolSpecs(options.tools ?? []);
-	return SendTurn_async(PROVIDER, options.model, options.apiKey, text, history, tools, {
+	return callWithRetry("openai-responses", () => SendTurn_async(PROVIDER, options.model, options.apiKey, text, history, tools, {
 		base_url: options.baseUrl ?? null,
 		temperature: options.temperature ?? null,
-	});
+	}));
 }
 
 export async function streamOpenAIResponsesMessage(
@@ -42,8 +43,8 @@ export async function streamOpenAIResponsesMessage(
 	if (authErr) return authErr;
 	const history = await toHistory(options.history ?? []);
 	const tools = toToolSpecs(options.tools ?? []);
-	return StreamTurn_async(PROVIDER, options.model, options.apiKey, text, history, tools, {
+	return callWithRetry("openai-responses", () => StreamTurn_async(PROVIDER, options.model, options.apiKey, text, history, tools, {
 		base_url: options.baseUrl ?? null,
 		temperature: options.temperature ?? null,
-	});
+	}));
 }

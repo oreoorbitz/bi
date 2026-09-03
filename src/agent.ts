@@ -9,6 +9,7 @@ import { toHistory, type ConversationTurn } from "./conversation.js";
 import { maybeCompactHistory, type CompactionOptions } from "./compaction.js";
 import { SendTurn_async } from "../baml_sdk/index.js";
 import { toToolSpecs, type ToolSpec } from "./conversation.js";
+import { callWithRetry } from "./retry.js";
 
 export type ToolHandler = (name: string, args: Record<string, unknown>) => Promise<string>;
 export type { ToolSpec } from "./conversation.js";
@@ -47,11 +48,15 @@ function defaultLlmFn(options: AgentOptions): LlmFn {
 		if (authErr) return authErr;
 		const h = await toHistory(history);
 		const t = toToolSpecs(tools);
-		const res = await SendTurn_async(options.provider ?? "anthropic", options.model, options.apiKey ?? null, text, h, t, {
-			base_url: options.baseUrl ?? null,
-			temperature: options.temperature ?? null,
-		});
-		return res;
+		// Retry at the dispatch choke point (bi#16) — the per-provider
+		// send/stream fns wrap their own calls too, but every agent turn
+		// flows through here.
+		return callWithRetry(options.provider ?? "anthropic", () =>
+			SendTurn_async(options.provider ?? "anthropic", options.model, options.apiKey ?? null, text, h, t, {
+				base_url: options.baseUrl ?? null,
+				temperature: options.temperature ?? null,
+			}),
+		);
 	};
 }
 

@@ -20,6 +20,7 @@
 import { SendTurn_async, StreamTurn_async, type TurnFailure, ai } from "../baml_sdk/index.js";
 import { vendor } from "../baml_sdk/index.js";
 import { toHistory, toToolSpecs, type ConversationTurn, type ToolSpec } from "./conversation.js";
+import { callWithRetry } from "./retry.js";
 import { missingKeyFailure } from "./auth.js";
 
 const PROVIDER = "anthropic";
@@ -57,11 +58,11 @@ export async function sendAnthropicMessage(
 	const history = await toHistory(options.history ?? []);
 	const tools = toToolSpecs(options.tools ?? []);
 	const thinking = await toThinkingConfig(options.thinking ?? null);
-	return SendTurn_async(PROVIDER, options.model, options.apiKey, text, history, tools, {
+	return callWithRetry("anthropic", () => SendTurn_async(PROVIDER, options.model, options.apiKey, text, history, tools, {
 		base_url: options.baseUrl ?? null,
 		temperature: options.temperature ?? null,
 		thinking,
-	});
+	}));
 }
 
 export async function streamAnthropicMessage(
@@ -73,9 +74,9 @@ export async function streamAnthropicMessage(
 	const history = await toHistory(options.history ?? []);
 	const tools = toToolSpecs(options.tools ?? []);
 	const thinking = await toThinkingConfig(options.thinking ?? null);
-	return StreamTurn_async(PROVIDER, options.model, options.apiKey, text, history, tools, {
+	return callWithRetry("anthropic", () => StreamTurn_async(PROVIDER, options.model, options.apiKey, text, history, tools, {
 		base_url: options.baseUrl ?? null,
 		temperature: options.temperature ?? null,
 		thinking,
-	});
+	}));
 }

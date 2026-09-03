@@ -3,6 +3,7 @@
 
 import { SendTurn_async, StreamTurn_async, StartIncrementalStream_async, TurnFailure, ai } from "../baml_sdk/index.js";
 import { toHistory, toToolSpecs, type ConversationTurn, type ToolSpec } from "./conversation.js";
+import { callWithRetry } from "./retry.js";
 import { missingKeyFailure } from "./auth.js";
 
 const PROVIDER = "google";
@@ -21,10 +22,10 @@ export async function sendGoogleMessage(text: string, options: GoogleCallOptions
 	if (authErr) return authErr;
 	const history = await toHistory(options.history ?? []);
 	const tools = toToolSpecs(options.tools ?? []);
-	return SendTurn_async(PROVIDER, options.model, options.apiKey, text, history, tools, {
+	return callWithRetry("google", () => SendTurn_async(PROVIDER, options.model, options.apiKey, text, history, tools, {
 		base_url: options.baseUrl ?? null,
 		temperature: options.temperature ?? null,
-	});
+	}));
 }
 
 export async function streamGoogleMessage(text: string, options: GoogleCallOptions): Promise<ai.ModelTurn | TurnFailure> {
@@ -32,10 +33,10 @@ export async function streamGoogleMessage(text: string, options: GoogleCallOptio
 	if (authErr) return authErr;
 	const history = await toHistory(options.history ?? []);
 	const tools = toToolSpecs(options.tools ?? []);
-	return StreamTurn_async(PROVIDER, options.model, options.apiKey, text, history, tools, {
+	return callWithRetry("google", () => StreamTurn_async(PROVIDER, options.model, options.apiKey, text, history, tools, {
 		base_url: options.baseUrl ?? null,
 		temperature: options.temperature ?? null,
-	});
+	}));
 }
 
 export async function startGoogleIncremental(text: string, options: GoogleCallOptions): Promise<ai.stream.Stream<string, string> | TurnFailure> {
