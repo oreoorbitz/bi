@@ -1,6 +1,38 @@
 testset "provider registry" {
-    test "ListProviders returns 3" {
-        assert.equal(ListProviders().length(), 3)
+    test "ListProviders returns 7" {
+        assert.equal(ListProviders().length(), 7)
+    }
+
+    test "GetProvider groq has chat-completions api and auth env" {
+        let p = GetProvider("groq");
+        assert.not_null(p);
+        match (p) {
+            let prov: Provider => {
+                assert.equal(prov.base_url, "https://api.groq.com/openai/v1");
+                assert.equal(prov.api, "openai-completions")
+            },
+            _ => assert.is_true(false),
+        }
+    }
+
+    test "ProviderAuthEnv returns canonical env vars" {
+        match (ProviderAuthEnv("groq")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "GROQ_API_KEY"),
+        }
+        match (ProviderAuthEnv("deepseek")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "DEEPSEEK_API_KEY"),
+        }
+        match (ProviderAuthEnv("anthropic")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "ANTHROPIC_API_KEY"),
+        }
+        match (ProviderAuthEnv("openai_responses")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "OPENAI_API_KEY"),
+        }
+        assert.is_true(ProviderAuthEnv("bogus") is null)
     }
 
     test "GetProvider anthropic has correct base_url and api" {
@@ -60,7 +92,7 @@ testset "provider registry" {
     }
 
     test "RefreshAllModels returns provider count" {
-        assert.equal(RefreshAllModels(), 3)
+        assert.equal(RefreshAllModels(), 7)
     }
 
     test "RefreshModelsWithResult static vs remote vs unknown" {

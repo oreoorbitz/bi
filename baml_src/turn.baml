@@ -164,6 +164,23 @@ function build_toolbox(specs: ToolSpec[]) -> ai.tools.Toolbox {
     )
 }
 
+// Auth resolution (bi#13, mirrors pi's envApiKeyAuth precedence minus the
+// stored-credential layer): an explicit key wins; else a late-bound
+// baml.env.Ref to the catalog's auth_env is read per request (the Ref
+// carries the var NAME only, never the secret); else null and the client
+// falls back to its own canonical env var.
+function resolve_credential(provider: string, api_key: string?) -> ai.Credential? {
+    match (api_key) {
+        null => {
+            match (ProviderAuthEnv(provider)) {
+                null => null,
+                let v: string => baml.env.ref(v),
+            }
+        },
+        let k: string => k,
+    }
+}
+
 function build_client(
     provider: string,
     model: string,
@@ -198,7 +215,47 @@ function build_client(
                 temperature = temperature,
             )
         },
-        let other => throw baml.errors.InvalidArgument { message: `unknown provider: ${other}` },
+        // Catalog-driven routing (bi#13): providers beyond the big three
+        // dispatch on the catalog's `api` tag, so adding a provider is
+        // registry + models only — no turn.baml change. A host base_url
+        // override still wins; otherwise the catalog's base_url applies.
+        let other => {
+            let entry = GetProvider(other);
+            if (entry == null) {
+                throw baml.errors.InvalidArgument { message: `unknown provider: ${other}` }
+            } else {
+                let p: Provider = entry;
+                let url = base_url ?? p.base_url;
+                let cred = resolve_credential(other, api_key);
+                if (p.api == "openai-completions") {
+                    openai.ChatClient.new(
+                        model = model,
+                        api_key = cred,
+                        base_url = url,
+                        temperature = temperature,
+                    )
+                } else if (p.api == "anthropic-messages") {
+                    anthropic.AnthropicClient.new(
+                        model = model,
+                        api_key = cred,
+                        base_url = url,
+                        temperature = temperature,
+                        thinking = thinking,
+                    )
+                } else if (p.api == "openai-responses") {
+                    openai.ResponsesClient.new(
+                        model = model,
+                        api_key = cred,
+                        base_url = url,
+                        temperature = temperature,
+                    )
+                } else {
+                    throw baml.errors.InvalidArgument {
+                        message: `provider ${other} has unsupported api: ${p.api}`,
+                    }
+                }
+            }
+        },
     }
 }
 
@@ -236,7 +293,44 @@ function build_streaming_client(
                 temperature = temperature,
             )
         },
-        let other => throw baml.errors.InvalidArgument { message: `unknown provider: ${other}` },
+        // Same catalog-driven routing as build_client (bi#13).
+        let other => {
+            let entry = GetProvider(other);
+            if (entry == null) {
+                throw baml.errors.InvalidArgument { message: `unknown provider: ${other}` }
+            } else {
+                let p: Provider = entry;
+                let url = base_url ?? p.base_url;
+                let cred = resolve_credential(other, api_key);
+                if (p.api == "openai-completions") {
+                    openai.ChatClient.new(
+                        model = model,
+                        api_key = cred,
+                        base_url = url,
+                        temperature = temperature,
+                    )
+                } else if (p.api == "anthropic-messages") {
+                    anthropic.AnthropicClient.new(
+                        model = model,
+                        api_key = cred,
+                        base_url = url,
+                        temperature = temperature,
+                        thinking = thinking,
+                    )
+                } else if (p.api == "openai-responses") {
+                    openai.ResponsesClient.new(
+                        model = model,
+                        api_key = cred,
+                        base_url = url,
+                        temperature = temperature,
+                    )
+                } else {
+                    throw baml.errors.InvalidArgument {
+                        message: `provider ${other} has unsupported api: ${p.api}`,
+                    }
+                }
+            }
+        },
     }
 }
 

@@ -11,8 +11,29 @@ testset "model catalog" {
         assert.equal(ListModels("openai").length(), 2)
     }
 
-    test "ListAllModels returns 7" {
-        assert.equal(ListAllModels().length(), 7)
+    test "ListAllModels returns 15" {
+        assert.equal(ListAllModels().length(), 15)
+    }
+
+    test "ListModels compat providers return 2 each" {
+        assert.equal(ListModels("groq").length(), 2);
+        assert.equal(ListModels("deepseek").length(), 2);
+        assert.equal(ListModels("together").length(), 2);
+        assert.equal(ListModels("cerebras").length(), 2)
+    }
+
+    test "GetModel deepseek-chat has completions api and reasoning flag" {
+        let m = GetModel("deepseek-chat");
+        assert.not_null(m);
+        match (m) {
+            let model: Model => {
+                assert.equal(model.provider, "deepseek");
+                assert.equal(model.api, "openai-completions");
+                assert.is_true(!model.reasoning)
+            },
+            _ => assert.is_true(false),
+        }
+        assert.is_true(ModelSupportsReasoning("deepseek-reasoner"))
     }
 
     test "GetModel known id returns correct provider and api" {

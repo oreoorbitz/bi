@@ -1,13 +1,18 @@
-// Minimal pi Provider port — static provider registry for the 3 bi clients.
-// Mirrors pi's Provider<TApi> (id, name, baseUrl, api) but without auth
-// refresh/fetch lifecycle. Enough to drive ListModels and SendTurn via
-// provider id.
+// Provider registry — pi's Provider<TApi> (id, name, baseUrl, api, auth)
+// trimmed of the refresh/fetch lifecycle. `auth_env` is pi's
+// envApiKeyAuth env-var list collapsed to the single canonical var bi
+// resolves: an explicit --api-key wins, else a late-bound baml.env.Ref to
+// this var is read per request (see resolve_credential in turn.baml), else
+// the client falls back to its own canonical env var. api uses pi's own
+// vocabulary ("openai-completions" | "anthropic-messages" |
+// "openai-responses" | "google") so turn.baml routes catalog-driven.
 
 class Provider {
     id: string,
     name: string,
     base_url: string,
     api: string,
+    auth_env: string?,
 }
 
 function _providers() -> Provider[] {
@@ -17,20 +22,67 @@ function _providers() -> Provider[] {
             name: "Anthropic",
             base_url: "https://api.anthropic.com",
             api: "anthropic-messages",
+            auth_env: "ANTHROPIC_API_KEY",
         },
         Provider {
             id: "openai",
             name: "OpenAI",
             base_url: "https://api.openai.com/v1",
             api: "openai-responses",
+            auth_env: "OPENAI_API_KEY",
         },
         Provider {
             id: "google",
             name: "Google",
             base_url: "https://generativelanguage.googleapis.com",
             api: "google",
+            auth_env: "GEMINI_API_KEY",
+        },
+        Provider {
+            id: "groq",
+            name: "Groq",
+            base_url: "https://api.groq.com/openai/v1",
+            api: "openai-completions",
+            auth_env: "GROQ_API_KEY",
+        },
+        Provider {
+            id: "deepseek",
+            name: "DeepSeek",
+            base_url: "https://api.deepseek.com",
+            api: "openai-completions",
+            auth_env: "DEEPSEEK_API_KEY",
+        },
+        Provider {
+            id: "together",
+            name: "Together",
+            base_url: "https://api.together.ai/v1",
+            api: "openai-completions",
+            auth_env: "TOGETHER_API_KEY",
+        },
+        Provider {
+            id: "cerebras",
+            name: "Cerebras",
+            base_url: "https://api.cerebras.ai/v1",
+            api: "openai-completions",
+            auth_env: "CEREBRAS_API_KEY",
         },
     ]
+}
+
+// Canonical env var holding this provider's key (pi's envApiKeyAuth).
+// Null means the provider has no standard env-var auth in bi's catalog.
+function ProviderAuthEnv(provider: string) -> string? {
+    // "openai_responses" is the legacy SendTurn tag alias for "openai"
+    // (ListModels already aliases it) — normalize before lookup.
+    let id = if (provider == "openai_responses") {
+        "openai"
+    } else {
+        provider
+    };
+    match (GetProvider(id)) {
+        null => null,
+        let p: Provider => p.auth_env,
+    }
 }
 
 function ListProviders() -> Provider[] {

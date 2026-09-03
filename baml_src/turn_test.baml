@@ -63,6 +63,100 @@ testset "turn plumbing" {
         assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
     }
 
+    test "groq invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn(
+            "groq",
+            "llama-3.3-70b-versatile",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "groq invoke_stream reaches the wire and classifies transport failure" {
+        let result = StreamTurn(
+            "groq",
+            "llama-3.3-70b-versatile",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "deepseek invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("deepseek", "deepseek-chat", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "deepseek invoke_stream reaches the wire and classifies transport failure" {
+        let result = StreamTurn("deepseek", "deepseek-chat", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "together invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn(
+            "together",
+            "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "together invoke_stream reaches the wire and classifies transport failure" {
+        let result = StreamTurn(
+            "together",
+            "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "cerebras invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("cerebras", "llama-3.3-70b", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "cerebras invoke_stream reaches the wire and classifies transport failure" {
+        let result = StreamTurn("cerebras", "llama-3.3-70b", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "a null api_key resolves the catalog env ref without panicking" {
+        // No key passed and DEEPSEEK_API_KEY unset: resolve_credential builds
+        // baml.env.ref(DEEPSEEK_API_KEY), which resolves to null, and the
+        // client refuses before the wire with a classified invalid_request
+        // (missing credential), retry-safe. Proves the Ref path constructs
+        // and dispatches instead of panicking.
+        let result = SendTurn("deepseek", "deepseek-chat", null, "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:invalid_request:retry_safe=true")
+    }
+
+    test "a catalog provider with no base_url override uses the catalog url" {
+        // No host override: build_client must fill the catalog base_url.
+        // resolved_base_url is pure (no request), so this stays offline.
+        let cl = build_client("groq", "llama-3.3-70b-versatile", "test-key", null);
+        match (cl) {
+            let c: openai.ChatClient => {
+                assert.equal(c.resolved_base_url(), "https://api.groq.com/openai/v1")
+            },
+            _ => assert.is_true(false),
+        }
+    }
+
     test "an unknown provider tag is a clean InvalidArgument, not a panic" {
         let outcome = SendTurn("bogus", "some-model", "test-key", "hi", [], []) catch_all (e) {
             _ => e.to_string(),
