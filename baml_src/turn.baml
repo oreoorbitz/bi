@@ -316,7 +316,9 @@ function CreateTypedStream(chunks: string[]) -> ai.stream.Stream<string, string>
         _next_text: () -> {
             match (turns.next()) {
                 let d: ai.stream.Done => null,
-                let batch: string => batch,
+                let s: string => s,
+            } catch_all (e) {
+                _ => throw baml.errors.UnknownError { data: e, message: [e.to_string()] }
             }
         },
         _cache: baml.sap.__new_parse_cache<string, string>(),
@@ -358,9 +360,9 @@ function StartIncrementalStream(
         _next_text: () -> {
             match (turns.next()) {
                 let d: ai.stream.Done => null,
-                let batch: string => batch,
-            } catch (e) {
-                let f: ai.errors.Failure => throw baml.errors.Io { message: f.to_string() },
+                let s: string => s,
+            } catch_all (e) {
+                _ => throw baml.errors.UnknownError { data: e, message: [e.to_string()] }
             }
         },
         _cache: baml.sap.__new_parse_cache<string, string>(),

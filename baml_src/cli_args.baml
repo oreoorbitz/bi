@@ -441,6 +441,8 @@ function normalize_session_name(value: string) -> string? {
 function format_help() -> string {
     "bi - AI coding assistant with read, bash, edit, write tools\n\n"
         + "Usage:\n  bi [options] [--] [@files...] [messages...]\n\n"
+        + "  bi bais list|ready|new|move|check|graph — BAIS first-class (`.bais/issues/*.toml`, BAML-validated)\n"
+        + "  bi run <prompt> — agent loop with 15 tools (7 pi + 8 bais incl. report_subagent_timeout)\n\n"
         + "Options:\n"
         + "  --provider <name>              Provider name (default: google)\n"
         + "  --model <pattern>              Model pattern or ID\n"
