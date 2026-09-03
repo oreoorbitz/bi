@@ -309,6 +309,9 @@ function ListAllModels() -> Model[] {
     for (let m in _azure_models()) {
         out.push(m)
     }
+    for (let m in _cloudflare_models()) {
+        out.push(m)
+    }
     out
 }
 
@@ -335,6 +338,7 @@ function ListModels(provider: string) -> Model[] {
         "openrouter" => _openrouter_models(),
         "qwen-token-plan" => _qwen_token_plan_models(),
         "azure-openai-responses" => _azure_models(),
+        "cloudflare-workers-ai" => _cloudflare_models(),
         _ => [],
     }
 }
@@ -716,6 +720,39 @@ function _azure_models() -> Model[] {
             context_window: 128000,
             max_tokens: 16384,
             cost: ModelCost { input: 0.15, output: 0.6, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+// Cloudflare Workers AI serves @cf/ models on the account endpoint —
+// stable public ids (no pi data JSON to transcribe). Windows/costs are
+// advisory (Workers AI bills per-neuron); the template base_url mirrors
+// the provider row and materializes per request.
+function _cloudflare_models() -> Model[] {
+    [
+        Model {
+            id: "@cf/meta/llama-3.1-8b-instruct",
+            name: "Llama 3.1 8B Instruct (Cloudflare)",
+            api: "openai-completions",
+            provider: "cloudflare-workers-ai",
+            base_url: "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1",
+            reasoning: false,
+            input: ["text"],
+            context_window: 128000,
+            max_tokens: 4096,
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "@cf/mistral/mistral-7b-instruct-v0.1",
+            name: "Mistral 7B Instruct v0.1 (Cloudflare)",
+            api: "openai-completions",
+            provider: "cloudflare-workers-ai",
+            base_url: "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1",
+            reasoning: false,
+            input: ["text"],
+            context_window: 8192,
+            max_tokens: 4096,
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: null, cache_write: null },
         },
     ]
 }

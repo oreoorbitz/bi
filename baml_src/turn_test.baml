@@ -66,6 +66,14 @@ testset "turn plumbing" {
         }
     }
 
+    test "cloudflare missing account fails fast naming the env var" {
+        SendTurn("cloudflare-workers-ai", "@cf/meta/llama-3.1-8b-instruct", "test-key", "hi", [], []) catch (e) {
+            baml.errors.InvalidArgument => {
+                assert.is_true(e.message.includes("CLOUDFLARE_ACCOUNT_ID"))
+            },
+        }
+    }
+
     test "azure missing deployment fails fast naming the opt and env" {
         SendTurn(
             "azure-openai-responses",

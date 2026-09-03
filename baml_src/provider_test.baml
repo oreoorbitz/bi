@@ -1,6 +1,6 @@
 testset "provider registry" {
-    test "ListProviders returns 20" {
-        assert.equal(ListProviders().length(), 20)
+    test "ListProviders returns 21" {
+        assert.equal(ListProviders().length(), 21)
     }
 
     test "GetProvider groq has chat-completions api and auth env" {
@@ -133,6 +133,27 @@ testset "provider registry" {
         }
     }
 
+    test "GetProvider cloudflare keeps the account template and key var" {
+        let p = GetProvider("cloudflare-workers-ai");
+        assert.not_null(p);
+        match (p) {
+            let prov: Provider => {
+                assert.equal(prov.api, "openai-completions");
+                assert.is_true(prov.base_url.includes("{CLOUDFLARE_ACCOUNT_ID}"))
+            },
+            _ => assert.is_true(false),
+        }
+        match (ProviderAuthEnv("cloudflare-workers-ai")) {
+            let v: string => assert.equal(v, "CLOUDFLARE_API_KEY"),
+            _ => assert.is_true(false),
+        }
+    }
+
+    test "resolve_endpoint_template passes plain urls through" {
+        assert.equal(resolve_endpoint_template("https://api.x.ai/v1"), "https://api.x.ai/v1");
+        assert.equal(resolve_endpoint_template(""), "")
+    }
+
     test "GetProvider anthropic has correct base_url and api" {
         let p = GetProvider("anthropic");
         assert.not_null(p);
@@ -190,7 +211,7 @@ testset "provider registry" {
     }
 
     test "RefreshAllModels returns provider count" {
-        assert.equal(RefreshAllModels(), 20)
+        assert.equal(RefreshAllModels(), 21)
     }
 
     test "RefreshModelsWithResult static vs remote vs unknown" {

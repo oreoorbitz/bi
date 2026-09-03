@@ -232,7 +232,16 @@ function build_client(
                 throw baml.errors.InvalidArgument { message: `unknown provider: ${other}` }
             } else {
                 let p: Provider = entry;
-                let url = base_url ?? p.base_url;
+                // Endpoint templates (bi#15): {VAR} placeholders in a
+                // catalog base_url materialize from env per request (pi's
+                // cloudflareStreams pattern). Rows without placeholders
+                // pass through untouched; leftovers fail fast naming it.
+                let url = resolve_endpoint_template(base_url ?? p.base_url);
+                if (url.includes("{CLOUDFLARE_ACCOUNT_ID}")) {
+                    throw baml.errors.InvalidArgument {
+                        message: "cloudflare-workers-ai needs CLOUDFLARE_ACCOUNT_ID (account id for the endpoint URL)",
+                    }
+                }
                 let cred = resolve_credential(other, api_key);
                 if (p.api == "openai-completions") {
                     openai.ChatClient.new(
@@ -274,6 +283,25 @@ function build_client(
             }
         },
     }
+}
+
+// Endpoint templates (bi#15): {VAR} placeholders in a catalog base_url
+// materialize from env per request (pi's cloudflareStreams pattern).
+// Pure substitution — the callers fail fast on leftovers so a missing
+// env var names itself instead of producing a garbage URL.
+function subst_template_var(url: string, key: string, value: string?) -> string {
+    match (value) {
+        null => url,
+        let v: string => url.replace_all(key, v),
+    }
+}
+
+function resolve_endpoint_template(url: string) -> string {
+    subst_template_var(
+        subst_template_var(url, "{CLOUDFLARE_ACCOUNT_ID}", baml.env.get("CLOUDFLARE_ACCOUNT_ID")),
+        "{CLOUDFLARE_GATEWAY_ID}",
+        baml.env.get("CLOUDFLARE_GATEWAY_ID"),
+    )
 }
 
 // Azure endpoint resolution: explicit opt wins, else AZURE_OPENAI_* env.
@@ -345,7 +373,16 @@ function build_streaming_client(
                 throw baml.errors.InvalidArgument { message: `unknown provider: ${other}` }
             } else {
                 let p: Provider = entry;
-                let url = base_url ?? p.base_url;
+                // Endpoint templates (bi#15): {VAR} placeholders in a
+                // catalog base_url materialize from env per request (pi's
+                // cloudflareStreams pattern). Rows without placeholders
+                // pass through untouched; leftovers fail fast naming it.
+                let url = resolve_endpoint_template(base_url ?? p.base_url);
+                if (url.includes("{CLOUDFLARE_ACCOUNT_ID}")) {
+                    throw baml.errors.InvalidArgument {
+                        message: "cloudflare-workers-ai needs CLOUDFLARE_ACCOUNT_ID (account id for the endpoint URL)",
+                    }
+                }
                 let cred = resolve_credential(other, api_key);
                 if (p.api == "openai-completions") {
                     openai.ChatClient.new(

@@ -182,6 +182,17 @@ function _providers() -> Provider[] {
             api: "azure-responses",
             auth_env: "AZURE_OPENAI_API_KEY",
         },
+        // Cloudflare materializes its endpoint per request from env
+        // (pi's cloudflareStreams URL-template pattern): {VAR}
+        // placeholders in base_url resolve via env reads in turn.baml
+        // (resolve_endpoint_template), so no host flags.
+        Provider {
+            id: "cloudflare-workers-ai",
+            name: "Cloudflare Workers AI",
+            base_url: "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1",
+            api: "openai-completions",
+            auth_env: "CLOUDFLARE_API_KEY",
+        },
     ]
 }
 

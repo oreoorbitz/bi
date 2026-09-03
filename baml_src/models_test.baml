@@ -11,8 +11,8 @@ testset "model catalog" {
         assert.equal(ListModels("openai").length(), 2)
     }
 
-    test "ListAllModels returns 41" {
-        assert.equal(ListAllModels().length(), 41)
+    test "ListAllModels returns 43" {
+        assert.equal(ListAllModels().length(), 43)
     }
 
     test "ListModels azure returns advisory deployments" {
@@ -20,6 +20,13 @@ testset "model catalog" {
         assert.equal(ms.length(), 2);
         assert.equal(ms[0].api, "azure-responses");
         assert.equal(ms[0].provider, "azure-openai-responses")
+    }
+
+    test "ListModels cloudflare returns template-based workers" {
+        let ms = ListModels("cloudflare-workers-ai");
+        assert.equal(ms.length(), 2);
+        assert.equal(ms[0].api, "openai-completions");
+        assert.is_true(ms[0].base_url.includes("{CLOUDFLARE_ACCOUNT_ID}"))
     }
 
     test "ListModels compat providers return 2 each" {
