@@ -1,0 +1,30 @@
+id = "bi#50"
+title = "oversight: blocked-behind-stalled feed (join stalls to parked chains)"
+status = "Open"
+kind = "Feat"
+area = "bais/oversight"
+body = """
+oversight reports stalled_leases, but nothing links a stalled node
+to the chain parked behind it. A blocker Doing for weeks with a
+silent holder is a different fact from a blocker Doing since
+yesterday — join them: "N issues parked behind stalled X, holder
+silent since ...". BAML owns the join predicate (blocked-transitive
+over Blocks edges x stalled holder, pure over log + projection);
+host owns the feed rendering. Depends on bi#42 (wall-clock expiry
+must exist before "stalled" means anything observable) and wants
+bi#48's reasons for the per-issue side of the report.
+Acceptance: fixture with a stalled holder + 3-deep parked chain
+reports one joined entry naming all four; a merely-slow (renewing)
+holder with the same chain shape reports nothing; --json feeds
+bais_sample for review triage.
+"""
+
+[[edge]]
+from = "bi#50"
+to = "bi#42"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#50"
+to = "bi#48"
+kind = "Related"

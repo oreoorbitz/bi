@@ -1,0 +1,22 @@
+id = "bi#48"
+title = "ready --why-not (every omission carries its reason)"
+status = "Open"
+kind = "Feat"
+area = "bais/cli"
+body = """
+`ready` omits blocked issues silently — "nothing ready" is
+indistinguishable from "everything parked behind one stuck node",
+and agents cannot tell an empty backlog from a jammed one except by
+hand-walking the graph. Add --why-not: every non-ready issue carries
+its reason — blocked-by X (with X's status), dangling-ref (which
+end, Missing vs External), in-cycle (which cycle), leased-to Y
+(holder + expiry). BAML owns the reason ADT + classification
+(is_blocked/dangling_edge_refs/has_cycle/current_lease already
+compute all of it — this is shaping, not new policy); host owns
+rendering (text + --json). Highest-value gap in the blocking surface:
+unexplained negative answers.
+Acceptance: on bi/.bais, --why-not accounts for every non-ready
+issue with a reason that names the exact edge/lease/cycle; an
+all-Done backlog reports empty-with-no-reasons (finished, not
+jammed); --json reasons round-trip through baml_sdk types.
+"""

@@ -1,0 +1,23 @@
+id = "bi#49"
+title = "bais move prints what it unblocked"
+status = "Open"
+kind = "Feat"
+area = "bais/cli"
+body = """
+Closing a blocker frees downstream issues, but today the mover must
+remember to run `graph --from` to discover that — procedure instead
+of affordance. `bais move X Done` (and any transition that frees a
+Blocks edge) prints the newly-unblocked set with one-line titles.
+Read-only derivation from the store + graph (same rule as
+ready_issues, evaluated before/after); no new policy. Pairs with
+bi#44/45 (push wakes, poll confirms) for the headless case — this
+covers the interactive case at the moment of action.
+Acceptance: probe moves a blocker Done, output names exactly the
+freed issues; moving a non-blocker prints nothing extra; --json
+includes the unblocked ids for scripting.
+"""
+
+[[edge]]
+from = "bi#49"
+to = "bi#48"
+kind = "Related"
