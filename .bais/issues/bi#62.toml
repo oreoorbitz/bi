@@ -1,6 +1,6 @@
 id = "bi#62"
 title = "Wire keeper+subscriber into bi run + commit stub-hub gates"
-status = "Open"
+status = "Done"
 kind = "Bug"
 area = "bi/agent"
 body = """
