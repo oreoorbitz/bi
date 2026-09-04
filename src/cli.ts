@@ -13,7 +13,8 @@ import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, mo
 import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { listCredentials } from "./auth.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
 import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
 import { readClipboardImage, writeClipboardText, clipboardSupportsImage } from "./clipboard.js";
@@ -346,6 +347,27 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				await runLogout(["logout", ...t.args.split(/\s+/).filter((s) => s.length > 0)]);
 			} catch (e) {
 				console.error(e instanceof Error ? e.message : e);
+			}
+			return history;
+		}
+		if (t.name === "oauth") {
+			// bi#29: pi's oauth-selector as a status board. Rows are
+			// secret-free (winning chain link + stored kind + env var);
+			// BAML shapes every line, unconfigured rows name their fix.
+			try {
+				const providers = await ListProviders_async();
+				const stored = await listCredentials();
+				const rows = [];
+				for (const p of providers) {
+					const env = await ProviderAuthEnv_async(p.id);
+					const s = stored.find((c) => c.provider_id === p.id);
+					if (s) rows.push(new OAuthRow({ provider_id: p.id, source: "stored", cred_type: s.type, auth_env: env }));
+					else if (env && process.env[env]) rows.push(new OAuthRow({ provider_id: p.id, source: "env", cred_type: null, auth_env: env }));
+					else rows.push(new OAuthRow({ provider_id: p.id, source: "none", cred_type: null, auth_env: env }));
+				}
+				console.log(await format_oauth_status_async(rows));
+			} catch (e) {
+				console.error(`[bi] oauth status failed (${e instanceof Error ? e.message : e})`);
 			}
 			return history;
 		}
@@ -736,6 +758,61 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				return history;
 			}
 			console.error("usage: /settings [get <key> | set <key> <value> | unset <key>]");
+			return history;
+		}
+		if (t.name === "config") {
+			// bi#29: pi's config-selector as an $EDITOR edit with BAML
+			// revalidate. Temp-file edit, atomic apply: bad JSON or a
+			// failed validation leaves settings.json untouched.
+			const arg = t.args.trim();
+			if (arg === "path") {
+				console.log(settingsFile());
+				return history;
+			}
+			if (arg) {
+				console.error("usage: /config [path]");
+				return history;
+			}
+			if (!process.stdin.isTTY) {
+				console.error("/config needs an interactive terminal ($EDITOR edit)");
+				return history;
+			}
+			const res = await editInExternalEditor(editorCommand(), JSON.stringify(loadUserSettings(), null, 2) + "\n");
+			if (res.status !== "complete") {
+				console.error("[bi] config edit cancelled — settings unchanged");
+				return history;
+			}
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(res.content);
+			} catch {
+				console.error("[bi] config is not valid JSON — settings unchanged");
+				return history;
+			}
+			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+				console.error("[bi] config must be a JSON object — settings unchanged");
+				return history;
+			}
+			// Same known-key filter as loadUserSettings: unknown keys
+			// are ignored, never persisted.
+			const r = parsed as Record<string, unknown>;
+			const next: UserSettings = {};
+			if (typeof r.default_provider === "string") next.default_provider = r.default_provider;
+			if (typeof r.default_model === "string") next.default_model = r.default_model;
+			if (typeof r.default_thinking === "string") next.default_thinking = r.default_thinking;
+			const errors = await validate_settings_async(bamlSettings(next));
+			if (errors.length) {
+				for (const e of errors) console.error(e);
+				console.error("[bi] config invalid — settings unchanged");
+				return history;
+			}
+			try {
+				saveUserSettings(next);
+			} catch (e) {
+				console.error(`[bi] settings persist failed (${e instanceof Error ? e.message : e})`);
+				return history;
+			}
+			console.error("[bi] config saved");
 			return history;
 		}
 		// bi#31: scoped but unwired — name the owning issue instead of

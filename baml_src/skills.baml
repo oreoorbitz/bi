@@ -240,6 +240,18 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
             scope: null,
         },
         BuiltinSlashCommand {
+            name: "oauth",
+            description: "Show per-provider auth status (stored, env, or missing)",
+            argument_hint: null,
+            scope: null,
+        },
+        BuiltinSlashCommand {
+            name: "config",
+            description: "Edit the settings file in $EDITOR (validated on save)",
+            argument_hint: "[path]",
+            scope: null,
+        },
+        BuiltinSlashCommand {
             name: "new",
             description: "Start a new session",
             argument_hint: null,
@@ -273,9 +285,10 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
 }
 
 // /hotkeys body: what bi's line-based readline REPL actually supports
-// (not pi's widget keybindings — those land with bi#32). Host prints.
+// (not pi's widget keybindings — those wait on a raw-mode input layer
+// readline cannot give, bi#32). Host prints.
 function hotkeys_text() -> string {
-    "/              Slash commands (this list: /help)\n↑ / ↓         Browse input history\nEnter          Send message\n\\ (trailing)   Continue input onto the next line\nCtrl-C          Abort the running turn (transcript survives)\nCtrl-D          Quit (when input is empty)"
+    "/              Slash commands (this list: /help)\n↑ / ↓         Browse input history\nEnter          Send message\n\\ (trailing)   Continue input onto the next line\nCtrl-C          Abort the running turn (transcript survives)\nCtrl-D          Quit (when input is empty)\n/copy /paste   Copy last answer / stage a clipboard image\n/tree /attach  Browse files / stage file context\n/editor        Compose the prompt in $EDITOR"
 }
 
 // Dispatch lookup: builtins first, then skill names ("/<name>"). Returns the
@@ -356,11 +369,13 @@ test "slash dispatch finds builtins then skills" {
     assert.equal(lookup_slash("/attach", skills), "attach");
     assert.equal(lookup_slash("/editor", skills), "editor");
     assert.equal(lookup_slash("/paste", skills), "paste");
-    assert.equal(builtin_slash_commands().length(), 28)
+    assert.equal(lookup_slash("/oauth", skills), "oauth");
+    assert.equal(lookup_slash("/config", skills), "config");
+    assert.equal(builtin_slash_commands().length(), 30)
 }
 
 test "registry is pi's 23 plus bi help" {
-    for (let want in ["help", "settings", "model", "tree", "thinking", "scoped-models", "export", "import", "share", "copy", "paste", "name", "session", "changelog", "hotkeys", "theme", "attach", "editor", "fork", "clone", "trust", "login", "logout", "new", "compact", "resume", "reload", "quit"]) {
+    for (let want in ["help", "settings", "model", "tree", "thinking", "scoped-models", "export", "import", "share", "copy", "paste", "name", "session", "changelog", "hotkeys", "theme", "attach", "editor", "fork", "clone", "trust", "login", "logout", "oauth", "config", "new", "compact", "resume", "reload", "quit"]) {
         let found = false;
         for (let b in builtin_slash_commands()) {
             if (b.name == want) {
@@ -401,6 +416,8 @@ test "scope marks live vs owning issue" {
             "editor" => assert.is_true(b.scope is null),
             "copy" => assert.is_true(b.scope is null),
             "paste" => assert.is_true(b.scope is null),
+            "oauth" => assert.is_true(b.scope is null),
+            "config" => assert.is_true(b.scope is null),
             "changelog" => assert.equal(b.scope, "bi#31"),
             _ => assert.is_true(false),
         }
@@ -411,5 +428,8 @@ test "hotkeys text describes bi REPL keys" {
     let t = hotkeys_text();
     assert.contains(t, "/help");
     assert.contains(t, "Ctrl-C");
-    assert.contains(t, "Ctrl-D")
+    assert.contains(t, "Ctrl-D");
+    assert.contains(t, "/copy /paste");
+    assert.contains(t, "/tree /attach");
+    assert.contains(t, "/editor")
 }

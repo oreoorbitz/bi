@@ -1,3 +1,36 @@
+testset "oauth status board (bi#29)" {
+    test "stored oauth, env key, and missing rows shape" {
+        let rows = [
+            OAuthRow {
+                provider_id: "anthropic",
+                source: "stored",
+                cred_type: "oauth",
+                auth_env: "ANTHROPIC_API_KEY",
+            },
+            OAuthRow {
+                provider_id: "openai",
+                source: "env",
+                cred_type: null,
+                auth_env: "OPENAI_API_KEY",
+            },
+            OAuthRow {
+                provider_id: "xai",
+                source: "none",
+                cred_type: null,
+                auth_env: "XAI_API_KEY",
+            },
+        ];
+        let out = format_oauth_status(rows);
+        assert.contains(out, "anthropic: stored (oauth)");
+        assert.contains(out, "openai: env (OPENAI_API_KEY)");
+        assert.contains(out, "xai: not configured (bi login xai)")
+    }
+
+    test "empty registry is explicit" {
+        assert.equal(format_oauth_status([]), "(no providers)")
+    }
+}
+
 testset "auth credential policy (bi#18)" {
     test "valid api_key credential validates" {
         let c = Credential {

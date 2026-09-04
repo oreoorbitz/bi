@@ -143,6 +143,38 @@ function GuidanceFor(kind: string, provider: string) -> string {
     }
 }
 
+// One `/oauth` board row. Secret-free by construction: source names the
+// winning chain link, cred_type its stored kind, auth_env the env var a
+// missing row resolves through. The host builds these from
+// listCredentials (secret-free) + env presence, never key material.
+class OAuthRow {
+    provider_id: string,
+    source: string,
+    cred_type: string?,
+    auth_env: string?,
+}
+
+// pi's oauth-selector login/logout list, trimmed to bi's line REPL: one
+// row per registry provider, unconfigured rows name their own fix.
+function format_oauth_status(rows: OAuthRow[]) -> string {
+    if (rows.length() == 0) {
+        "(no providers)"
+    } else {
+        let out = "";
+        for (let r in rows) {
+            let detail = if (r.source == "stored") {
+                `stored (${r.cred_type ?? "credential"})`
+            } else if (r.source == "env") {
+                `env (${r.auth_env ?? "API key"})`
+            } else {
+                `not configured (bi login ${r.provider_id})`
+            };
+            out = `${out}${r.provider_id}: ${detail}\n`
+        };
+        out
+    }
+}
+
 function ResolveAuth(
     provider: string,
     override_key: string?,
