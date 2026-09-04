@@ -13,7 +13,7 @@ import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, mo
 import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, type Skill } from "./skills.js";
 import { runResultToJsonLines, finalText } from "./events.js";
 import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow, appendSessionEntries, loadSessionTranscript, sessionResumeList, sessionIdFromFile } from "./session.js";
@@ -280,6 +280,22 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 	return runOnePrompt(`${skillBody(t.skill)}\n\n${t.args}`.trim(), skills, history, signal ? { signal } : undefined);
 }
 
+// bi#27: tool executions announce themselves — start line before the
+// call, done line after (failures show the first output line, successes
+// a char count). Same wrapper for REPL and `bi run`; throw semantics
+// unchanged (runAgent has no handler try/catch today).
+async function runToolWithStatus(name: string, args: Record<string, unknown>): Promise<string> {
+	console.log(await format_tool_start_async(name, JSON.stringify(args)));
+	try {
+		const out = await handleTool(name, args);
+		console.log(await format_tool_done_async(name, out, false));
+		return out;
+	} catch (e) {
+		console.log(await format_tool_done_async(name, e instanceof Error ? e.message : String(e), true));
+		throw e;
+	}
+}
+
 // One prompt through the loop. Returns the full message history (prior +
 // this turn) so the REPL threads conversation across turns, or "quit".
 // opts.aborted resolves when the user hits Ctrl-C mid-turn: the turn is
@@ -306,7 +322,7 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	status.start();
 	// BI_BASE_URL lets the REPL talk to a local gateway/proxy (and makes
 	// slow-turn behavior testable without real provider latency).
-	const turnP = runBiLoop(fullPrompt, { provider: backend.provider, model: backend.model, thinking: backend.thinking, maxTurns: 5, baseUrl: process.env.BI_BASE_URL ?? null, onEvent: (e) => status.onEvent(e), tools: loopTools, toolHandler: async (name, args) => handleTool(name, args), history });
+	const turnP = runBiLoop(fullPrompt, { provider: backend.provider, model: backend.model, thinking: backend.thinking, maxTurns: 5, baseUrl: process.env.BI_BASE_URL ?? null, onEvent: (e) => status.onEvent(e), tools: loopTools, toolHandler: runToolWithStatus, history });
 	type Settled = { done: true; result: Awaited<typeof turnP> } | { done: false };
 	let settled: Settled;
 	if (opts.aborted) {
@@ -343,7 +359,11 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 		return withUser;
 	}
 	status.stop({ failed: false, detail: "", turns: Math.max(assistantCount, 1), messages: result.messages.length });
-	for (const m of result.messages) if ((m as any).role === "assistant") console.log((m as any).text ?? JSON.stringify((m as any).content));
+	// bi#27: assistant text renders through the BAML markdown shaper.
+	for (const m of result.messages) {
+		if ((m as any).role !== "assistant") continue;
+		console.log(await render_markdown_text_async((m as any).text ?? JSON.stringify((m as any).content)));
+	}
 	return result.messages;
 }
 
@@ -734,7 +754,7 @@ async function main(): Promise<void> {
 				azureDeployment,
 				azureApiVersion,
 				tools: runTools,
-				toolHandler: async (name, args) => handleTool(name, args),
+				toolHandler: runToolWithStatus,
 				notify: subscriber?.queue,
 				keeper,
 			});
@@ -777,16 +797,18 @@ async function main(): Promise<void> {
 		}
 		if (hasFlag(args, "--print") || hasFlag(args, "-p")) {
 			const t = finalText(result);
-			if (t) console.log(t);
+			// bi#27: human print path renders markdown; json mode above stays raw.
+			if (t) console.log(await render_markdown_text_async(t));
 			return;
 		}
+		// bi#27: history display shapes text blocks and tool calls alike.
 		for (const msg of result.messages) {
 			if (msg.role === "assistant" && "text" in msg) {
-				console.log(msg.text);
+				console.log(await render_markdown_text_async(msg.text));
 			} else if (msg.role === "assistant" && "content" in msg) {
 				for (const b of (msg as any).content) {
-					if (b.type === "text") console.log(b.text);
-					else if (b.type === "toolUse") console.log(`[toolUse ${b.name} ${JSON.stringify(b.args)}]`);
+					if (b.type === "text") console.log(await render_markdown_text_async(b.text));
+					else if (b.type === "toolUse") console.log(await format_tool_start_async(b.name, JSON.stringify(b.args)));
 				}
 			}
 		}
