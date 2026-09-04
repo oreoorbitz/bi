@@ -1,6 +1,6 @@
 id = "bi#45"
 title = "Blocking ready --wait (idle agents sleep instead of spin-polling)"
-status = "Doing"
+status = "Done"
 kind = "Feat"
 area = "bais/hub"
 body = """

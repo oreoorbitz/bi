@@ -1,6 +1,6 @@
 id = "bi#38"
 title = "Content-hash event ids"
-status = "Doing"
+status = "Done"
 kind = "Feat"
 area = "bais/events"
 body = """
