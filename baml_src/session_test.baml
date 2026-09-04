@@ -126,11 +126,46 @@ testset "session header + trust (bi namespace)" {
 
     test "select_valid_history keeps good lines, drops the rest" {
         let entries = [
-            HistoryEntry { type: "history", role: "user", text: "hi", provider: null, model: null, thinking: null },
-            HistoryEntry { type: "session", role: "user", text: "hi", provider: null, model: null, thinking: null },
-            HistoryEntry { type: "history", role: "tool", text: "x", provider: null, model: null, thinking: null },
-            HistoryEntry { type: "history", role: "assistant", text: "", provider: null, model: null, thinking: null },
-            HistoryEntry { type: "history", role: "assistant", text: "ok", provider: "xai", model: "grok-4.6", thinking: "high" },
+            HistoryEntry {
+                type: "history",
+                role: "user",
+                text: "hi",
+                provider: null,
+                model: null,
+                thinking: null,
+            },
+            HistoryEntry {
+                type: "session",
+                role: "user",
+                text: "hi",
+                provider: null,
+                model: null,
+                thinking: null,
+            },
+            HistoryEntry {
+                type: "history",
+                role: "tool",
+                text: "x",
+                provider: null,
+                model: null,
+                thinking: null,
+            },
+            HistoryEntry {
+                type: "history",
+                role: "assistant",
+                text: "",
+                provider: null,
+                model: null,
+                thinking: null,
+            },
+            HistoryEntry {
+                type: "history",
+                role: "assistant",
+                text: "ok",
+                provider: "xai",
+                model: "grok-4.6",
+                thinking: "high",
+            },
         ];
         let kept = select_valid_history(entries);
         assert.equal(kept.length(), 2);
@@ -152,12 +187,30 @@ testset "session header + trust (bi namespace)" {
     test "labels validate and shape the export" {
         assert.equal(validate_session_label("work").length(), 0);
         assert.equal(validate_session_label("").length(), 1);
-        assert.equal(validate_session_label("012345678901234567890123456789012345678901234567890123456789012345678901234567890").length(), 1);
+        assert.equal(
+            validate_session_label("012345678901234567890123456789012345678901234567890123456789012345678901234567890")
+                .length(),
+            1,
+        );
         let h = create_session_header("abc123ef", "/w", "2026-08-30T12:00:00Z", label = "Work");
         assert.equal(h.label, "Work");
         let entries = [
-            HistoryEntry { type: "history", role: "user", text: "hi", provider: null, model: null, thinking: null },
-            HistoryEntry { type: "history", role: "assistant", text: "hello", provider: null, model: null, thinking: null },
+            HistoryEntry {
+                type: "history",
+                role: "user",
+                text: "hi",
+                provider: null,
+                model: null,
+                thinking: null,
+            },
+            HistoryEntry {
+                type: "history",
+                role: "assistant",
+                text: "hello",
+                provider: null,
+                model: null,
+                thinking: null,
+            },
         ];
         let md = format_session_markdown("abc123ef", "Work", "2026-08-30T12:00:00Z", "/w", entries);
         assert.contains(md, "# Work (abc123ef)");

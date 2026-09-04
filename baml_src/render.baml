@@ -78,7 +78,10 @@ function render_inline(text: string) -> string {
                     }
                 },
             }
-        } else if ((c == "*" && i + 1 < cs.length() && cs.at(i + 1) == "*") || (c == "_" && i + 1 < cs.length() && cs.at(i + 1) == "_")) {
+        } else if (
+            (c == "*" && i + 1 < cs.length() && cs.at(i + 1) == "*")
+                || (c == "_" && i + 1 < cs.length() && cs.at(i + 1) == "_")
+        ) {
             i = i + 2
         } else {
             out = `${out}${c}`;
@@ -105,7 +108,12 @@ function render_prose_line(line: string, theme: string? = null) -> string {
         style_segment("···", "dim", theme)
     } else {
         let hashes = count_hashes(line);
-        if (hashes >= 1 && hashes <= 6 && hashes < line.length() && line.slice(hashes, hashes + 1) == " ") {
+        if (
+            hashes >= 1
+                && hashes <= 6
+                && hashes < line.length()
+                && line.slice(hashes, hashes + 1) == " "
+        ) {
             style_segment(render_inline(line.slice(hashes + 1, line.length())), "accent", theme)
         } else {
             render_inline(line)
@@ -165,7 +173,12 @@ function format_tool_start(name: string, args_json: string, theme: string? = nul
     style_segment(`◌ ${name} — ${truncate_chars(args_json, 100)}`, "busy", theme)
 }
 
-function format_tool_done(name: string, output: string, failed: bool, theme: string? = null) -> string {
+function format_tool_done(
+    name: string,
+    output: string,
+    failed: bool,
+    theme: string? = null,
+) -> string {
     if (failed) {
         style_segment(`✗ ${name} — ${truncate_chars(first_line(output), 120)}`, "bad", theme)
     } else {
@@ -203,12 +216,18 @@ test "themed segments wrap, plain stays byte-clean" {
     assert.is_true(render_prose_line("## Hi", theme = "default").length() > "Hi".length());
     assert.equal(format_tool_start("bash", "{}", theme = "none"), "◌ bash — {}");
     assert.equal(format_tool_done("bash", "ok", false, theme = null), "✓ bash · 2 chars");
-    assert.is_true(format_tool_done("bash", "ok", false, theme = "default").length() > "✓ bash · 2 chars".length());
+    assert.is_true(
+        format_tool_done("bash", "ok", false, theme = "default").length()
+            > "✓ bash · 2 chars".length(),
+    );
     assert.is_true(!render_markdown_text("# T\n```py\nx\n```", theme = "default").includes("```"))
 }
 
 test "tool status lines name call and outcome" {
-    assert.equal(format_tool_start("bash", "{\"cmd\":\"ls -la /tmp\"}"), "◌ bash — {\"cmd\":\"ls -la /tmp\"}");
+    assert.equal(
+        format_tool_start("bash", "{\"cmd\":\"ls -la /tmp\"}"),
+        "◌ bash — {\"cmd\":\"ls -la /tmp\"}",
+    );
     assert.equal(format_tool_done("bash", "a\nb\n", false), "✓ bash · 4 chars");
     assert.equal(format_tool_done("bash", "exit 1\ntraceback here", true), "✗ bash — exit 1");
     assert.equal(truncate_chars("abcdef", 3), "abc…");
@@ -378,7 +397,7 @@ function unified_diff(path: string, before: string, after: string) -> string[] {
         k = k + 1
     }
     if (changes.length() == 0) {
-        return [`(no changes: ${path})`]
+        return [`(no changes: ${path})`];
     }
     let ctx = tool_diff_context();
     let out = [`--- a/${path}`, `+++ b/${path}`];
@@ -390,7 +409,7 @@ function unified_diff(path: string, before: string, after: string) -> string[] {
         let next = g + 1;
         if (next < changes.length() && ((changes.at(next) ?? 0) - grp_last - 1) <= 2 * ctx) {
             g = next;
-            continue
+            continue;
         }
         let ws = grp_first - ctx;
         if (ws < 0) {
@@ -425,8 +444,16 @@ function unified_diff(path: string, before: string, after: string) -> string[] {
             }
             q = q + 1
         }
-        let old_start = if (old_count == 0) { old_before } else { old_before + 1 };
-        let new_start = if (new_count == 0) { new_before } else { new_before + 1 };
+        let old_start = if (old_count == 0) {
+            old_before
+        } else {
+            old_before + 1
+        };
+        let new_start = if (new_count == 0) {
+            new_before
+        } else {
+            new_before + 1
+        };
         out.push(`@@ -${hunk_range(old_start, old_count)} +${hunk_range(new_start, new_count)} @@`);
         q = ws;
         while (q <= we) {
@@ -451,7 +478,12 @@ function unified_diff(path: string, before: string, after: string) -> string[] {
 // The transcript policy: edit/write with all three envelope sides present
 // render as a diff; everything else (other tools, failures, unknown sides)
 // is not diffable and yields no lines, so the host prints nothing extra.
-function render_tool_diff(name: string, path: string?, before: string?, after: string?) -> ToolDiffView {
+function render_tool_diff(
+    name: string,
+    path: string?,
+    before: string?,
+    after: string?,
+) -> ToolDiffView {
     let off = ToolDiffView { diffable: false, lines: [] };
     if (name != "edit" && name != "write") {
         off
@@ -506,28 +538,35 @@ test "unified_diff splits hunks past the context gap" {
     let before = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\n";
     let after = "l1\nL2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nL11\nl12\n";
     let d = unified_diff("m.txt", before, after);
-    assert.equal(d, [
-        "--- a/m.txt",
-        "+++ b/m.txt",
-        "@@ -1,5 +1,5 @@",
-        " l1",
-        "-l2",
-        "+L2",
-        " l3",
-        " l4",
-        " l5",
-        "@@ -8,5 +8,5 @@",
-        " l8",
-        " l9",
-        " l10",
-        "-l11",
-        "+L11",
-        " l12",
-    ])
+    assert.equal(
+        d,
+        [
+            "--- a/m.txt",
+            "+++ b/m.txt",
+            "@@ -1,5 +1,5 @@",
+            " l1",
+            "-l2",
+            "+L2",
+            " l3",
+            " l4",
+            " l5",
+            "@@ -8,5 +8,5 @@",
+            " l8",
+            " l9",
+            " l10",
+            "-l11",
+            "+L11",
+            " l12",
+        ],
+    )
 }
 
 test "unified_diff merges changes within the context gap" {
-    let d = unified_diff("m.txt", "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n", "l1\nL2\nl3\nl4\nl5\nl6\nl7\nl8\nL9\nl10\n");
+    let d = unified_diff(
+        "m.txt",
+        "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n",
+        "l1\nL2\nl3\nl4\nl5\nl6\nl7\nl8\nL9\nl10\n",
+    );
     assert.equal(d.at(2) ?? "", "@@ -1,10 +1,10 @@");
     assert.equal(d.length(), 15)
 }

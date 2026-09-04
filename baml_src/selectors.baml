@@ -86,7 +86,11 @@ function is_model_enabled(enabled: string[]?, id: string) -> bool {
 // disabled rows flagged, every row numbered for `/model <n>` picks.
 // Numbers run across provider groups in catalog order (same order
 // pick_model walks), so a fresh listing and a pick always agree.
-function format_model_list(current_id: string, theme: string? = null, enabled: string[]? = null) -> string {
+function format_model_list(
+    current_id: string,
+    theme: string? = null,
+    enabled: string[]? = null,
+) -> string {
     let out = "";
     let n = 0;
     for (let p in ListProviders()) {
@@ -99,7 +103,11 @@ function format_model_list(current_id: string, theme: string? = null, enabled: s
                 " (disabled)"
             };
             let row = if (m.id == current_id) {
-                style_segment(`* ${m.id} — ${m.context_window} ctx ${m.cost.input}/${m.cost.output} per 1M${mark}`, "accent", theme)
+                style_segment(
+                    `* ${m.id} — ${m.context_window} ctx ${m.cost.input}/${m.cost.output} per 1M${mark}`,
+                    "accent",
+                    theme,
+                )
             } else {
                 `  ${m.id} — ${m.context_window} ctx ${m.cost.input}/${m.cost.output} per 1M${mark}`
             };
@@ -172,7 +180,8 @@ function format_scoped_models(enabled: string[]?) -> string {
                 let out = `${ids.length()} of ${total} enabled:\n`;
                 for (let id in ids) {
                     out = `${out}  ${id}\n`
-                };
+                }
+                ;
                 out
             }
         },
@@ -372,7 +381,9 @@ test "themed lists style current rows only" {
     assert.contains(format_model_list("grok-4.6", theme = null), "* grok-4.6");
     let footer = format_repl_footer("xai", "grok-4.6", "high", 2, 5, theme = "default");
     assert.contains(footer, "xai/grok-4.6");
-    assert.is_true(footer.length() > format_repl_footer("xai", "grok-4.6", "high", 2, 5, theme = null).length())
+    assert.is_true(
+        footer.length() > format_repl_footer("xai", "grok-4.6", "high", 2, 5, theme = null).length(),
+    )
 }
 
 test "footer names backend and counters" {

@@ -83,7 +83,10 @@ class AuthDecision {
 // ids (openai-codex, github-copilot, radius) are intentionally absent:
 // their backends land in bi#15.
 function SupportsOAuth(provider: string) -> bool {
-    provider == "anthropic" || provider == "xai" || provider == "kimi-coding" || provider == "openrouter"
+    provider == "anthropic"
+        || provider == "xai"
+        || provider == "kimi-coding"
+        || provider == "openrouter"
 }
 
 // bi#22: OAuth core pure policy (pi `auth/oauth/*` shape, host executes).
@@ -170,7 +173,8 @@ function format_oauth_status(rows: OAuthRow[]) -> string {
                 `not configured (bi login ${r.provider_id})`
             };
             out = `${out}${r.provider_id}: ${detail}\n`
-        };
+        }
+        ;
         out
     }
 }

@@ -94,7 +94,8 @@ function format_skills_list(skills: Skill[]) -> string {
                 ""
             };
             out = `${out}${s.name}${flag} — ${s.description}\n`
-        };
+        }
+        ;
         out
     }
 }
@@ -501,7 +502,41 @@ test "slash dispatch finds builtins then skills" {
 }
 
 test "registry is pi's 23 plus bi help" {
-    for (let want in ["help", "settings", "model", "tree", "thinking", "scoped-models", "export", "import", "share", "copy", "paste", "name", "session", "changelog", "hotkeys", "theme", "attach", "editor", "fork", "clone", "trust", "login", "logout", "oauth", "config", "skills", "new", "compact", "resume", "reload", "quit"]) {
+    for (
+        let want in [
+            "help",
+            "settings",
+            "model",
+            "tree",
+            "thinking",
+            "scoped-models",
+            "export",
+            "import",
+            "share",
+            "copy",
+            "paste",
+            "name",
+            "session",
+            "changelog",
+            "hotkeys",
+            "theme",
+            "attach",
+            "editor",
+            "fork",
+            "clone",
+            "trust",
+            "login",
+            "logout",
+            "oauth",
+            "config",
+            "skills",
+            "new",
+            "compact",
+            "resume",
+            "reload",
+            "quit",
+        ]
+    ) {
         let found = false;
         for (let b in builtin_slash_commands()) {
             if (b.name == want) {

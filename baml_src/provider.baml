@@ -236,7 +236,9 @@ function ListProviders() -> Provider[] {
 function MissingKeyMessage(provider: string) -> string {
     match (ProviderAuthEnv(provider)) {
         null => `unknown provider "${provider}": no auth mapping (see ListProviders)`,
-        let v: string => `${provider} needs an API key: pass --api-key, set ${v}, or run \`bi login ${provider}\``,
+        let v: string => {
+            `${provider} needs an API key: pass --api-key, set ${v}, or run \`bi login ${provider}\``
+        },
     }
 }
 

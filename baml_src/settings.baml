@@ -54,7 +54,9 @@ function validate_settings(s: UserSettings) -> string[] {
                         null => {},
                         let p: string => {
                             if (ProviderExists(p) && rec.provider != p) {
-                                errors.push(`model "${m}" belongs to provider "${rec.provider}", not "${p}"`)
+                                errors.push(
+                                    `model "${m}" belongs to provider "${rec.provider}", not "${p}"`,
+                                )
                             }
                         },
                     }
@@ -75,7 +77,9 @@ function validate_settings(s: UserSettings) -> string[] {
         let ids: string[] => {
             for (let id in ids) {
                 if (GetModel(id) is null) {
-                    errors.push(`unknown model "${id}" in enabled_models — /scoped-models all to reset`)
+                    errors.push(
+                        `unknown model "${id}" in enabled_models — /scoped-models all to reset`,
+                    )
                 }
             }
         },
@@ -161,7 +165,12 @@ function format_settings_list(s: UserSettings) -> string {
 }
 
 function empty_settings() -> UserSettings {
-    UserSettings { default_provider: null, default_model: null, default_thinking: null, enabled_models: null }
+    UserSettings {
+        default_provider: null,
+        default_model: null,
+        default_thinking: null,
+        enabled_models: null,
+    }
 }
 
 test "empty settings resolve to builtins" {
@@ -172,7 +181,12 @@ test "empty settings resolve to builtins" {
 }
 
 test "flags beat stored settings beat builtins" {
-    let s = UserSettings { default_provider: "xai", default_model: "grok-4.6", default_thinking: "high", enabled_models: null };
+    let s = UserSettings {
+        default_provider: "xai",
+        default_model: "grok-4.6",
+        default_thinking: "high",
+        enabled_models: null,
+    };
     let stored = resolve_backend(null, null, null, s);
     assert.equal(stored.provider, "xai");
     assert.equal(stored.model, "grok-4.6");
@@ -184,7 +198,12 @@ test "flags beat stored settings beat builtins" {
 }
 
 test "mismatched provider/model fails instead of misrouting" {
-    let s = UserSettings { default_provider: "xai", default_model: "muse-spark-1.3", default_thinking: null, enabled_models: null };
+    let s = UserSettings {
+        default_provider: "xai",
+        default_model: "muse-spark-1.3",
+        default_thinking: null,
+        enabled_models: null,
+    };
     assert.equal(validate_settings(s).length(), 1);
     let threw = false;
     let _ = resolve_backend(null, null, null, s) catch (e) {
@@ -203,7 +222,12 @@ test "mismatched provider/model fails instead of misrouting" {
 }
 
 test "unknown values name the fix" {
-    let s = UserSettings { default_provider: "bogus", default_model: "nope", default_thinking: "ultra", enabled_models: null };
+    let s = UserSettings {
+        default_provider: "bogus",
+        default_model: "nope",
+        default_thinking: "ultra",
+        enabled_models: null,
+    };
     let errors = validate_settings(s);
     assert.equal(errors.length(), 3)
 }
@@ -213,18 +237,38 @@ test "settings list shows unsets" {
     assert.contains(out, "default_provider = (unset)");
     assert.contains(out, "default_thinking = (unset)");
     assert.contains(out, "enabled_models = all");
-    let s = UserSettings { default_provider: "meta", default_model: null, default_thinking: null, enabled_models: null };
+    let s = UserSettings {
+        default_provider: "meta",
+        default_model: null,
+        default_thinking: null,
+        enabled_models: null,
+    };
     assert.contains(format_settings_list(s), "default_provider = meta")
 }
 
 test "enabled_models validates ids and lists the set" {
-    let good = UserSettings { default_provider: null, default_model: null, default_thinking: null, enabled_models: ["grok-4.6", "muse-spark-1.3"] };
+    let good = UserSettings {
+        default_provider: null,
+        default_model: null,
+        default_thinking: null,
+        enabled_models: ["grok-4.6", "muse-spark-1.3"],
+    };
     assert.equal(validate_settings(good).length(), 0);
     assert.contains(format_settings_list(good), "enabled_models = grok-4.6, muse-spark-1.3");
-    let bad = UserSettings { default_provider: null, default_model: null, default_thinking: null, enabled_models: ["grok-4.6", "nope"] };
+    let bad = UserSettings {
+        default_provider: null,
+        default_model: null,
+        default_thinking: null,
+        enabled_models: ["grok-4.6", "nope"],
+    };
     let errors = validate_settings(bad);
     assert.equal(errors.length(), 1);
     assert.contains(errors.at(0) ?? "", "/scoped-models all to reset");
-    let none = UserSettings { default_provider: null, default_model: null, default_thinking: null, enabled_models: [] };
+    let none = UserSettings {
+        default_provider: null,
+        default_model: null,
+        default_thinking: null,
+        enabled_models: [],
+    };
     assert.contains(format_settings_list(none), "enabled_models = (none)")
 }

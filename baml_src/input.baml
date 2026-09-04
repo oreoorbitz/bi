@@ -13,7 +13,19 @@ class TreeEntry {
 // Directory/file names never descended into or listed. Toolchain and
 // VCS internals, not user work: showing them buries the signal.
 function tree_skip_names() -> string[] {
-    [".git", ".hg", ".svn", ".eden", "node_modules", "dist", "baml_sdk", ".baml", "__pycache__", ".venv", "target"]
+    [
+        ".git",
+        ".hg",
+        ".svn",
+        ".eden",
+        "node_modules",
+        "dist",
+        "baml_sdk",
+        ".baml",
+        "__pycache__",
+        ".venv",
+        "target",
+    ]
 }
 
 function tree_should_skip(name: string) -> bool {
