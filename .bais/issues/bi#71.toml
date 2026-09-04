@@ -1,6 +1,6 @@
 id = "bi#71"
 title = "BAML-shaped diffs in transcript (tool results and edits)"
-status = "Open"
+status = "Doing"
 kind = "Feat"
 area = "tui"
 body = """

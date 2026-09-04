@@ -1,6 +1,6 @@
 id = "bi#67"
 title = "Pinned footer/status region (scroll-region vs readline)"
-status = "Open"
+status = "Doing"
 kind = "Feat"
 area = "tui"
 body = """

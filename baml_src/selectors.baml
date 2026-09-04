@@ -211,13 +211,12 @@ function resolve_model_ref(ref: string) -> Model? {
 // One-line REPL readout after every turn: backend identity + session
 // counters. Token/context usage is pi-only: bi never captures usage
 // (turn.baml returns text, not token counts), so counters stand in.
-function format_repl_footer(
+function footer_text(
     provider: string,
     model: string,
     thinking: string,
     turns: int,
     messages: int,
-    theme: string? = null,
 ) -> string {
     let tm = if (turns == 1) {
         "1 turn"
@@ -229,7 +228,35 @@ function format_repl_footer(
     } else {
         `${messages} messages`
     };
-    style_segment(`${provider}/${model} · thinking ${thinking} · ${tm} · ${mm}`, "dim", theme)
+    `${provider}/${model} · thinking ${thinking} · ${tm} · ${mm}`
+}
+
+function format_repl_footer(
+    provider: string,
+    model: string,
+    thinking: string,
+    turns: int,
+    messages: int,
+    theme: string? = null,
+) -> string {
+    style_segment(footer_text(provider, model, thinking, turns, messages), "dim", theme)
+}
+
+// Pinned-footer frame (bi#67): the readout width-capped to one terminal
+// row so the bottom region row never wraps (a wrapped footer misaligns
+// the scroll region). Truncation runs on the PLAIN text, styling wraps
+// after — visible width is exact. Wide terminals are byte-identical to
+// format_repl_footer with the same theme.
+function render_footer_frame(
+    provider: string,
+    model: string,
+    thinking: string,
+    turns: int,
+    messages: int,
+    width: int,
+    theme: string? = null,
+) -> string {
+    style_segment(truncate_chars(footer_text(provider, model, thinking, turns, messages), width), "dim", theme)
 }
 
 test "thinking levels are pi's seven in order" {
@@ -355,6 +382,25 @@ test "footer names backend and counters" {
     );
     assert.equal(
         format_repl_footer("anthropic", "claude-haiku-4-5", "medium", 1, 1),
+        "anthropic/claude-haiku-4-5 · thinking medium · 1 turn · 1 message",
+    )
+}
+
+test "footer frame caps to one row" {
+    // Wide: byte-identical to the printed footer (same theme).
+    assert.equal(
+        render_footer_frame("xai", "grok-4.6", "high", 2, 5, 80),
+        format_repl_footer("xai", "grok-4.6", "high", 2, 5),
+    );
+    // Narrow: hard cap with truncation mark.
+    assert.equal(render_footer_frame("xai", "grok-4.6", "high", 2, 5, 12), "xai/grok-4.6…");
+    // Styled frame keeps the visible text capped (style wraps outside).
+    let styled = render_footer_frame("xai", "grok-4.6", "high", 2, 5, 12, theme = "default");
+    assert.contains(styled, "xai/grok-4.6…");
+    assert.is_true(styled.length() > "xai/grok-4.6…".length());
+    // Singular counters flow through the frame.
+    assert.equal(
+        render_footer_frame("anthropic", "claude-haiku-4-5", "medium", 1, 1, 80),
         "anthropic/claude-haiku-4-5 · thinking medium · 1 turn · 1 message",
     )
 }

@@ -1,6 +1,6 @@
 id = "bi#68"
 title = "Select-list frames with cursor (unify numbered picks)"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "tui"
 body = """
