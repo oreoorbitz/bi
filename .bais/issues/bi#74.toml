@@ -1,0 +1,22 @@
+id = "bi#74"
+title = "Host test scripts are cwd-sensitive (bridge resolves per cwd)"
+status = "Open"
+kind = "Bug"
+area = "tui"
+body = """
+Found verifying agent/bi-68-frames in a scratch worktree: the same
+bytes (same dist build, same absolute .bais path) return 32 ready
+entries with cwd=bi/ and 0 with cwd=<worktree>. ready-shape.mjs passes
+or fails on cwd alone — nothing to do with the change under test.
+Suspect: the baml bridge resolves project files relative to cwd (plus
+symlinked node_modules in the worktree). Impact: agent-branch
+verification in worktrees can red-herring on ready-shape; protocol
+workaround is verify-then-merge-then-gate-on-main. Acceptance: root
+cause named (or refuted with a better one) and scripts made
+cwd-independent, or the cwd requirement documented at the call site.
+"""
+
+[[edge]]
+from = "bi#74"
+to = "bi#26"
+kind = "DependsOn"
