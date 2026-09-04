@@ -1,0 +1,21 @@
+id = "bi#44"
+title = "Bi subscribes to hub SSE (push wakes, poll confirms)"
+status = "Open"
+kind = "Feat"
+area = "bi/agent"
+body = """
+Bi has no async wake-ups (agent.ts: zero timing primitives) and no
+hub client at all — a peer releasing a task or oversight flagging a
+conflict is invisible until Bi's next explicit poll, which the LLM
+must remember to make. Add a host-owned background SSE subscriber
+(GET /pub/stream; host owns sockets) feeding a pending-notifications
+queue the turn loop drains between turns: "peer released X", "lease
+expires in N", "oversight flagged Y" becomes prompt context. BAML
+shapes the notification text (prompt-as-schema); host owns transport
+and timers. Preserves the BAML-owns-policy split and removes
+polling-from-memory.
+Acceptance: stub-hub probe — release event on a watched task appears
+in the next turn's context without any LLM-issued poll; disconnect +
+reconnect resubscribes; malformed frames never reach the prompt
+(dropped + counted).
+"""

@@ -1,0 +1,24 @@
+id = "bi#47"
+title = "First-class what-changed-since-heads query (rejoin in one question)"
+status = "Open"
+kind = "Feat"
+area = "bais/sync"
+body = """
+A rejoining agent has as_of.heads but no delta query — it re-polls
+everything (list + ready + graph) to reconstruct what moved. The
+causal floors already exist (checkpoint anchors, heads); expose the
+delta: given heads H, return admitted events + projection diff since
+H, or "too far behind, re-bootstrap via snapshot" when H predates
+the prune anchor. BAML owns the diff policy (reduce-adjacent, pure);
+host owns serving it (CLI flag + MCP tool). This is also what
+multi-hub agent workflows need before anything fancier.
+Acceptance: offline probe — three sequential deltas compose to the
+full log; a pruned-away H returns the re-bootstrap directive, never
+a partial diff presented as complete; delta + snapshot composes to
+the same projection fingerprint as a full replay (ties to bi#35).
+"""
+
+[[edge]]
+from = "bi#47"
+to = "bi#35"
+kind = "Related"

@@ -1,0 +1,19 @@
+id = "bi#46"
+title = "Close the ephemeral replay gap (persist last-N or document loss)"
+status = "Open"
+kind = "Feat"
+area = "bais/hub"
+body = """
+The pub ring is memory-only (cap 1000), SSE is live-only with no
+replay, and GET /pub?since= only helps an agent that remembered its
+seq. A reconnected agent that lost its seq misses everything
+silently. Either persist last-N ephemeral per entity in SQLite (host
+storage, same tables as the projection — ephemeral stays out of the
+log/reducer) or specify loss as behavior with a re-bootstrap path
+(`bais sync` already exists — point at it) and a loud
+"resubscribed, gap unknown" signal. Silent gaps are not an option.
+Acceptance: probe kills the subscriber mid-stream, drops >cap
+messages, reconnects — either the gap replays from storage or the
+subscriber gets an explicit gap-unknown signal plus a one-command
+re-bootstrap; assert no silent-gap case remains.
+"""

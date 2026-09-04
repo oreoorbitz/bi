@@ -1,0 +1,31 @@
+id = "bi#42"
+title = "Reconcile lease clock with wall-clock (dead holder must not park work)"
+status = "Open"
+kind = "Bug"
+area = "bais/lease"
+body = """
+Leases expire in lc ticks (ns_event/lease.baml: expires_lc <= max
+admitted lc), but lc advances only when events are admitted. On a
+quiet log a dead agent's claim stays "active" indefinitely — nothing
+ticks the clock until somebody else writes. Renewal is holder-driven,
+so liveness depends on the holder remembering to act.
+Fix (BAML owns expiry policy, host owns clocks): either admit
+lightweight heartbeats so liveness ticks lc (growth is prune's
+problem), or add expires_wall alongside expires_lc with BAML owning
+the min() policy.
+Acceptance: new drill in scripts/fault-drills.mjs — kill a holder on
+a quiet log, assert the task becomes claimable within the documented
+bound; assert a live holder's renew keeps it held. Depends on the
+bi#36 drill harness; related to bi#38 (hash-chained log any heartbeat
+scheme must fit).
+"""
+
+[[edge]]
+from = "bi#42"
+to = "bi#36"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#42"
+to = "bi#38"
+kind = "Related"

@@ -1,0 +1,23 @@
+id = "bi#45"
+title = "Blocking ready --wait (idle agents sleep instead of spin-polling)"
+status = "Open"
+kind = "Feat"
+area = "bais/hub"
+body = """
+An idle agent today either spin-polls `ready` (wasteful, and the LLM
+pays per poll) or goes away and misses work. Add `ready --wait`:
+the host blocks until an admitted event touches the store, then
+re-evaluates readiness once. Pairs with bi#44 — push wakes, poll
+confirms: the waiter sleeps on the same notification path the SSE
+subscriber feeds. Host owns blocking/timers; BAML owns the readiness
+predicate (unchanged). Depends on bi#44 for the wake path.
+Acceptance: offline probe — waiter with no matching work sleeps
+(poll count stays 0); admitting a TaskCreate/Release that frees a
+task wakes exactly one waiter with the fresh ready set; --wait with a
+timeout flag exits 0 with empty on expiry.
+"""
+
+[[edge]]
+from = "bi#45"
+to = "bi#44"
+kind = "DependsOn"

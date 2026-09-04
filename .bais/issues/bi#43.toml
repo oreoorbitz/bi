@@ -1,0 +1,24 @@
+id = "bi#43"
+title = "Host-owned lease-keeper in Bi (auto-renew with fencing echo)"
+status = "Open"
+kind = "Feat"
+area = "bi/agent"
+body = """
+The LLM must never manage renewals — it will forget, and a forgotten
+renew is a lost task. Bi's host owns a background lease-keeper:
+timers + renew calls are execution (host territory), BAML keeps
+owning admit/deny. Keeper echoes the winning claim's fencing token on
+every transition/submit (lease.baml: fencing = winning claim's lc).
+Depends on bi#42 — expiry semantics must be settled before automating
+against them, or the keeper renews against a clock that cannot see
+death.
+Acceptance: offline probe with stub hub — held task stays held across
+multiple ttls with zero LLM involvement; a revoked/expired lease
+stops the keeper and surfaces a named error to the turn loop; zombie
+writes after expiry are rejected (fencing mismatch).
+"""
+
+[[edge]]
+from = "bi#43"
+to = "bi#42"
+kind = "DependsOn"
