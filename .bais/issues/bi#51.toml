@@ -1,0 +1,38 @@
+id = "bi#51"
+title = "Computed urgency: ordered ready with receipts"
+status = "Open"
+kind = "Feat"
+area = "bais/policy"
+body = """
+ready is a set — every ready issue looks equally important, and LLM
+dispatch degrades to arbitrary choice. Add urgency as a PURE BAML
+function over declared + structural + live signals, returning score
+WITH components (never a bare number):
+  urgency 8 = severity 3 + blocks 4 + stalled 6d
+Signals: severity 1-5 finally means something (human-declared,
+capped influence, dominates at the top as the override hatch);
+graph leverage (Blocks fan-out, one-completion-away chains —
+derivable from edges today); staleness (days parked, saturating
+decay so old trivia never outranks fresh breakage — wants bi#42's
+wall clock). `ready --order urgency` serves it; bi#48 why-not output
+carries components so "why this first" is answered with "why not
+that". baml-test-provable on literals like every other policy.
+Rules: computed urgency is DERIVED, never rewrites human severity
+(files stay human truth); components always shown (no unexplained
+inclusions — the anti-Goodhart receipt, auditable via
+oversight/sample).
+Acceptance: literal fixtures — leaf vs fan-out-4 ordering, severity-5
+override beating high structural score, 60-day trivia losing to fresh
+severity-4 (decay saturates); --order output matches the pure
+function exactly on bi/.bais.
+"""
+
+[[edge]]
+from = "bi#51"
+to = "bi#42"
+kind = "Related"
+
+[[edge]]
+from = "bi#51"
+to = "bi#48"
+kind = "Related"

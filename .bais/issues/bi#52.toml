@@ -1,0 +1,28 @@
+id = "bi#52"
+title = "Cost attribution per task (token-burn joins urgency)"
+status = "Open"
+kind = "Feat"
+area = "bais/budget"
+body = """
+The harder half of programmatic urgency: oversight tracks incurred
+vs cap per principal (budget_overruns, caps_over_budget) but nothing
+joins cost to issues. An issue whose work skyrockets tokens should
+auto-escalate its COMPUTED urgency visibly (never the human severity
+— bi#51's rule). Needs live cost attribution per task: lease/submit
+events already carry holder + entity; accumulate incurred cost per
+entity in the projection, expose it to the urgency function as a
+capped, saturating component. BAML owns the accumulation policy
+(ns_event/budget.baml adjacent, pure); host owns metering the spend.
+Watch: burn-to-look-important gaming — the component receipt plus
+oversight outlier review is the defense; document it.
+Acceptance: fixture where one task's incurred cost crosses its cap
+while severity stays 2 — computed urgency rises with the cost
+component named; cap the component so infinite burn cannot reach
+severity-5-override territory; --json exposes per-task incurred for
+audit.
+"""
+
+[[edge]]
+from = "bi#52"
+to = "bi#51"
+kind = "Related"
