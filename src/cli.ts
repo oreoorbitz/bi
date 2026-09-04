@@ -14,7 +14,7 @@ import { listTools, handleTool, emitToolDiff, setTrustReader } from "./tools.js"
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
 import { listCredentials } from "./auth.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, render_footer_frame_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, parse_changelog_async, format_changelog_async, complete_slash_async, render_ready_frame_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, render_footer_frame_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, render_ready_frame_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
 import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
 import { readClipboardImage, writeClipboardText, clipboardSupportsImage } from "./clipboard.js";
@@ -78,6 +78,47 @@ async function activeTheme(): Promise<string | null> {
 	return readActiveTheme();
 }
 
+// Block chrome: a BAML-shaped faint rule closes each REPL output block
+// (turn on stderr, slash listings on stdout) so the next prompt never
+// crowds the last line. Width follows the stream being written.
+async function stderrRule(theme: string | null): Promise<void> {
+	process.stderr.write((await render_divider_async(process.stderr.columns ?? process.stdout.columns ?? 80, { theme })) + "\n");
+}
+
+async function printBlock(text: string): Promise<void> {
+	console.log(text);
+	process.stdout.write((await render_divider_async(process.stdout.columns ?? 80, { theme: await activeTheme() })) + "\n");
+}
+
+// Second-word Tab pools per slash command. Static pools mirror the
+// BAML-validated sets (thinking levels, theme names, trust verbs);
+// dynamic pools come from the VM (model catalog, setting keys).
+// Unknown commands complete nothing — never guess.
+async function argCandidates(cmd: string, names: string[]): Promise<string[]> {
+	try {
+		switch (cmd) {
+			case "model":
+				return await all_model_ids_async();
+			case "thinking":
+				return ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+			case "theme":
+				return ["default", "light", "none"];
+			case "trust":
+				return ["allow", "deny", "session", "forget"];
+			case "changelog":
+				return ["all"];
+			case "settings":
+				return await setting_keys_async();
+			case "help":
+				return names.map((n) => n.replace(/^\//, ""));
+			default:
+				return [];
+		}
+	} catch {
+		return [];
+	}
+}
+
 // bi#29: user settings (~/.bi/settings.json). Three backend-default keys
 // in v1; BAML owns schema + validation + precedence, host owns FS.
 // Unknown keys on disk are ignored (forward-compatible); a corrupt file
@@ -126,7 +167,7 @@ function bamlErrorMessage(e: unknown): string {
 	return raw.replace(/^baml error: (baml\.errors\.\w+: )?/, "").split("\n")[0];
 }
 import { HostTui, HostStatus, HostFooter, renderSelectList } from "./tui.js";
-import { format_status, format_turn_summary } from "../baml_sdk/index.js";
+import { format_status, format_turn_summary, format_turn_error } from "../baml_sdk/index.js";
 import { runBiLoop } from "./agent_loop.js";
 import { editInExternalEditor, editorCommand } from "./editor.js";
 
@@ -332,9 +373,10 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 		if (t.name === "quit") return "quit";
 		if (t.name === "help") {
 			const builtins = await builtin_slash_commands_async();
-			console.log("slash commands:");
-			for (const b of builtins) console.log(`  /${b.name} — ${b.description}`);
-			for (const s of skills) console.log(`  /${s.name} — ${s.description} (skill)`);
+			const lines = ["slash commands:"];
+			for (const b of builtins) lines.push(`  /${b.name} — ${b.description}`);
+			for (const s of skills) lines.push(`  /${s.name} — ${s.description} (skill)`);
+			await printBlock(lines.join("\n"));
 			return history;
 		}
 		if (t.name === "reload") {
@@ -380,14 +422,14 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 					else if (env && process.env[env]) rows.push(new OAuthRow({ provider_id: p.id, source: "env", cred_type: null, auth_env: env }));
 					else rows.push(new OAuthRow({ provider_id: p.id, source: "none", cred_type: null, auth_env: env }));
 				}
-				console.log(await format_oauth_status_async(rows));
+				await printBlock(await format_oauth_status_async(rows));
 			} catch (e) {
 				console.error(`[bi] oauth status failed (${e instanceof Error ? e.message : e})`);
 			}
 			return history;
 		}
 		if (t.name === "hotkeys") {
-			console.log(await hotkeys_text_async());
+			await printBlock(await hotkeys_text_async());
 			return history;
 		}
 		if (t.name === "changelog") {
@@ -406,7 +448,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				console.error("[bi] no CHANGELOG.md found next to the bi install");
 				return history;
 			}
-			console.log(await format_changelog_async(await parse_changelog_async(raw), arg === "all"));
+			await printBlock(await format_changelog_async(await parse_changelog_async(raw), arg === "all"));
 			return history;
 		}
 		if (t.name === "skills") {
@@ -415,7 +457,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			// on deny); BAML shapes the rows, host reports load warnings.
 			try {
 				const { skills, diagnostics } = await loadSkills(await trustedSkillDirs(true));
-				console.log(await format_skills_list_async(skills));
+				await printBlock(await format_skills_list_async(skills));
 				for (const d of diagnostics) console.error(`[bi] skill ${d.file}: ${d.message}`);
 			} catch (e) {
 				console.error(`[bi] skills list failed (${e instanceof Error ? e.message : e})`);
@@ -426,13 +468,15 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 		// every role in each palette, a name persists the choice.
 		if (t.name === "theme") {
 			if (!t.args || t.args === "list") {
-				console.log(await format_theme_list_async(await readActiveTheme()));
+				await printBlock(await format_theme_list_async(await readActiveTheme()));
 				return history;
 			}
 			if (t.args === "preview") {
+				const previews: string[] = [];
 				for (const name of ["default", "light", "none"]) {
-					console.log(`${name}:\n${await theme_preview_async(name)}`);
+					previews.push(`${name}:\n${await theme_preview_async(name)}`);
 				}
+				await printBlock(previews.join("\n"));
 				return history;
 			}
 			if (!(await get_theme_async(t.args))) {
@@ -455,7 +499,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			const cwd = process.cwd();
 			const verb = (t.args ?? "").trim().split(/\s+/)[0] ?? "";
 			if (!verb) {
-				console.log(await format_trust_status_async(cwd, effectiveTrust));
+				await printBlock(await format_trust_status_async(cwd, effectiveTrust));
 				return history;
 			}
 			if (verb === "allow" || verb === "deny") {
@@ -599,7 +643,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			// bi#68: tree lists through the shared select frame (cursor
 			// parks on the first row — picks stay numeric against
 			// sess.tree until the bi#69 raw-mode layer).
-			await renderSelectList(await format_tree_async(rows), 0);
+			await renderSelectList(await format_tree_async(rows), 0, undefined, await activeTheme());
 			if (capped) console.error("[bi] tree capped at 200 entries, depth 3 — narrow with /tree <dir>");
 			return history;
 		}
@@ -671,6 +715,8 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				await renderSelectList(
 					await format_model_list_async(currentModel, { theme: await activeTheme(), enabled: scoped }),
 					await model_list_cursor_async(currentModel),
+					undefined,
+					await activeTheme(),
 				);
 				return history;
 			}
@@ -702,7 +748,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			const [verb, ...refs] = parts;
 			const stored = loadUserSettings();
 			if (!verb) {
-				console.log(await format_scoped_models_async(stored.enabled_models ?? null));
+				await printBlock(await format_scoped_models_async(stored.enabled_models ?? null));
 				return history;
 			}
 			if (verb === "all") {
@@ -712,7 +758,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 					console.error(`[bi] settings persist failed (${e instanceof Error ? e.message : e})`);
 					return history;
 				}
-				console.log(await format_scoped_models_async(null));
+				await printBlock(await format_scoped_models_async(null));
 				return history;
 			}
 			if ((verb === "enable" || verb === "disable" || verb === "only") && refs.length > 0) {
@@ -750,7 +796,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 					console.error(`[bi] settings persist failed (${e instanceof Error ? e.message : e})`);
 					return history;
 				}
-				console.log(await format_scoped_models_async(next));
+				await printBlock(await format_scoped_models_async(next));
 				return history;
 			}
 			console.error("usage: /scoped-models [enable|disable|only <ref...> | all]");
@@ -762,7 +808,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 		// ignore the config, and non-reasoning models are guarded out.
 		if (t.name === "thinking") {
 			if (!t.args) {
-				console.log(await format_thinking_list_async(backend?.thinking ?? "off", { theme: await activeTheme() }));
+				await printBlock(await format_thinking_list_async(backend?.thinking ?? "off", { theme: await activeTheme() }));
 				return history;
 			}
 			if (!is_valid_thinking_level(t.args)) {
@@ -785,7 +831,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				parent = loaded?.header.parent_session ?? null;
 				label = loaded?.header.label ?? null;
 			}
-			console.log(
+			await printBlock(
 				await format_session_info_async(id, file, process.cwd(), parent, backend?.provider ?? "anthropic", backend?.model ?? "claude-haiku-4-5", backend?.thinking ?? null, sess?.turn ?? 0, history.length, { label }),
 			);
 			return history;
@@ -808,7 +854,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				// numeric pick resolves against, so `/resume <n>` agrees).
 				const cur = sess ? sessionIdFromFile(sess.file) : null;
 				const at = cur ? rows.findIndex((r) => r.id === cur) : -1;
-				await renderSelectList(await format_resume_list_async(rows, cur), at < 0 ? 0 : at);
+				await renderSelectList(await format_resume_list_async(rows, cur), at < 0 ? 0 : at, undefined, await activeTheme());
 				return history;
 			}
 			let resumeId = t.args;
@@ -1149,6 +1195,9 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	// BAML shapes every line, the host only schedules repaints.
 	const status = new HostStatus("thinking", { formatStatus: format_status, formatSummary: format_turn_summary });
 	status.start();
+	// Turn chrome theme, hoisted: every stop/result path below closes
+	// with the same palette (summary good/bad, divider, error lines).
+	const turnTheme = await activeTheme();
 	// bi#32: staged images take a single-shot image turn (no tools — the
 	// SendTurnWithImage wire carries none by construction). The first
 	// staged image goes with this prompt; the rest wait their turn.
@@ -1171,8 +1220,9 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 			supports = await ModelSupportsImage_async(backend.model);
 		} catch {}
 		if (!supports) {
-			status.stop({ failed: true, detail: "image unsupported", turns: 0, messages: withUser.length });
+			status.stop({ failed: true, detail: "image unsupported", turns: 0, messages: withUser.length, theme: turnTheme });
 			console.error(`[bi] ${backend.model} doesn't take image parts — /model an image-capable backend or /paste clear to drop the staged image`);
+			await stderrRule(turnTheme);
 			return withUser;
 		}
 		const img = await runSingleImageTurn(fullPrompt, {
@@ -1184,18 +1234,20 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 			imageMime: "image/png",
 		});
 		if ("failure" in img) {
-			status.stop({ failed: true, detail: `TurnFailure ${img.failure.kind}`, turns: 1, messages: withUser.length });
-			console.error(`TurnFailure ${img.failure.message}`);
+			status.stop({ failed: true, detail: `TurnFailure ${img.failure.kind}`, turns: 1, messages: withUser.length, theme: turnTheme });
+			console.error(format_turn_error(`TurnFailure ${img.failure.message}`, { theme: turnTheme }));
 			const guidance = await GuidanceFor_async(img.failure.kind, backend.provider);
 			if (guidance) console.error(guidance);
+			await stderrRule(turnTheme);
 			return withUser;
 		}
 		sess.images = sess.images.slice(1);
 		if (sess.images.length) console.error(`[bi] ${sess.images.length} image(s) still staged — one per turn`);
 		const out = [...withUser, { role: "assistant", text: img.text, clientId: `${backend.provider}/${backend.model}` }];
-		status.stop({ failed: false, detail: "", turns: 1, messages: out.length });
+		status.stop({ failed: false, detail: "", turns: 1, messages: out.length, theme: turnTheme });
 		const theme = await activeTheme();
 		console.log(await render_markdown_text_async(img.text, { theme }));
+		await stderrRule(turnTheme);
 		return out;
 	}
 	// BI_BASE_URL lets the REPL talk to a local gateway/proxy (and makes
@@ -1213,8 +1265,9 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	}
 	if (!settled.done) {
 		if (opts.signal) opts.signal.aborted = true;
-		status.stop({ failed: true, detail: "aborted", turns: 0, messages: history.length });
+		status.stop({ failed: true, detail: "aborted", turns: 0, messages: history.length, theme: turnTheme });
 		console.error("[bi] turn aborted — transcript unchanged (a late VM result is discarded on arrival)");
+		await stderrRule(turnTheme);
 		void turnP.then(
 			() => console.error("[bi] late turn result discarded"),
 			(e) => console.error(`[bi] late turn failed: ${String(e?.message ?? e).split("\n")[0]}`),
@@ -1228,21 +1281,23 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	}
 	const assistantCount = result.messages.filter((m: any) => m.role === "assistant").length;
 	if (result.failure) {
-		status.stop({ failed: true, detail: `TurnFailure ${result.failure.kind}`, turns: Math.max(assistantCount, 1), messages: result.messages.length });
-		console.error(`TurnFailure ${result.failure.message}`);
+		status.stop({ failed: true, detail: `TurnFailure ${result.failure.kind}`, turns: Math.max(assistantCount, 1), messages: result.messages.length, theme: turnTheme });
+		console.error(format_turn_error(`TurnFailure ${result.failure.message}`, { theme: turnTheme }));
 		// bi#21: guidance names the fix where bi knows one (the REPL loop
 		// is anthropic-pinned today, so the provider is static here).
 		const guidance = await GuidanceFor_async(result.failure.kind, "anthropic");
 		if (guidance) console.error(guidance);
+		await stderrRule(turnTheme);
 		return withUser;
 	}
-	status.stop({ failed: false, detail: "", turns: Math.max(assistantCount, 1), messages: result.messages.length });
+	status.stop({ failed: false, detail: "", turns: Math.max(assistantCount, 1), messages: result.messages.length, theme: turnTheme });
 	// bi#27: assistant text renders through the BAML markdown shaper.
 	const theme = await activeTheme();
 	for (const m of result.messages) {
 		if ((m as any).role !== "assistant") continue;
 		console.log(await render_markdown_text_async((m as any).text ?? JSON.stringify((m as any).content), { theme }));
 	}
+	await stderrRule(turnTheme);
 	return result.messages;
 }
 
@@ -1334,15 +1389,29 @@ async function repl(skills: Skill[]): Promise<void> {
 	// the first turn-end paint, torn down when the REPL leaves.
 	const footer = new HostFooter();
 	// Tab completes first-word slashes (builtins + loaded skills, same
-	// array the loop mutates on /trust reloads). BAML owns the match;
-	// the callback form keeps readline's sync contract over the VM call.
+	// array the loop mutates on /trust reloads) and second-word
+	// arguments for commands with a known pool (/model ids, /thinking
+	// levels, /theme names, /trust verbs, /settings keys, /help names).
+	// BAML owns the match; the callback form keeps readline's sync
+	// contract over the VM call.
 	try {
 		const builtins = (await builtin_slash_commands_async()).map((b: any) => String(b.name));
 		reader.setCompleter((line: string, cb: (err: unknown, res: [string[], string]) => void) => {
 			const names = [...builtins, ...skills.map((s) => s.name)];
-			complete_slash_async(line, names).then(
-				(m: string[]) => cb(null, [m, line]),
-				(e: unknown) => cb(null, [[], line]),
+			const second = line.match(/^\/(\S+)[ \t]+(\S*)$/);
+			if (!second) {
+				complete_slash_async(line, names).then(
+					(m: string[]) => cb(null, [m, line]),
+					(e: unknown) => cb(null, [[], line]),
+				);
+				return;
+			}
+			const prefix = second[2];
+			argCandidates(second[1], names).then((pool) =>
+				complete_arg_async(prefix, pool).then(
+					(m: string[]) => cb(null, [m, prefix]),
+					(e: unknown) => cb(null, [[], prefix]),
+				),
 			);
 		});
 	} catch {

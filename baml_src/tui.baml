@@ -63,12 +63,15 @@ function format_status(spinner: string, label: string, elapsed_ms: int, event: s
 
 // Final line replacing the status: `✓ done · 3 turns · 6.1s` /
 // `✗ TurnFailure <kind> · 2 turns · 6.1s`. Host passes counts, BAML shapes.
+// The whole line takes the good/bad role so the outcome reads at a glance;
+// theme null/none (pipes) stays plain.
 function format_turn_summary(
     failed: bool,
     detail: string,
     turns: int,
     messages: int,
     elapsed_ms: int,
+    theme: string? = null,
 ) -> string {
     let head = if (failed) {
         `✗ ${detail}`
@@ -85,7 +88,33 @@ function format_turn_summary(
     } else {
         `${messages} messages`
     };
-    `${head} · ${tm} · ${mm} · ${format_elapsed(elapsed_ms)}`
+    let line = `${head} · ${tm} · ${mm} · ${format_elapsed(elapsed_ms)}`;
+    if (failed) {
+        style_segment(line, "bad", theme)
+    } else {
+        style_segment(line, "good", theme)
+    }
+}
+
+// Turn failure detail (the `TurnFailure <message>` line under the summary).
+// Bad role by policy, not by host choice.
+function format_turn_error(line: string, theme: string? = null) -> string {
+    style_segment(line, "bad", theme)
+}
+
+// Faint full-width rule closing a REPL block (turn output, slash
+// listings). Dim role so it structures without shouting; plain ───
+// run on theme none/pipes. Width is terminal cells; <= 0 renders empty.
+function render_divider(width: int, theme: string? = null) -> string {
+    if (width <= 0) {
+        ""
+    } else {
+        let rule = "";
+        for (let i = 0; i < width; i += 1) {
+            rule = `${rule}─`
+        }
+        style_segment(rule, "dim", theme)
+    }
 }
 
 function diff_lines(old: string[], new_lines: string[]) -> string[] {

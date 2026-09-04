@@ -93,6 +93,35 @@ testset "tui" {
         );
     }
 
+    test "turn summary and error take theme roles, divider spans width" {
+        // Unstyled default keeps the exact legacy shapes (above).
+        let plain = format_turn_summary(false, "", 1, 1, 500);
+        let good = format_turn_summary(false, "", 1, 1, 500, theme = "default");
+        assert.contains(good, "✓ done");
+        // One SGR open (5 bytes) + one reset (4 bytes), no other change.
+        assert.equal(good.length(), plain.length() + 9);
+        let bad = format_turn_summary(true, "TurnFailure api", 1, 1, 500, theme = "default");
+        assert.contains(bad, "✗ TurnFailure api");
+        assert.equal(
+            bad.length(),
+            format_turn_summary(true, "TurnFailure api", 1, 1, 500).length() + 9,
+        );
+        assert.contains(
+            format_turn_error("TurnFailure boom", theme = "default"),
+            "TurnFailure boom",
+        );
+        assert.equal(format_turn_error("TurnFailure boom"), "TurnFailure boom");
+        assert.equal(render_divider(4, theme = "none"), "────");
+        assert.equal(render_divider(0, theme = "none"), "");
+        assert.equal(render_divider(-3), "");
+        // Dim role adds its 8-byte SGR envelope (4 open + 4 reset)
+        // around the rule, however BAML counts the ─ width.
+        assert.equal(
+            render_divider(4, theme = "default").length(),
+            render_divider(4, theme = "none").length() + 8,
+        );
+    }
+
     test "select frame highlights cursor row, keeps numbers" {
         let rows = ["1  grok-4.6", "2  claude-haiku-4-5", "3  muse-spark"];
         let frame = render_select_frame(rows, 1, 80);

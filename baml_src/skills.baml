@@ -315,7 +315,7 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
 // (not pi's widget keybindings — those wait on a raw-mode input layer
 // readline cannot give, bi#32). Host prints.
 function hotkeys_text() -> string {
-    "/              Slash commands (this list: /help)\n↑ / ↓         Browse input history\nEnter          Send message\n\\ (trailing)   Continue input onto the next line\nCtrl-C          Abort the running turn (transcript survives)\nCtrl-D          Quit (when input is empty)\n/copy /paste   Copy last answer / stage a clipboard image\n/tree /attach  Browse files / stage file context\n/editor        Compose the prompt in $EDITOR"
+    "/              Slash commands (this list: /help)\nTab            Complete the slash command (and its argument, e.g. /model <Tab>)\n↑ / ↓         Browse input history\nEnter          Send message\n\\ (trailing)   Continue input onto the next line\nCtrl-C          Abort the running turn (transcript survives)\nCtrl-D          Quit (when input is empty)\n/copy /paste   Copy last answer / stage a clipboard image\n/tree /attach  Browse files / stage file context\n/editor        Compose the prompt in $EDITOR"
 }
 
 // /changelog bodies (bi#31): entries split on "## " headers, newest
@@ -393,6 +393,19 @@ function complete_slash(line: string, names: string[]) -> string[] {
             out
         }
     }
+}
+
+// Second-word argument completion (`/model <Tab>`, `/thinking <Tab>`).
+// The host supplies the candidate pool per command (model ids, levels,
+// theme names, ...); BAML owns the prefix match.
+function complete_arg(prefix: string, candidates: string[]) -> string[] {
+    let out: string[] = [];
+    for (let c in candidates) {
+        if (c.starts_with(prefix)) {
+            out.push(c)
+        }
+    }
+    out
 }
 
 // Dispatch lookup: builtins first, then skill names ("/<name>"). Returns the
@@ -619,6 +632,18 @@ test "slash completion matches the first word only" {
     assert.equal(complete_slash("hello", names).length(), 0);
     assert.equal(complete_slash("/model x", names).length(), 0);
     assert.equal(complete_slash("", names).length(), 0)
+}
+
+test "second-word argument completion filters the host pool" {
+    let pool = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    let m = complete_arg("m", pool);
+    assert.equal(m.length(), 3);
+    assert.equal(m.at(0) ?? "", "minimal");
+    assert.equal(m.at(1) ?? "", "medium");
+    assert.equal(m.at(2) ?? "", "max");
+    assert.equal(complete_arg("", pool).length(), 7);
+    assert.equal(complete_arg("zzz", pool).length(), 0);
+    assert.equal(complete_arg("anything", []).length(), 0)
 }
 
 test "hotkeys text describes bi REPL keys" {

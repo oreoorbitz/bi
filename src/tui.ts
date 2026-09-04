@@ -1,7 +1,7 @@
 // bi/src/tui.ts — host differential TUI, mirrors pi/packages/tui differential rendering
 // BAML owns Component + diff_lines/visible_width/cursor_marker for baml test; host does TS rendering.
 // This is minimal: renders BAIS ready + prompt, diffs lines (pi does ANSI differential).
-import { render_select_frame_async } from "../baml_sdk/index.js";
+import { render_divider_async, render_select_frame_async } from "../baml_sdk/index.js";
 
 const CURSOR_MARKER = "\x1b_pi:c\x07";
 
@@ -47,11 +47,13 @@ export class HostTui {
 // /tree listings. BAML owns rows + cursor + width shaping; the host
 // only splits the shaped text and diffs the frame through HostTui.
 // Picks stay numeric — the cursor index is display state until the
-// bi#69 raw-mode layer.
-export async function renderSelectList(text: string, cursor: number, width?: number): Promise<void> {
+// bi#69 raw-mode layer. A BAML-shaped divider closes the block on
+// stdout so the next prompt doesn't crowd the list.
+export async function renderSelectList(text: string, cursor: number, width?: number, theme?: string | null): Promise<void> {
 	const w = width ?? process.stdout.columns ?? 80;
 	const rows = text.split("\n").filter((l) => l.length > 0);
 	new HostTui(w).render(await render_select_frame_async(rows, cursor, w));
+	process.stdout.write((await render_divider_async(w, { theme: theme ?? null })) + "\n");
 }
 // Pinned bottom-row footer (bi#67). BAML owns the frame line
 // (render_footer_frame, width-capped to one row); the host owns the
@@ -139,12 +141,12 @@ export class HostStatus {
 	private event = "";
 	private label: string;
 	private formatStatus: (spinner: string, label: string, elapsedMs: number, event: string) => string;
-	private formatSummary: (failed: boolean, detail: string, turns: number, messages: number, elapsedMs: number) => string;
+	private formatSummary: (failed: boolean, detail: string, turns: number, messages: number, elapsedMs: number, $opts?: { theme?: string | null }) => string;
 	constructor(
 		label: string,
 		fns: {
 			formatStatus: (spinner: string, label: string, elapsedMs: number, event: string) => string;
-			formatSummary: (failed: boolean, detail: string, turns: number, messages: number, elapsedMs: number) => string;
+			formatSummary: (failed: boolean, detail: string, turns: number, messages: number, elapsedMs: number, $opts?: { theme?: string | null }) => string;
 		},
 	) {
 		this.label = label;
@@ -173,12 +175,14 @@ export class HostStatus {
 		process.stderr.write(`\r\x1b[2K${line}`);
 	}
 	// Replaces the status line with the final summary. Counts come from the
-	// caller (result.messages/turns); BAML shapes the text.
-	stop(opts: { failed: boolean; detail: string; turns: number; messages: number }): void {
+	// caller (result.messages/turns); BAML shapes the text and owns the
+	// good/bad role via the theme. The caller closes the block with a
+	// divider after any trailing detail lines print.
+	stop(opts: { failed: boolean; detail: string; turns: number; messages: number; theme?: string | null }): void {
 		const ms = this.elapsed();
 		if (this.timer) clearInterval(this.timer);
 		this.timer = null;
-		const line = this.formatSummary(opts.failed, opts.detail, opts.turns, opts.messages, ms);
+		const line = this.formatSummary(opts.failed, opts.detail, opts.turns, opts.messages, ms, { theme: opts.theme ?? null });
 		if (this.tty) process.stderr.write(`\r\x1b[2K${line}\n`);
 		else console.error(`[bi] ${line}`);
 	}
