@@ -1,6 +1,6 @@
 id = "bi#79"
 title = "/issues command: staged issue context for the agent loop"
-status = "Doing"
+status = "Done"
 kind = "Feat"
 area = "tui"
 body = """
