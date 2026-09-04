@@ -112,9 +112,9 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
         },
         BuiltinSlashCommand {
             name: "model",
-            description: "Select model (opens selector UI)",
-            argument_hint: "<provider/model>",
-            scope: "bi#28",
+            description: "List models or switch the live backend",
+            argument_hint: "[provider/model]",
+            scope: null,
         },
         BuiltinSlashCommand {
             name: "tree",
@@ -124,9 +124,9 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
         },
         BuiltinSlashCommand {
             name: "thinking",
-            description: "Set thinking level",
-            argument_hint: "<level>",
-            scope: "bi#28",
+            description: "List thinking levels or set the live level",
+            argument_hint: "[level]",
+            scope: null,
         },
         BuiltinSlashCommand {
             name: "scoped-models",
@@ -350,8 +350,8 @@ test "scope marks live vs owning issue" {
             "logout" => assert.is_true(b.scope is null),
             "hotkeys" => assert.is_true(b.scope is null),
             "quit" => assert.is_true(b.scope is null),
-            "model" => assert.equal(b.scope, "bi#28"),
-            "thinking" => assert.equal(b.scope, "bi#28"),
+            "model" => assert.is_true(b.scope is null),
+            "thinking" => assert.is_true(b.scope is null),
             "scoped-models" => assert.equal(b.scope, "bi#28"),
             "settings" => assert.equal(b.scope, "bi#29"),
             "trust" => assert.equal(b.scope, "bi#29"),

@@ -13,7 +13,7 @@ import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, mo
 import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, type Skill } from "./skills.js";
 import { runResultToJsonLines, finalText } from "./events.js";
 import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow } from "./session.js";
@@ -102,12 +102,21 @@ export interface TurnSignal {
 	aborted: boolean;
 }
 
+// Live REPL backend (bi#28): /model and /thinking mutate this in place;
+// every turn after the switch runs on the new provider/model/thinking.
+// `bi run` never creates one — it passes explicit flags per invocation.
 // Slash dispatch (bi#12): /builtin + /skill-name in the interactive prompt.
 // Skill slashes expand the SKILL.md body into the prompt (pi runs skill
 // content as the prompt); builtins execute directly. Returns the (possibly
 // advanced) history, "quit" to end the REPL, "none" for ordinary prompts.
 // History threads through so skill turns join the transcript like any turn.
-async function handleSlash(line: string, skills: Skill[], history: any[], signal?: TurnSignal): Promise<any[] | "quit" | "none"> {
+export interface ReplBackend {
+	provider: string;
+	model: string;
+	thinking: string | null;
+}
+
+async function handleSlash(line: string, skills: Skill[], history: any[], signal?: TurnSignal, backend?: ReplBackend): Promise<any[] | "quit" | "none"> {
 	// Decision (BAML-backed) lives in skills.ts; this keeps only effects.
 	const t = await resolveSlash(line, skills);
 	if (t.kind === "none") return "none";
@@ -156,6 +165,43 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			console.log(await hotkeys_text_async());
 			return history;
 		}
+		// bi#28: bare /model lists the catalog (current marked), with an
+		// argument it switches the live backend — provider follows the
+		// resolved model record, so `xai/grok-4.6` moves both at once.
+		if (t.name === "model") {
+			if (!t.args) {
+				console.log(await format_model_list_async(backend?.model ?? "claude-haiku-4-5"));
+				return history;
+			}
+			const m = await resolve_model_ref_async(t.args);
+			if (!m) {
+				console.error(`unknown model "${t.args}" — bare /model lists the catalog (try provider/id)`);
+				return history;
+			}
+			if (backend) {
+				backend.provider = m.provider;
+				backend.model = m.id;
+			}
+			console.error(`[bi] backend now ${m.provider}/${m.id}`);
+			return history;
+		}
+		// bi#28: bare /thinking lists levels with pi's descriptions, with
+		// an argument it sets the live level (validated by BAML). Budgets
+		// reach anthropic turns via thinking_config_for_level; other APIs
+		// ignore the config, and non-reasoning models are guarded out.
+		if (t.name === "thinking") {
+			if (!t.args) {
+				console.log(await format_thinking_list_async(backend?.thinking ?? "off"));
+				return history;
+			}
+			if (!is_valid_thinking_level(t.args)) {
+				console.error(`unknown thinking level "${t.args}" — bare /thinking lists off/minimal/low/medium/high/xhigh/max`);
+				return history;
+			}
+			if (backend) backend.thinking = t.args;
+			console.error(`[bi] thinking now ${t.args}`);
+			return history;
+		}
 		// bi#31: scoped but unwired — name the owning issue instead of
 		// failing silent or pretending the command ran.
 		if (t.scope) {
@@ -172,8 +218,8 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 // opts.aborted resolves when the user hits Ctrl-C mid-turn: the turn is
 // abandoned (flagged via opts.signal), the spinner stops now, and the late
 // VM result is discarded on arrival — transcript and prompt survive.
-async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = [], opts: { signal?: TurnSignal; aborted?: Promise<void> } = {}): Promise<any[] | "quit"> {
-	const slash = await handleSlash(q, skills, history, opts.signal);
+async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = [], opts: { signal?: TurnSignal; aborted?: Promise<void> } = {}, backend: ReplBackend = { provider: "anthropic", model: "claude-haiku-4-5", thinking: null }): Promise<any[] | "quit"> {
+	const slash = await handleSlash(q, skills, history, opts.signal, backend);
 	if (slash === "quit") return "quit";
 	if (slash !== "none") return slash;
 	const skillsSection = skills.length ? `\n\n${await formatSkills(skills)}` : "";
@@ -193,7 +239,7 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	status.start();
 	// BI_BASE_URL lets the REPL talk to a local gateway/proxy (and makes
 	// slow-turn behavior testable without real provider latency).
-	const turnP = runBiLoop(fullPrompt, { provider: "anthropic", model: "claude-haiku-4-5", maxTurns: 5, baseUrl: process.env.BI_BASE_URL ?? null, onEvent: (e) => status.onEvent(e), tools: loopTools, toolHandler: async (name, args) => handleTool(name, args), history });
+	const turnP = runBiLoop(fullPrompt, { provider: backend.provider, model: backend.model, thinking: backend.thinking, maxTurns: 5, baseUrl: process.env.BI_BASE_URL ?? null, onEvent: (e) => status.onEvent(e), tools: loopTools, toolHandler: async (name, args) => handleTool(name, args), history });
 	type Settled = { done: true; result: Awaited<typeof turnP> } | { done: false };
 	let settled: Settled;
 	if (opts.aborted) {
@@ -314,6 +360,9 @@ async function repl(skills: Skill[]): Promise<void> {
 	const reader = new ReplReader();
 	let history: any[] = [];
 	let turn = 0;
+	// bi#28: live backend — starts anthropic-pinned exactly as before
+	// (thinking null sends no config, preserving wire behavior).
+	const backend: ReplBackend = { provider: "anthropic", model: "claude-haiku-4-5", thinking: null };
 	try {
 		for (;;) {
 			let line: string;
@@ -334,7 +383,7 @@ async function repl(skills: Skill[]): Promise<void> {
 			let fireAbort: () => void = () => {};
 			const aborted = new Promise<void>((res) => { fireAbort = res; });
 			reader.onMidTurnInterrupt = () => fireAbort();
-			const out = await runOnePrompt(line.trim(), skills, history, { signal, aborted });
+			const out = await runOnePrompt(line.trim(), skills, history, { signal, aborted }, backend);
 			reader.onMidTurnInterrupt = null;
 			if (out === "quit") {
 				console.error(`[bi] session kept at ${sessFile} (${history.length} messages)`);
@@ -344,6 +393,8 @@ async function repl(skills: Skill[]): Promise<void> {
 			if (out !== history) {
 				history = out;
 				turn += 1;
+				// bi#28: footer readout after every turn (BAML-shaped).
+				console.error(await format_repl_footer_async(backend.provider, backend.model, backend.thinking ?? "default", turn, history.length));
 			}
 		}
 	} finally {
@@ -500,6 +551,9 @@ async function main(): Promise<void> {
 		const azureResource = getFlag(args, "--azure-resource") ?? null;
 		const azureDeployment = getFlag(args, "--azure-deployment") ?? null;
 		const azureApiVersion = getFlag(args, "--azure-api-version") ?? null;
+		// bi#28: the parsed-but-dropped --thinking flag now reaches turns.
+		const thinkingFlag = getFlag(args, "--thinking");
+		const thinkingLevel = thinkingFlag && is_valid_thinking_level(thinkingFlag) ? thinkingFlag : null;
 
 		const providerInfo = await getProvider(provider);
 		if (!providerInfo) {
@@ -596,6 +650,7 @@ async function main(): Promise<void> {
 				apiKey,
 				baseUrl,
 				temperature,
+				thinkingLevel,
 				maxTurns,
 				azureResource,
 				azureDeployment,

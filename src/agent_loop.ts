@@ -11,6 +11,7 @@ export async function runBiLoop(
 		provider?: string;
 		model?: string;
 		apiKey?: string | null;
+		thinking?: string | null;
 		maxTurns?: number;
 		onEvent?: (e: string) => void;
 		tools?: ToolSpec[];
@@ -35,6 +36,7 @@ export async function runBiLoop(
 		model: opts.model ?? "claude-haiku-4-5",
 		apiKey: opts.apiKey ?? null,
 		baseUrl: opts.baseUrl ?? null,
+		thinkingLevel: opts.thinking ?? null,
 		maxTurns: opts.maxTurns ?? 5,
 		tools: opts.tools,
 		toolHandler: opts.toolHandler,

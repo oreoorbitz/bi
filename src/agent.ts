@@ -4,7 +4,7 @@
 
 import { CreateMixedTurn_async, CreateTextTurn_async, CreateToolUseTurn_async, TurnFailure, ai } from "../baml_sdk/index.js";
 import { resolveAuth } from "./auth.js";
-import { GetModel_async, RefreshModels_async } from "../baml_sdk/index.js";
+import { GetModel_async, RefreshModels_async, thinking_config_for_level_async, ModelSupportsReasoning_async } from "../baml_sdk/index.js";
 import { toHistory, type ConversationTurn } from "./conversation.js";
 import { maybeCompactHistory, type CompactionOptions } from "./compaction.js";
 import { SendTurn_async } from "../baml_sdk/index.js";
@@ -33,6 +33,10 @@ export interface AgentOptions {
 	apiKey?: string | null;
 	baseUrl?: string | null;
 	temperature?: number | null;
+	// bi#28: thinking level name ("off"|"minimal"|...|"max") or null for
+	// unset. Resolves to an anthropic ThinkingConfig per turn; other APIs
+	// ignore it (turn.baml only wires thinking on anthropic-messages).
+	thinkingLevel?: string | null;
 	maxTurns?: number;
 	// bi#44: host-owned hub notifications. The subscriber (notify.ts) fills
 	// the queue in the background; the loop drains it between turns as
@@ -63,6 +67,16 @@ function defaultLlmFn(options: AgentOptions): LlmFn {
 		const auth = resolved.auth;
 		const h = await toHistory(history);
 		const t = toToolSpecs(tools);
+		// bi#28: thinking only reaches models that reason — a budget on a
+		// non-reasoning model would 400, so the BAML guard decides.
+		let thinking: any = null;
+		if (options.thinkingLevel && options.thinkingLevel !== "off") {
+			if (await ModelSupportsReasoning_async(options.model)) {
+				thinking = await thinking_config_for_level_async(options.thinkingLevel);
+			}
+		} else if (options.thinkingLevel === "off") {
+			thinking = await thinking_config_for_level_async("off");
+		}
 		// Retry at the dispatch choke point (bi#16) — the per-provider
 		// send/stream fns wrap their own calls too, but every agent turn
 		// flows through here.
@@ -70,6 +84,7 @@ function defaultLlmFn(options: AgentOptions): LlmFn {
 			SendTurn_async(provider, options.model, auth.key, text, h, t, {
 				base_url: options.baseUrl ?? null,
 				temperature: options.temperature ?? null,
+				thinking,
 				azure_resource: options.azureResource ?? null,
 				azure_deployment: options.azureDeployment ?? null,
 				azure_api_version: options.azureApiVersion ?? null,
