@@ -1,0 +1,20 @@
+id = "bi#67"
+title = "Pinned footer/status region (scroll-region vs readline)"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+HostTui now repaints differentially (slice 2) but has no repainting
+consumer: the footer still prints per turn and scrolls away. Pin the
+model/context readout to the bottom row (scroll-region handling that
+coexists with readline editing), repainted through the differential
+renderer on turn end. BAML owns the footer frame (format_repl_footer
+exists); host owns region setup + repaint. TTY-only — pipes keep the
+printed footer byte-identical. Acceptance: footer visible across turns
+on a TTY; piped output unchanged; no readline editing glitches.
+"""
+
+[[edge]]
+from = "bi#67"
+to = "bi#26"
+kind = "DependsOn"

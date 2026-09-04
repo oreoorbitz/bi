@@ -1,0 +1,26 @@
+id = "bi#72"
+title = "Unblock BAML Component interactivity on FFI handle round-trip"
+status = "Open"
+kind = "Proposal"
+area = "tui"
+body = """
+tui.baml declares Component.handle_input/invalidate as methods, but
+they are test doubles: interface handles do not round-trip across FFI
+(bi#04 limitation 1, bi#07 cross-interface dispatch). If the toolchain
+lifts those limits, components could own focus/input dispatch in BAML
+with the host only pumping bytes — the full pi-Component port.
+Otherwise the frame model (BAML renders, host loops) stands. Tracks
+upstream; re-check past toolchain 0.17.0. Acceptance: a BAML-owned
+interactive component dispatches input round-tripped through the host,
+or a dated note saying the limits still hold.
+"""
+
+[[edge]]
+from = "bi#72"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#72"
+to = "bi#04"
+kind = "DependsOn"

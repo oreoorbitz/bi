@@ -1,0 +1,24 @@
+id = "bi#70"
+title = "Inline images in transcript (terminal graphics protocols)"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Pasted/staged images today show as text placeholders; pi renders them
+inline (terminal-image: kitty/sixel/iTerm2). Detect the protocol from
+TERM + query responses, emit graphics for image parts in the
+transcript, fall back to the placeholder elsewhere (and always on
+pipes). Host owns detection + emission; BAML owns the fallback text.
+Acceptance: image turn output shows inline on kitty/iTerm2, placeholder
+otherwise; needs a real image turn (live-key leg).
+"""
+
+[[edge]]
+from = "bi#70"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#70"
+to = "bi#32"
+kind = "DependsOn"

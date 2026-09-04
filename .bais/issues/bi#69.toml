@@ -1,0 +1,25 @@
+id = "bi#69"
+title = "Raw-mode input layer (unlocks hotkeys + interactive pick)"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+The largest deferred UI item: readline cannot remap keys, do fuzzy
+filtering, or drive cursor-key navigation in select-frames (bi#68).
+Build a host-owned raw-mode input layer (key parsing, focus, repaint
+via HostTui) behind a TTY gate with readline fallback. BAML owns frame
+content; the host owns keys — same split as the renderer. Unlocks
+bi#32 custom hotkeys and arrow-key navigation. Acceptance: hotkeys
+persist and fire; select-frames navigate by arrow keys; non-TTY and
+fallback paths byte-identical to today.
+"""
+
+[[edge]]
+from = "bi#69"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#69"
+to = "bi#32"
+kind = "DependsOn"

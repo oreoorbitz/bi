@@ -1,0 +1,23 @@
+id = "bi#68"
+title = "Select-list frames with cursor (unify numbered picks)"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+/model, /resume (and /tree) each render their own numbered lists with
+their own numbering. Unify them as one BAML select-frame: rows +
+cursor index + width cap, rendered through HostTui. Cursor is display
+state only until the raw-mode layer lands (bi#69) — picks stay numeric
+until then. Acceptance: all three lists render through the frame;
+numbered picks keep working; cursor index covered by baml test.
+"""
+
+[[edge]]
+from = "bi#68"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#68"
+to = "bi#69"
+kind = "DependsOn"

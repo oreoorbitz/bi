@@ -1,0 +1,17 @@
+id = "bi#71"
+title = "BAML-shaped diffs in transcript (tool results and edits)"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+pi renders edit tool results as diffs (diff.ts); bi prints raw
+tool output. Shape unified diffs in BAML (pure, baml-testable) and
+render them in the transcript for edit/write tool results, falling
+back to raw output when the payload is not diffable. Acceptance: an
+edit turn shows a readable diff inline; non-diff output unchanged.
+"""
+
+[[edge]]
+from = "bi#71"
+to = "bi#26"
+kind = "DependsOn"
