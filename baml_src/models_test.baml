@@ -11,8 +11,8 @@ testset "model catalog" {
         assert.equal(ListModels("openai").length(), 2)
     }
 
-    test "ListAllModels returns 43" {
-        assert.equal(ListAllModels().length(), 43)
+    test "ListAllModels returns 45" {
+        assert.equal(ListAllModels().length(), 45)
     }
 
     test "ListModels azure returns advisory deployments" {
@@ -36,7 +36,7 @@ testset "model catalog" {
         assert.equal(ListModels("cerebras").length(), 2);
         assert.equal(ListModels("moonshotai").length(), 2);
         assert.equal(ListModels("nvidia").length(), 2);
-        assert.equal(ListModels("zai").length(), 2);
+        assert.equal(ListModels("zai").length(), 4);
         assert.equal(ListModels("huggingface").length(), 2);
         assert.equal(ListModels("baseten").length(), 2);
         assert.equal(ListModels("mistral").length(), 2);
