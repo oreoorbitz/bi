@@ -1,6 +1,6 @@
 id = "bi#41"
 title = "P0: SQLite silent content flips serve altered projections as complete"
-status = "Open"
+status = "Done"
 kind = "Bug"
 area = "bais/store"
 body = """
