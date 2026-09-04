@@ -5,14 +5,17 @@ kind = "Feat"
 area = "tui"
 body = """
 Stage 1 (merged) shaped unified diffs in BAML and wired emitToolDiff
-behind path/before/after envelopes — but no executor emits envelopes,
-so no edit turn shows a diff yet. Stage 2: edit/write executors
-capture before/after and return the envelope. Open design point: the
-envelope is model-visible tool output, so the shape must stay readable
-to the model (path + unified hunks, not raw dumps) while the loop
-keeps its existing contracts; oversized sides already fall back to
-nothing. Acceptance: a live edit turn prints the BAML-shaped diff
-inline; model edit behavior unchanged (existing agent tests green).
+behind path/before/after envelopes — but nothing can fire them:
+read/write/edit/bash have NO host executors (handleTool throws
+"unknown tool ... need host impl" for all pi tools; only bais_* and
+report_* run). Stage 2 is therefore bigger than envelopes: implement
+minimal write/edit executors that capture before/after and return the
+envelope. Open design points: (1) the envelope is model-visible tool
+output — keep it readable (path + hunks, not dumps); oversized sides
+already fall back to nothing; (2) SAFETY: autonomous file writes need
+a policy — cwd jail + project-trust gate (deny refuses) at minimum.
+Acceptance: a live edit turn writes the file AND prints the
+BAML-shaped diff inline; writes outside the project refuse loudly.
 """
 
 [[edge]]
