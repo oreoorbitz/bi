@@ -7,17 +7,35 @@ const CURSOR_MARKER = "\x1b_pi:c\x07";
 export class HostTui {
 	private oldLines: string[] = [];
 	private width: number;
-	constructor(width = process.stdout.columns ?? 80) {
+	private write: (s: string) => void;
+	constructor(width = process.stdout.columns ?? 80, write: (s: string) => void = (s) => process.stdout.write(s)) {
 		this.width = width;
+		this.write = write;
 	}
 	render(lines: string[]): void {
-		// BAML diff_lines is pure; host could call it via baml_sdk, but for TUI we use TS diff
-		const diff = lines.filter((l, i) => l !== this.oldLines[i]);
-		if (diff.length > 0 || lines.length !== this.oldLines.length) {
-			if (this.oldLines.length) process.stdout.write("\x1b[2J\x1b[H");
-			for (const l of lines) process.stdout.write(l.replace(CURSOR_MARKER, "") + "\n");
+		// Differential repaints, pi-TUI spec: first render streams rows
+		// (cursor ends below the frame); same-count repaints restore to
+		// below-frame, step up, and rewrite CHANGED rows only, then
+		// restore — no full clear, no scroll creep (no net newlines).
+		// Frames must arrive width-capped (BAML frames are); a row wider
+		// than the terminal wraps and misaligns the region. Count
+		// changes still full-clear (rare; startup-shaped usage).
+		const clean = lines.map((l) => l.replace(CURSOR_MARKER, ""));
+		if (this.oldLines.length === 0) {
+			for (const l of clean) this.write(l + "\n");
+		} else if (clean.length !== this.oldLines.length) {
+			this.write("\x1b[2J\x1b[H");
+			for (const l of clean) this.write(l + "\n");
+		} else {
+			this.write("\x1b[s");
+			this.write(`\x1b[${clean.length}A`);
+			for (let i = 0; i < clean.length; i++) {
+				if (clean[i] !== this.oldLines[i]) this.write(`\r\x1b[2K${clean[i]}`);
+				if (i < clean.length - 1) this.write("\n");
+			}
+			this.write("\x1b[u");
 		}
-		this.oldLines = lines;
+		this.oldLines = clean;
 	}
 	static visibleWidth(line: string): number {
 		return line.replace(CURSOR_MARKER, "").length;
