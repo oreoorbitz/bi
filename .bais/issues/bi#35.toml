@@ -1,6 +1,6 @@
 id = "bi#35"
 title = "Reducer determinism property tests"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "bais/reducer"
 body = """

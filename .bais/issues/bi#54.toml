@@ -1,6 +1,6 @@
 id = "bi#54"
 title = "Match-exhaustive hub event dispatch (new type breaks check)"
-status = "Open"
+status = "Doing"
 kind = "Feat"
 area = "bais/hub"
 body = """

@@ -1,6 +1,6 @@
 id = "bi#48"
 title = "ready --why-not (every omission carries its reason)"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "bais/cli"
 body = """

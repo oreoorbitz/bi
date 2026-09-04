@@ -1,6 +1,6 @@
 id = "bi#39"
 title = "Dogfood hub leases with store-vs-scan cross-check"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "bais/dogfood"
 body = """

@@ -1,6 +1,6 @@
 id = "bi#47"
 title = "First-class what-changed-since-heads query (rejoin in one question)"
-status = "Open"
+status = "Doing"
 kind = "Feat"
 area = "bais/sync"
 body = """

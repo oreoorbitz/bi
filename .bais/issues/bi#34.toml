@@ -1,6 +1,6 @@
 id = "bi#34"
 title = "Hub history survives ingest (merge-on-ingest or loud refusal)"
-status = "Open"
+status = "Doing"
 kind = "Feat"
 area = "bais/store"
 body = """

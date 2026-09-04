@@ -1,6 +1,6 @@
 id = "bi#53"
 title = "Typed inter-agent messages (handoff/review as BAML contracts)"
-status = "Open"
+status = "Doing"
 kind = "Feat"
 area = "bais/protocol"
 body = """

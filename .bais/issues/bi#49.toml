@@ -1,6 +1,6 @@
 id = "bi#49"
 title = "bais move prints what it unblocked"
-status = "Open"
+status = "Doing"
 kind = "Feat"
 area = "bais/cli"
 body = """
