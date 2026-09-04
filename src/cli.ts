@@ -14,7 +14,7 @@ import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
 import { listCredentials } from "./auth.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, parse_changelog_async, format_changelog_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
 import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
 import { readClipboardImage, writeClipboardText, clipboardSupportsImage } from "./clipboard.js";
@@ -23,6 +23,14 @@ import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSessio
 import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// CHANGELOG.md ships at the package root; the running module is
+// dist/src/cli.js, so two levels up. A relocated install without
+// the file reads clean at the call site (never throws here).
+function changelogFile(): string {
+	return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "CHANGELOG.md");
+}
 import { homedir } from "node:os";
 
 // REPL input history (~/.bi/history, next to the sessions dir). One line
@@ -375,6 +383,25 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 		}
 		if (t.name === "hotkeys") {
 			console.log(await hotkeys_text_async());
+			return history;
+		}
+		if (t.name === "changelog") {
+			// bi#31: entries live in CHANGELOG.md next to the install
+			// (dist/src/cli.js → package root). Missing file reads
+			// clean, never throws; BAML splits + shapes the sections.
+			const arg = t.args.trim();
+			if (arg && arg !== "all") {
+				console.error("usage: /changelog [all]");
+				return history;
+			}
+			let raw: string;
+			try {
+				raw = readFileSync(changelogFile(), "utf8");
+			} catch {
+				console.error("[bi] no CHANGELOG.md found next to the bi install");
+				return history;
+			}
+			console.log(await format_changelog_async(await parse_changelog_async(raw), arg === "all"));
 			return history;
 		}
 		if (t.name === "skills") {

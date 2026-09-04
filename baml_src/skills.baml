@@ -201,9 +201,9 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
         },
         BuiltinSlashCommand {
             name: "changelog",
-            description: "Show changelog entries",
-            argument_hint: null,
-            scope: "bi#31",
+            description: "Show changelog entries (latest, or all)",
+            argument_hint: "[all]",
+            scope: null,
         },
         BuiltinSlashCommand {
             name: "hotkeys",
@@ -315,6 +315,61 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
 // readline cannot give, bi#32). Host prints.
 function hotkeys_text() -> string {
     "/              Slash commands (this list: /help)\n↑ / ↓         Browse input history\nEnter          Send message\n\\ (trailing)   Continue input onto the next line\nCtrl-C          Abort the running turn (transcript survives)\nCtrl-D          Quit (when input is empty)\n/copy /paste   Copy last answer / stage a clipboard image\n/tree /attach  Browse files / stage file context\n/editor        Compose the prompt in $EDITOR"
+}
+
+// /changelog bodies (bi#31): entries split on "## " headers, newest
+// first as written. Bare shows the top section; "all" shows everything.
+class ChangelogEntry {
+    version: string,
+    body: string,
+}
+
+function parse_changelog(text: string) -> ChangelogEntry[] {
+    let entries: ChangelogEntry[] = [];
+    let version: string? = null;
+    let body = "";
+    for (let line in text.split("\n")) {
+        if (line.starts_with("## ")) {
+            match (version) {
+                null => {},
+                let v: string => {
+                    entries.push(ChangelogEntry { version: v, body: body })
+                },
+            }
+            version = line.slice(3, line.length()).trim();
+            body = ""
+        } else {
+            match (version) {
+                null => {},
+                let v: string => {
+                    body = `${body}${line}\n`
+                },
+            }
+        }
+    }
+    match (version) {
+        null => {},
+        let v: string => {
+            entries.push(ChangelogEntry { version: v, body: body })
+        },
+    }
+    entries
+}
+
+function format_changelog(entries: ChangelogEntry[], show_all: bool) -> string {
+    if (entries.length() == 0) {
+        "(no changelog entries)"
+    } else {
+        let out = "";
+        let n = 0;
+        for (let e in entries) {
+            if (show_all || n == 0) {
+                out = `${out}## ${e.version}\n${e.body}`
+            }
+            n = n + 1
+        }
+        out.trim()
+    }
 }
 
 // Dispatch lookup: builtins first, then skill names ("/<name>"). Returns the
@@ -468,10 +523,33 @@ test "scope marks live vs owning issue" {
             "oauth" => assert.is_true(b.scope is null),
             "config" => assert.is_true(b.scope is null),
             "skills" => assert.is_true(b.scope is null),
-            "changelog" => assert.equal(b.scope, "bi#31"),
+            "changelog" => assert.is_true(b.scope is null),
             _ => assert.is_true(false),
         }
     }
+}
+
+test "changelog parses headers, latest-first" {
+    let entries = parse_changelog("# Changelog\n\nIntro.\n\n## Unreleased\n\nBody one.\n\n## 0.1.0\n\nBody two.\n");
+    assert.equal(entries.length(), 2);
+    match (entries.at(0)) {
+        null => assert.is_true(false),
+        let e: ChangelogEntry => {
+            assert.equal(e.version, "Unreleased");
+            assert.contains(e.body, "Body one.")
+        },
+    }
+    match (entries.at(1)) {
+        null => assert.is_true(false),
+        let e: ChangelogEntry => assert.equal(e.version, "0.1.0"),
+    }
+    let latest = format_changelog(entries, false);
+    assert.contains(latest, "## Unreleased");
+    assert.is_true(latest.index_of("## 0.1.0") == null);
+    let all = format_changelog(entries, true);
+    assert.contains(all, "## 0.1.0");
+    assert.equal(format_changelog([], false), "(no changelog entries)");
+    assert.equal(parse_changelog("# Empty\n").length(), 0)
 }
 
 test "hotkeys text describes bi REPL keys" {
