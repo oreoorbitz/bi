@@ -106,9 +106,9 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
         },
         BuiltinSlashCommand {
             name: "settings",
-            description: "Open settings menu",
-            argument_hint: null,
-            scope: "bi#29",
+            description: "List, get, set, or unset backend defaults",
+            argument_hint: "[get|set|unset <key> [value]]",
+            scope: null,
         },
         BuiltinSlashCommand {
             name: "model",
@@ -365,7 +365,7 @@ test "scope marks live vs owning issue" {
             "model" => assert.is_true(b.scope is null),
             "thinking" => assert.is_true(b.scope is null),
             "scoped-models" => assert.equal(b.scope, "bi#28"),
-            "settings" => assert.equal(b.scope, "bi#29"),
+            "settings" => assert.is_true(b.scope is null),
             "trust" => assert.equal(b.scope, "bi#29"),
             "clone" => assert.equal(b.scope, "bi#30"),
             "export" => assert.equal(b.scope, "bi#30"),

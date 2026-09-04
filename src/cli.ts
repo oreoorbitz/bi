@@ -13,7 +13,7 @@ import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, mo
 import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, type Skill } from "./skills.js";
 import { runResultToJsonLines, finalText } from "./events.js";
 import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow, appendSessionEntries, loadSessionTranscript, sessionResumeList, sessionIdFromFile } from "./session.js";
@@ -64,6 +64,52 @@ async function readActiveTheme(): Promise<string> {
 async function activeTheme(): Promise<string | null> {
 	if (!process.stdout.isTTY || process.env.NO_COLOR != null) return null;
 	return readActiveTheme();
+}
+
+// bi#29: user settings (~/.bi/settings.json). Three backend-default keys
+// in v1; BAML owns schema + validation + precedence, host owns FS.
+// Unknown keys on disk are ignored (forward-compatible); a corrupt file
+// resolves empty with a warning instead of bricking startup.
+export interface UserSettings {
+	default_provider?: string;
+	default_model?: string;
+	default_thinking?: string;
+}
+
+function settingsFile(): string {
+	return join(dirname(getBiSessionsDir()), "settings.json");
+}
+
+export function loadUserSettings(): UserSettings {
+	try {
+		if (!existsSync(settingsFile())) return {};
+		const raw = JSON.parse(readFileSync(settingsFile(), "utf8"));
+		const out: UserSettings = {};
+		if (typeof raw?.default_provider === "string") out.default_provider = raw.default_provider;
+		if (typeof raw?.default_model === "string") out.default_model = raw.default_model;
+		if (typeof raw?.default_thinking === "string") out.default_thinking = raw.default_thinking;
+		return out;
+	} catch {
+		console.error("[bi] settings file unreadable — using builtins (`/settings` to repair)");
+		return {};
+	}
+}
+
+function saveUserSettings(s: UserSettings): void {
+	mkdirSync(dirname(settingsFile()), { recursive: true });
+	writeFileSync(settingsFile(), JSON.stringify(s, null, 2) + "\n");
+}
+
+// The SDK's UserSettings is null-based; the host's is undefined-based.
+function bamlSettings(s: UserSettings): { default_provider: string | null; default_model: string | null; default_thinking: string | null } {
+	return { default_provider: s.default_provider ?? null, default_model: s.default_model ?? null, default_thinking: s.default_thinking ?? null };
+}
+
+// BAML VM errors arrive as "baml error: baml.errors.Kind: message" —
+// strip the wrapper so users see the policy message BAML wrote.
+function bamlErrorMessage(e: unknown): string {
+	const raw = e instanceof Error ? e.message : String(e);
+	return raw.replace(/^baml error: (baml\.errors\.\w+: )?/, "").split("\n")[0];
 }
 import { HostTui, HostStatus, renderReadyScreen } from "./tui.js";
 import { format_status, format_turn_summary } from "../baml_sdk/index.js";
@@ -320,6 +366,62 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			console.error(`[bi] forked ${parentId} → ${sessionIdFromFile(f)} (transcript kept, turn continues at ${sess.turn})`);
 			return history;
 		}
+		// bi#29 slice 1: bare lists, get reads, set validates through
+		// BAML before persisting, unset drops the key. Trust/config/oauth/
+		// extension selectors stay scoped until their stores exist.
+		if (t.name === "settings") {
+			const parts = t.args ? t.args.split(/\s+/) : [];
+			const stored = loadUserSettings();
+			if (parts.length === 0) {
+				console.log(await format_settings_list_async(bamlSettings(stored)));
+				return history;
+			}
+			const [verb, key, ...rest] = parts;
+			if ((verb === "get" || verb === "set" || verb === "unset") && key && !(await is_setting_key_async(key))) {
+				console.error(`unknown setting "${key}" — bare /settings lists default_provider/default_model/default_thinking`);
+				return history;
+			}
+			if (verb === "get" && key) {
+				const v = (stored as Record<string, string | undefined>)[key];
+				console.log(`${key} = ${v ?? "(unset)"}`);
+				return history;
+			}
+			if (verb === "set" && key) {
+				const value = rest.join(" ");
+				if (!value) {
+					console.error(`usage: /settings set ${key} <value>`);
+					return history;
+				}
+				const merged = { ...stored, [key]: value };
+				const errors = await validate_settings_async(bamlSettings(merged as UserSettings));
+				if (errors.length) {
+					for (const e of errors) console.error(e);
+					return history;
+				}
+				try {
+					saveUserSettings(merged);
+				} catch (e) {
+					console.error(`[bi] settings persist failed (${e instanceof Error ? e.message : e})`);
+					return history;
+				}
+				console.error(`[bi] ${key} now ${value}`);
+				return history;
+			}
+			if (verb === "unset" && key) {
+				const merged = { ...stored };
+				delete (merged as Record<string, string | undefined>)[key];
+				try {
+					saveUserSettings(merged);
+				} catch (e) {
+					console.error(`[bi] settings persist failed (${e instanceof Error ? e.message : e})`);
+					return history;
+				}
+				console.error(`[bi] ${key} unset`);
+				return history;
+			}
+			console.error("usage: /settings [get <key> | set <key> <value> | unset <key>]");
+			return history;
+		}
 		// bi#31: scoped but unwired — name the owning issue instead of
 		// failing silent or pretending the command ran.
 		if (t.scope) {
@@ -499,9 +601,17 @@ async function repl(skills: Skill[]): Promise<void> {
 	console.error(`[bi] new session ${sessFile}`);
 	const reader = new ReplReader();
 	let history: any[] = [];
-	// bi#28: live backend — starts anthropic-pinned exactly as before
-	// (thinking null sends no config, preserving wire behavior).
-	const backend: ReplBackend = { provider: "anthropic", model: "claude-haiku-4-5", thinking: null };
+	// bi#28 live backend, bi#29 stored defaults: flags are absent in the
+	// REPL, so stored settings apply. Invalid stored settings warn and
+	// fall back to builtins — never brick startup on a bad file.
+	let backend: ReplBackend;
+	try {
+		const r = await resolve_backend_async(null, null, null, bamlSettings(loadUserSettings()));
+		backend = { provider: r.provider, model: r.model, thinking: r.thinking ?? null };
+	} catch (e) {
+		console.error(`[bi] stored settings invalid (${bamlErrorMessage(e)}) — using builtins`);
+		backend = { provider: "anthropic", model: "claude-haiku-4-5", thinking: null };
+	}
 	// bi#30: session pointer — file/turn/persisted mutate via /new /resume
 	// /fork; turns append to the file as they land (memory authoritative).
 	const sess: ReplSessionState = { file: sessFile, turn: 0, persisted: 0 };
@@ -689,8 +799,21 @@ async function main(): Promise<void> {
 			console.error("run requires <prompt>");
 			process.exit(1);
 		}
-		const provider = getFlag(args, "--provider") ?? "anthropic";
-		const model = getFlag(args, "--model") ?? "claude-haiku-4-5";
+		// bi#29: backend resolves flag > settings > builtin in BAML;
+		// mismatched or unknown pairs fail here instead of misrouting.
+		const storedSettings = loadUserSettings();
+		let provider: string;
+		let model: string;
+		let thinkingLevel: string | null;
+		try {
+			const r = await resolve_backend_async(getFlag(args, "--provider") ?? null, getFlag(args, "--model") ?? null, getFlag(args, "--thinking") ?? null, bamlSettings(storedSettings));
+			provider = r.provider;
+			model = r.model;
+			thinkingLevel = r.thinking ?? null;
+		} catch (e) {
+			console.error(`bi run: ${bamlErrorMessage(e)}`);
+			process.exit(1);
+		}
 		const apiKey = getFlag(args, "--api-key") ?? process.env.ANTHROPIC_API_KEY ?? process.env.OPENAI_API_KEY ?? null;
 		const baseUrl = getFlag(args, "--base-url") ?? null;
 		const tempStr = getFlag(args, "--temperature");
@@ -703,8 +826,7 @@ async function main(): Promise<void> {
 		const azureDeployment = getFlag(args, "--azure-deployment") ?? null;
 		const azureApiVersion = getFlag(args, "--azure-api-version") ?? null;
 		// bi#28: the parsed-but-dropped --thinking flag now reaches turns.
-		const thinkingFlag = getFlag(args, "--thinking");
-		const thinkingLevel = thinkingFlag && is_valid_thinking_level(thinkingFlag) ? thinkingFlag : null;
+		// thinkingLevel resolved above (invalid values exit 1 with the fix named).
 
 		const providerInfo = await getProvider(provider);
 		if (!providerInfo) {
