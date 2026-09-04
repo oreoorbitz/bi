@@ -168,6 +168,12 @@ testset "session header + trust (bi namespace)" {
         assert.contains(plain, "# Session abc123ef")
     }
 
+    test "gist name and description derive from the session" {
+        assert.equal(gist_filename("abc123ef"), "bi-session-abc123ef.md");
+        assert.equal(gist_description("abc123ef", null), "bi session abc123ef");
+        assert.equal(gist_description("abc123ef", "Work"), "bi session abc123ef — Work")
+    }
+
     test "session info names backend and lineage" {
         let info = format_session_info("abc123ef", "/s/abc123ef.jsonl", "/work", null, "meta", "muse-spark-1.3", "high", 2, 5);
         assert.contains(info, "session abc123ef");

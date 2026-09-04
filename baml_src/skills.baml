@@ -171,9 +171,9 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
         },
         BuiltinSlashCommand {
             name: "share",
-            description: "Share session as a secret GitHub gist",
+            description: "Share session as a secret GitHub gist (needs gh auth)",
             argument_hint: null,
-            scope: "bi#30",
+            scope: null,
         },
         BuiltinSlashCommand {
             name: "copy",
@@ -457,7 +457,7 @@ test "scope marks live vs owning issue" {
             "trust" => assert.is_true(b.scope is null),
             "clone" => assert.is_true(b.scope is null),
             "export" => assert.is_true(b.scope is null),
-            "share" => assert.equal(b.scope, "bi#30"),
+            "share" => assert.is_true(b.scope is null),
             "name" => assert.is_true(b.scope is null),
             "import" => assert.is_true(b.scope is null),
             "tree" => assert.is_true(b.scope is null),

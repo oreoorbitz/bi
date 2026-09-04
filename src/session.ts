@@ -2,10 +2,11 @@
 // BAML owns SessionHeader/create_session_header/validate_session_id, host owns FS.
 // Mirrors pi/src/core/session-manager.ts + project-trust.ts (vendor/pi-*.ts).
 
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { basename, join, resolve } from "node:path";
-import { homedir } from "node:os";
-import { validate_session_id, create_session_header, format_project_trust_prompt, select_valid_history_async, validate_session_label } from "../baml_sdk/index.js";
+import { homedir, tmpdir } from "node:os";
+import { validate_session_id, create_session_header, format_project_trust_prompt, select_valid_history_async, validate_session_label, gist_filename } from "../baml_sdk/index.js";
 
 export const BI_SESSION_DIR_ENV = "BI_SESSION_DIR";
 export const BI_AGENT_DIR_ENV = "BI_AGENT_DIR";
@@ -207,6 +208,44 @@ export async function loadSessionTranscript(id: string, sessionDir?: string): Pr
 	}
 	const valid = await select_valid_history_async(parsed);
 	return { file, header, history: valid.map((e: any) => ({ role: String(e.role), text: String(e.text) })) };
+}
+
+// /share effect: post the markdown transcript as a SECRET gist (pi's
+// gist fallback, minus Radius). gh owns transport; the tmp basename
+// owns the gist filename. Tmp dir removed in all cases. Returns the
+// gist URL, or a printable failure (missing gh, logged-out gh, post
+// failure) — never a throw for gist-layer problems.
+export function shareSessionGist(id: string, markdown: string, description: string): { url: string } | { error: string } {
+	let dir: string;
+	try {
+		dir = mkdtempSync(join(tmpdir(), "bi-share-"));
+	} catch (e) {
+		return { error: `share failed — temp dir unwritable (${e instanceof Error ? e.message : e})` };
+	}
+	const file = join(dir, gist_filename(id));
+	try {
+		try {
+			const auth = spawnSync("gh", ["auth", "status"], { encoding: "utf8", timeout: 15000 });
+			if (auth.status !== 0) return { error: "GitHub CLI is not logged in — run 'gh auth login' first" };
+		} catch {
+			return { error: "GitHub CLI (gh) is not installed — install it from https://cli.github.com" };
+		}
+		writeFileSync(file, markdown);
+		const post = spawnSync("gh", ["gist", "create", "--public=false", "-d", description, file], { encoding: "utf8", timeout: 60000 });
+		if (post.status !== 0) {
+			const detail = (post.stderr as string | undefined)?.trim() || (post.error ? String(post.error) : "unknown error");
+			return { error: `gist post failed — ${detail}` };
+		}
+		const url = (post.stdout as string | undefined)?.trim() ?? "";
+		if (!url) return { error: "gist post returned no URL" };
+		return { url };
+	} finally {
+		try {
+			rmSync(dir, { recursive: true, force: true });
+		} catch {
+			// Cleanup is best effort.
+		}
+	}
 }
 
 // Resume-list rows: header metadata + user-turn count per file.

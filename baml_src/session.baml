@@ -257,6 +257,20 @@ function format_session_info(
     `session ${id}\n  name: ${name}\n  file: ${file}\n  cwd: ${cwd}\n  forked from: ${parent}\n  backend: ${provider}/${model} · thinking ${th}\n  turns: ${turns} · messages: ${messages}`
 }
 
+// /share policy: pi posts HTML to a secret gist (after a Radius attempt
+// bi skips — no Radius here). The gist filename comes from the tmp file
+// basename, so BAML owns the name; the description rides --desc.
+function gist_filename(id: string) -> string {
+    `bi-session-${id}.md`
+}
+
+function gist_description(id: string, label: string?) -> string {
+    match (label) {
+        null => `bi session ${id}`,
+        let l: string => `bi session ${id} — ${l}`,
+    }
+}
+
 // /export body: whole transcript as one markdown doc. pi exports HTML;
 // bi's transcript is already markdown-shaped, so markdown is the
 // faithful port (no HTML renderer to own).
