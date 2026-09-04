@@ -1,0 +1,28 @@
+id = "bi#73"
+title = "Protocol: one worktree per claimed issue for parallel agents"
+status = "Open"
+kind = "Proposal"
+area = "tui"
+body = """
+The bi#67/68/71 drill isolated parallel agents with one git worktree
+per issue (harness worktree_isolation, branches agent/<id>-<slug>).
+Open question: should this become BAIS protocol, or stay a
+coordinator-time choice? Worktrees solve file collision only — status
+claims (Doing), gates, and push discipline still do the heavy lifting,
+and worktrees cost disk + branch sprawl + stale-worktree cleanup
+(git worktree remove/prune; harness auto-removes clean ones, retains
+dirty ones). Options: (a) mandate worktree-per-claim for parallel
+agents, (b) recommend it, coordinator decides, (c) rely on file
+partitioning + claims. Acceptance: a decision recorded here and, if
+(a)/(b), the rule written into the agent working protocol.
+"""
+
+[[edge]]
+from = "bi#73"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#73"
+to = "bi#40"
+kind = "DependsOn"
