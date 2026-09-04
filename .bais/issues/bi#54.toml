@@ -1,0 +1,25 @@
+id = "bi#54"
+title = "Match-exhaustive hub event dispatch (new type breaks check)"
+status = "Open"
+kind = "Feat"
+area = "bais/hub"
+body = """
+In a swarm, "unhandled message kind silently ignored" is how agents
+lose each other. Hub event dispatch should be `match` on event type
+in BAML so a new event type breaks `baml check` until every handler
+covers it — protocol extension becomes a compile error, not a
+runtime surprise. BAML owns the dispatch table (event type ->
+handler verdict: admit/route/reject, pure); host owns the existing
+transport, unchanged. Applies to durable log admission AND the
+ephemeral pub gate (is_ephemeral is the precedent — generalize it).
+Acceptance: adding a probe event type with no handler fails
+`baml check`; every current type (TaskCreate/Transition, RelAdd,
+claim/renew/release, Heartbeat/Progress, checkpoint...) has an
+explicit arm — no catch-all silent-ignore arm allowed (a catch-all
+may exist only if it REJECTS loudly with a named reason).
+"""
+
+[[edge]]
+from = "bi#54"
+to = "bi#37"
+kind = "Related"

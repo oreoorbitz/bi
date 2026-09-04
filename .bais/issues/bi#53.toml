@@ -1,0 +1,33 @@
+id = "bi#53"
+title = "Typed inter-agent messages (handoff/review as BAML contracts)"
+status = "Open"
+kind = "Feat"
+area = "bais/protocol"
+body = """
+Agents handing work to each other in prose is how context rots:
+unparseable, unvalidatable, silently lossy. Inter-agent messages
+should be BAML LLM functions whose return type IS the contract —
+CreateHandoff(raw) -> Handoff, ReviewWork(diff) -> Verdict,
+ReportProgress(note) -> Progress — validated by ctx.output_format,
+not by hope. BAML owns the message shapes + shaping functions;
+hosts transport them as plain data over existing channels (pub for
+ephemeral progress, log for durable handoffs). Follows the CreateIssue
+precedent in main.baml. Related to bi#44 (the subscriber consumes
+these shapes) and bi#46 (durable vs ephemeral placement per message
+kind).
+Acceptance: Handoff/Progress/Verdict types in baml_src with baml
+tests on literal shapes (malformed prose rejected by the schema);
+a handoff produced by one host parses in another via baml_sdk with
+zero string munging; every prompt-facing rendering shows its source
+shape for audit.
+"""
+
+[[edge]]
+from = "bi#53"
+to = "bi#44"
+kind = "Related"
+
+[[edge]]
+from = "bi#53"
+to = "bi#46"
+kind = "Related"
