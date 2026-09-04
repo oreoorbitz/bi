@@ -153,9 +153,9 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
         },
         BuiltinSlashCommand {
             name: "scoped-models",
-            description: "Enable/disable models for Ctrl+P cycling",
-            argument_hint: null,
-            scope: "bi#28",
+            description: "Narrow the model catalog to an enabled set",
+            argument_hint: "[enable|disable|only|all] <ref...>",
+            scope: null,
         },
         BuiltinSlashCommand {
             name: "export",
@@ -452,7 +452,7 @@ test "scope marks live vs owning issue" {
             "quit" => assert.is_true(b.scope is null),
             "model" => assert.is_true(b.scope is null),
             "thinking" => assert.is_true(b.scope is null),
-            "scoped-models" => assert.equal(b.scope, "bi#28"),
+            "scoped-models" => assert.is_true(b.scope is null),
             "settings" => assert.is_true(b.scope is null),
             "trust" => assert.is_true(b.scope is null),
             "clone" => assert.equal(b.scope, "bi#30"),

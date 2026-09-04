@@ -65,22 +65,74 @@ function format_thinking_list(current: string, theme: string? = null) -> string 
     out
 }
 
-// Catalog-wide model list grouped by provider; current backend marked.
-// Costs are per-1M-tokens input/output like the catalog rows.
-function format_model_list(current_id: string, theme: string? = null) -> string {
+// pi's scoped-models EnabledIds: null = all enabled (no filter), a list
+// = the explicit enabled set. The host persists the list in settings.
+function is_model_enabled(enabled: string[]?, id: string) -> bool {
+    match (enabled) {
+        null => true,
+        let ids: string[] => {
+            let hit = false;
+            for (let e in ids) {
+                if (e == id) {
+                    hit = true
+                }
+            }
+            hit
+        },
+    }
+}
+
+// Catalog-wide model list grouped by provider; current backend marked,
+// disabled rows flagged. Costs are per-1M-tokens input/output.
+function format_model_list(current_id: string, theme: string? = null, enabled: string[]? = null) -> string {
     let out = "";
     for (let p in ListProviders()) {
         out = `${out}${style_segment(`${p.id}:`, "dim", theme)}\n`;
         for (let m in ListModels(p.id)) {
-            let row = if (m.id == current_id) {
-                style_segment(`* ${m.id} — ${m.context_window} ctx ${m.cost.input}/${m.cost.output} per 1M`, "accent", theme)
+            let mark = if (is_model_enabled(enabled, m.id)) {
+                ""
             } else {
-                `  ${m.id} — ${m.context_window} ctx ${m.cost.input}/${m.cost.output} per 1M`
+                " (disabled)"
+            };
+            let row = if (m.id == current_id) {
+                style_segment(`* ${m.id} — ${m.context_window} ctx ${m.cost.input}/${m.cost.output} per 1M${mark}`, "accent", theme)
+            } else {
+                `  ${m.id} — ${m.context_window} ctx ${m.cost.input}/${m.cost.output} per 1M${mark}`
             };
             out = `${out}${row}\n`;
         }
     }
     out
+}
+
+// Flat id list for host set transitions (disable-from-all needs the
+// full catalog to subtract from).
+function all_model_ids() -> string[] {
+    let out: string[] = [];
+    for (let m in ListAllModels()) {
+        out.push(m.id)
+    }
+    out
+}
+
+// /scoped-models board: the deviation from the default, not the whole
+// catalog. Null reads as all-enabled with the catalog size for context.
+function format_scoped_models(enabled: string[]?) -> string {
+    let total = ListAllModels().length();
+    match (enabled) {
+        null => `all ${total} models enabled (/scoped-models disable <ref> to narrow)`,
+        let ids: string[] => {
+            if (ids.length() == 0) {
+                "(none enabled — /scoped-models all to reset)"
+            } else {
+                let out = `${ids.length()} of ${total} enabled:\n`;
+                for (let id in ids) {
+                    out = `${out}  ${id}\n`
+                };
+                out
+            }
+        },
+    }
 }
 
 // Resolve a /model argument: exact model id, "provider/id", or null.
@@ -195,6 +247,23 @@ test "lists mark the current backend" {
     let levels = format_thinking_list("medium");
     assert.contains(levels, "* medium — Moderate reasoning (~8k tokens)");
     assert.contains(levels, "  high — Deep reasoning (~16k tokens)")
+}
+
+test "scoped models narrow the list, null means all" {
+    assert.is_true(is_model_enabled(null, "grok-4.6"));
+    assert.is_true(is_model_enabled(["grok-4.6"], "grok-4.6"));
+    assert.is_true(!is_model_enabled(["grok-4.6"], "claude-haiku-4-5"));
+    assert.is_true(!is_model_enabled([], "grok-4.6"));
+    let marked = format_model_list("grok-4.6", enabled = ["grok-4.6"]);
+    assert.contains(marked, "claude-haiku-4-5 — ");
+    assert.contains(marked, "(disabled)");
+    let unmarked = format_model_list("grok-4.6");
+    assert.is_true(unmarked.index_of("(disabled)") == null);
+    let board = format_scoped_models(["grok-4.6"]);
+    assert.contains(board, "1 of ");
+    assert.contains(board, "  grok-4.6");
+    assert.contains(format_scoped_models(null), "models enabled");
+    assert.contains(format_scoped_models([]), "/scoped-models all to reset")
 }
 
 test "themed lists style current rows only" {

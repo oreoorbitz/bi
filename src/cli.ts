@@ -14,7 +14,7 @@ import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
 import { listCredentials } from "./auth.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
 import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
 import { readClipboardImage, writeClipboardText, clipboardSupportsImage } from "./clipboard.js";
@@ -78,6 +78,7 @@ export interface UserSettings {
 	default_provider?: string;
 	default_model?: string;
 	default_thinking?: string;
+	enabled_models?: string[];
 }
 
 function settingsFile(): string {
@@ -92,6 +93,7 @@ export function loadUserSettings(): UserSettings {
 		if (typeof raw?.default_provider === "string") out.default_provider = raw.default_provider;
 		if (typeof raw?.default_model === "string") out.default_model = raw.default_model;
 		if (typeof raw?.default_thinking === "string") out.default_thinking = raw.default_thinking;
+		if (Array.isArray(raw?.enabled_models) && raw.enabled_models.every((e: unknown) => typeof e === "string")) out.enabled_models = raw.enabled_models;
 		return out;
 	} catch {
 		console.error("[bi] settings file unreadable — using builtins (`/settings` to repair)");
@@ -105,8 +107,8 @@ function saveUserSettings(s: UserSettings): void {
 }
 
 // The SDK's UserSettings is null-based; the host's is undefined-based.
-function bamlSettings(s: UserSettings): { default_provider: string | null; default_model: string | null; default_thinking: string | null } {
-	return { default_provider: s.default_provider ?? null, default_model: s.default_model ?? null, default_thinking: s.default_thinking ?? null };
+function bamlSettings(s: UserSettings): { default_provider: string | null; default_model: string | null; default_thinking: string | null; enabled_models: string[] | null } {
+	return { default_provider: s.default_provider ?? null, default_model: s.default_model ?? null, default_thinking: s.default_thinking ?? null, enabled_models: s.enabled_models ?? null };
 }
 
 // BAML VM errors arrive as "baml error: baml.errors.Kind: message" —
@@ -625,8 +627,9 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 		// argument it switches the live backend — provider follows the
 		// resolved model record, so `xai/grok-4.6` moves both at once.
 		if (t.name === "model") {
+			const scoped = loadUserSettings().enabled_models ?? null;
 			if (!t.args) {
-				console.log(await format_model_list_async(backend?.model ?? "claude-haiku-4-5", { theme: await activeTheme() }));
+				console.log(await format_model_list_async(backend?.model ?? "claude-haiku-4-5", { theme: await activeTheme(), enabled: scoped }));
 				return history;
 			}
 			const m = await resolve_model_ref_async(t.args);
@@ -634,11 +637,80 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				console.error(`unknown model "${t.args}" — bare /model lists the catalog (try provider/id)`);
 				return history;
 			}
+			// Disabled models refuse with their own fix; startup stays
+			// permissive (resolve_backend ignores the list) so a bad
+			// stored set never bricks the REPL.
+			if (!(await is_model_enabled_async(scoped, m.id))) {
+				console.error(`model "${m.id}" is disabled — /scoped-models enable ${m.id} to use it`);
+				return history;
+			}
 			if (backend) {
 				backend.provider = m.provider;
 				backend.model = m.id;
 			}
 			console.error(`[bi] backend now ${m.provider}/${m.id}`);
+			return history;
+		}
+		if (t.name === "scoped-models") {
+			// bi#28: pi's scoped-models selector as verbs over the
+			// persisted enablement list (null = all). Refs resolve
+			// before any save, so an unknown ref aborts atomically.
+			const parts = t.args ? t.args.split(/\s+/) : [];
+			const [verb, ...refs] = parts;
+			const stored = loadUserSettings();
+			if (!verb) {
+				console.log(await format_scoped_models_async(stored.enabled_models ?? null));
+				return history;
+			}
+			if (verb === "all") {
+				try {
+					saveUserSettings({ ...stored, enabled_models: undefined });
+				} catch (e) {
+					console.error(`[bi] settings persist failed (${e instanceof Error ? e.message : e})`);
+					return history;
+				}
+				console.log(await format_scoped_models_async(null));
+				return history;
+			}
+			if ((verb === "enable" || verb === "disable" || verb === "only") && refs.length > 0) {
+				const ids: string[] = [];
+				for (const r of refs) {
+					const rec = await resolve_model_ref_async(r);
+					if (!rec) {
+						console.error(`unknown model "${r}" — bare /model lists the catalog (try provider/id)`);
+						return history;
+					}
+					ids.push(rec.id);
+				}
+				const cur = stored.enabled_models ?? null;
+				let next: string[] | null;
+				if (verb === "only") {
+					next = [...new Set(ids)];
+				} else if (verb === "enable") {
+					if (cur === null) {
+						console.error("[bi] all models already enabled — nothing to do");
+						return history;
+					}
+					next = [...new Set([...cur, ...ids])];
+				} else {
+					const base = cur ?? await all_model_ids_async();
+					next = base.filter((id) => !ids.includes(id));
+				}
+				const errors = await validate_settings_async(bamlSettings({ ...stored, enabled_models: next ?? undefined }));
+				if (errors.length) {
+					for (const e of errors) console.error(e);
+					return history;
+				}
+				try {
+					saveUserSettings({ ...stored, enabled_models: next ?? undefined });
+				} catch (e) {
+					console.error(`[bi] settings persist failed (${e instanceof Error ? e.message : e})`);
+					return history;
+				}
+				console.log(await format_scoped_models_async(next));
+				return history;
+			}
+			console.error("usage: /scoped-models [enable|disable|only <ref...> | all]");
 			return history;
 		}
 		// bi#28: bare /thinking lists levels with pi's descriptions, with
@@ -813,6 +885,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			if (typeof r.default_provider === "string") next.default_provider = r.default_provider;
 			if (typeof r.default_model === "string") next.default_model = r.default_model;
 			if (typeof r.default_thinking === "string") next.default_thinking = r.default_thinking;
+			if (Array.isArray(r.enabled_models) && (r.enabled_models as unknown[]).every((e) => typeof e === "string")) next.enabled_models = r.enabled_models as string[];
 			const errors = await validate_settings_async(bamlSettings(next));
 			if (errors.length) {
 				for (const e of errors) console.error(e);
