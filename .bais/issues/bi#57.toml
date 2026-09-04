@@ -1,6 +1,6 @@
 id = "bi#57"
 title = "Red-check practice: revert-hunk verification for safety nets"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "bits/process"
 body = """
