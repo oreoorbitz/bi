@@ -5,7 +5,7 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { validate_session_id, create_session_header, format_project_trust_prompt, select_valid_history_async } from "../baml_sdk/index.js";
+import { validate_session_id, create_session_header, format_project_trust_prompt, select_valid_history_async, validate_session_label } from "../baml_sdk/index.js";
 
 export const BI_SESSION_DIR_ENV = "BI_SESSION_DIR";
 export const BI_AGENT_DIR_ENV = "BI_AGENT_DIR";
@@ -36,17 +36,95 @@ export function newSessionId(): string {
 	return Math.random().toString(16).slice(2, 10).padEnd(8, "0");
 }
 
-export function createSessionFile(opts: { id?: string; cwd?: string; parentSession?: string; sessionDir?: string }): string {
+export function createSessionFile(opts: { id?: string; cwd?: string; parentSession?: string; label?: string; sessionDir?: string }): string {
 	const dir = ensureSessionsDir(opts.sessionDir);
 	const id = opts.id ?? newSessionId();
 	validateSessionIdOrThrow(id);
 	const cwd = opts.cwd ?? process.cwd();
 	const timestamp = new Date().toISOString();
-	const header = create_session_header(id, cwd, timestamp, { parent_session: opts.parentSession ?? null });
+	const header = create_session_header(id, cwd, timestamp, { parent_session: opts.parentSession ?? null, label: opts.label ?? null });
 	const file = join(dir, `${id}.jsonl`);
 	// pi writes JSONL with header as first line; keep same for bi
 	writeFileSync(file, JSON.stringify(header) + "\n");
 	return file;
+}
+
+// /name effect: rewrite the header line in place, body untouched. A
+// missing/unreadable file or bad header line returns false (caller
+// prints); BAML validates the label before we get here.
+export function setSessionLabel(file: string, label: string): boolean {
+	let raw: string;
+	try {
+		raw = readFileSync(file, "utf8");
+	} catch {
+		return false;
+	}
+	const nl = raw.indexOf("\n");
+	const first = nl === -1 ? raw : raw.slice(0, nl);
+	const rest = nl === -1 ? "" : raw.slice(nl + 1);
+	let header: Record<string, unknown>;
+	try {
+		header = JSON.parse(first);
+		if (typeof header !== "object" || header === null) return false;
+	} catch {
+		return false;
+	}
+	header.label = label;
+	try {
+		writeFileSync(file, JSON.stringify(header) + "\n" + rest);
+	} catch {
+		return false;
+	}
+	return true;
+}
+
+// /import effect: adopt an external JSONL transcript into the sessions
+// dir under a fresh id. Header metadata (cwd/label) carries over when
+// present; history lines pass BAML's validity filter. Returns the new
+// id, or null when nothing importable is there (caller prints).
+export async function importSessionFile(path: string, sessionDir?: string): Promise<string | null> {
+	const abs = resolve(path);
+	let raw: string;
+	try {
+		raw = readFileSync(abs, "utf8");
+	} catch {
+		return null;
+	}
+	const lines = raw.split("\n").filter((l) => l.trim().length > 0);
+	if (!lines.length) return null;
+	let first: Record<string, unknown>;
+	try {
+		first = JSON.parse(lines[0]);
+		if (typeof first !== "object" || first === null) return null;
+	} catch {
+		return null;
+	}
+	const parsed: any[] = [];
+	for (const line of lines.slice(1)) {
+		try {
+			parsed.push(JSON.parse(line));
+		} catch {
+			// Same rule as loadSessionTranscript: unparseable lines
+			// never reach BAML, never fatal.
+		}
+	}
+	const valid = await select_valid_history_async(parsed);
+	if (!valid.length) return null;
+	const cwd = typeof first.cwd === "string" && first.cwd ? first.cwd : process.cwd();
+	// External labels re-validate: an over-long foreign label drops to
+	// null instead of throwing out of file creation.
+	const foreign = typeof first.label === "string" ? first.label : null;
+	const label = foreign && validate_session_label(foreign).length === 0 ? foreign : null;
+	const file = createSessionFile({ cwd, label: label ?? undefined });
+	try {
+		appendSessionEntries(
+			file,
+			valid.map((e: any) => ({ role: String(e.role), text: String(e.text), provider: e.provider ?? null, model: e.model ?? null, thinking: e.thinking ?? null })),
+		);
+	} catch {
+		return null;
+	}
+	return sessionIdFromFile(file);
 }
 
 export function listSessions(sessionDir?: string): string[] {
@@ -96,7 +174,7 @@ export function appendSessionEntries(file: string, entries: SessionHistoryLine[]
 
 export interface LoadedSession {
 	file: string;
-	header: { id: string; timestamp: string; cwd: string; parent_session: string | null };
+	header: { id: string; timestamp: string; cwd: string; parent_session: string | null; label: string | null };
 	history: { role: string; text: string }[];
 }
 
@@ -114,7 +192,7 @@ export async function loadSessionTranscript(id: string, sessionDir?: string): Pr
 	let header: LoadedSession["header"];
 	try {
 		const h = JSON.parse(lines[0]);
-		header = { id: String(h.id ?? id), timestamp: String(h.timestamp ?? ""), cwd: String(h.cwd ?? ""), parent_session: h.parent_session ?? null };
+		header = { id: String(h.id ?? id), timestamp: String(h.timestamp ?? ""), cwd: String(h.cwd ?? ""), parent_session: h.parent_session ?? null, label: typeof h.label === "string" ? h.label : null };
 	} catch {
 		return null;
 	}
@@ -132,13 +210,13 @@ export async function loadSessionTranscript(id: string, sessionDir?: string): Pr
 }
 
 // Resume-list rows: header metadata + user-turn count per file.
-export async function sessionResumeList(sessionDir?: string): Promise<{ id: string; timestamp: string; cwd: string; turns: number }[]> {
-	const out: { id: string; timestamp: string; cwd: string; turns: number }[] = [];
+export async function sessionResumeList(sessionDir?: string): Promise<{ id: string; timestamp: string; cwd: string; turns: number; label: string | null }[]> {
+	const out: { id: string; timestamp: string; cwd: string; turns: number; label: string | null }[] = [];
 	for (const id of listSessions(sessionDir)) {
 		const loaded = await loadSessionTranscript(id, sessionDir);
 		if (!loaded) continue;
 		const turns = loaded.history.filter((m) => m.role === "user").length;
-		out.push({ id: loaded.header.id, timestamp: loaded.header.timestamp, cwd: loaded.header.cwd, turns });
+		out.push({ id: loaded.header.id, timestamp: loaded.header.timestamp, cwd: loaded.header.cwd, turns, label: loaded.header.label });
 	}
 	return out;
 }

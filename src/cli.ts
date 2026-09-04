@@ -14,12 +14,12 @@ import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
 import { listCredentials } from "./auth.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
 import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
 import { readClipboardImage, writeClipboardText, clipboardSupportsImage } from "./clipboard.js";
 import { runResultToJsonLines, finalText } from "./events.js";
-import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow, appendSessionEntries, loadSessionTranscript, sessionResumeList, sessionIdFromFile } from "./session.js";
+import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow, appendSessionEntries, loadSessionTranscript, sessionResumeList, sessionIdFromFile, setSessionLabel, importSessionFile } from "./session.js";
 import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -736,12 +736,14 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			const file = sess?.file ?? "(no session file)";
 			const id = sess ? sessionIdFromFile(sess.file) : "(none)";
 			let parent: string | null = null;
+			let label: string | null = null;
 			if (sess) {
 				const loaded = await loadSessionTranscript(id);
 				parent = loaded?.header.parent_session ?? null;
+				label = loaded?.header.label ?? null;
 			}
 			console.log(
-				await format_session_info_async(id, file, process.cwd(), parent, backend?.provider ?? "anthropic", backend?.model ?? "claude-haiku-4-5", backend?.thinking ?? null, sess?.turn ?? 0, history.length),
+				await format_session_info_async(id, file, process.cwd(), parent, backend?.provider ?? "anthropic", backend?.model ?? "claude-haiku-4-5", backend?.thinking ?? null, sess?.turn ?? 0, history.length, { label }),
 			);
 			return history;
 		}
@@ -788,6 +790,93 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			sess.persisted = history.length;
 			console.error(`[bi] forked ${parentId} → ${sessionIdFromFile(f)} (transcript kept, turn continues at ${sess.turn})`);
 			return history;
+		}
+		if (t.name === "clone") {
+			// bi#30: pi's "duplicate at the current position" — same
+			// transcript under a fresh id with no parent link (unlike
+			// /fork), and the REPL switches to the copy.
+			if (!sess) return history;
+			const srcId = sessionIdFromFile(sess.file);
+			const loaded = await loadSessionTranscript(srcId);
+			const f = createSessionFile({ cwd: process.cwd(), label: loaded?.header.label ?? undefined });
+			appendSessionEntries(
+				f,
+				history.map((m: any) => ({ role: String(m.role ?? "user"), text: String(m.text ?? ""), provider: backend?.provider ?? null, model: backend?.model ?? null, thinking: backend?.thinking ?? null })),
+			);
+			sess.file = f;
+			sess.persisted = history.length;
+			console.error(`[bi] cloned ${srcId} → ${sessionIdFromFile(f)} (independent copy, no parent link)`);
+			return history;
+		}
+		if (t.name === "name") {
+			// bi#30: pi's session display name. Bare shows, text sets
+			// (BAML-validated, header rewritten in place).
+			if (!sess) return history;
+			const id = sessionIdFromFile(sess.file);
+			const arg = t.args.trim();
+			if (!arg) {
+				const loaded = await loadSessionTranscript(id);
+				console.log(loaded?.header.label ?? "(unnamed — /name <text> to label)");
+				return history;
+			}
+			const problems = await validate_session_label_async(arg);
+			if (problems.length) {
+				for (const p of problems) console.error(p);
+				return history;
+			}
+			if (!setSessionLabel(sess.file, arg)) {
+				console.error(`[bi] name failed — session file unreadable (${sess.file})`);
+				return history;
+			}
+			console.error(`[bi] session ${id} named "${arg}"`);
+			return history;
+		}
+		if (t.name === "export") {
+			// bi#30: transcript as markdown (pi exports HTML; bi has no
+			// HTML renderer, and the transcript is markdown-shaped).
+			if (!sess) return history;
+			const id = sessionIdFromFile(sess.file);
+			const loaded = await loadSessionTranscript(id);
+			if (!loaded) {
+				console.error(`[bi] export failed — session file unreadable (${sess.file})`);
+				return history;
+			}
+			// Loaded history keeps role/text only; rehydrate the BAML
+			// HistoryEntry shape with null provenance for the export.
+			const entries = loaded.history.map((m) => ({ type: "history", role: m.role, text: m.text, provider: null, model: null, thinking: null }));
+			const md = await format_session_markdown_async(id, loaded.header.label, loaded.header.timestamp, loaded.header.cwd, entries);
+			const dest = t.args.trim() || join(process.cwd(), `${id}.md`);
+			try {
+				writeFileSync(dest, md);
+			} catch (e) {
+				console.error(`[bi] export failed (${e instanceof Error ? e.message : e})`);
+				return history;
+			}
+			console.error(`[bi] exported ${loaded.history.length} messages → ${dest}`);
+			return history;
+		}
+		if (t.name === "import") {
+			// bi#30: adopt an external JSONL transcript (pi's
+			// "import and resume from a JSONL file"). Stays put on
+			// anything unimportable — no session switch, no files.
+			const src = t.args.trim();
+			if (!src) {
+				console.error("usage: /import <file.jsonl>");
+				return history;
+			}
+			const id = await importSessionFile(src);
+			if (!id) {
+				console.error(`[bi] import failed — no valid transcript in ${src}`);
+				return history;
+			}
+			const loaded = await loadSessionTranscript(id);
+			if (sess && loaded) {
+				sess.file = loaded.file;
+				sess.turn = loaded.history.filter((m) => m.role === "user").length;
+				sess.persisted = loaded.history.length;
+			}
+			console.error(`[bi] imported ${src} → ${id} (${loaded?.history.length ?? 0} messages)`);
+			return loaded?.history ?? history;
 		}
 		// bi#29 slice 1: bare lists, get reads, set validates through
 		// BAML before persisting, unset drops the key. The remaining

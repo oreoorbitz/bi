@@ -73,6 +73,7 @@ testset "session header + trust (bi namespace)" {
                     timestamp: "",
                     cwd: "",
                     parent_session: null,
+                    label: null,
                 }
             }
         };
@@ -91,6 +92,7 @@ testset "session header + trust (bi namespace)" {
                     timestamp: "",
                     cwd: "",
                     parent_session: null,
+                    label: null,
                 }
             }
         };
@@ -139,12 +141,31 @@ testset "session header + trust (bi namespace)" {
     test "resume list marks current and counts turns" {
         assert.equal(format_resume_list([], null), "no saved sessions");
         let sessions = [
-            ResumeEntry { id: "aaa", timestamp: "t1", cwd: "/x", turns: 1 },
-            ResumeEntry { id: "bbb", timestamp: "t2", cwd: "/y", turns: 3 },
+            ResumeEntry { id: "aaa", timestamp: "t1", cwd: "/x", turns: 1, label: "First" },
+            ResumeEntry { id: "bbb", timestamp: "t2", cwd: "/y", turns: 3, label: null },
         ];
         let out = format_resume_list(sessions, "bbb");
         assert.contains(out, "* bbb — 3 turns");
-        assert.contains(out, "  aaa — 1 turn")
+        assert.contains(out, "aaa — \"First\" — 1 turn")
+    }
+
+    test "labels validate and shape the export" {
+        assert.equal(validate_session_label("work").length(), 0);
+        assert.equal(validate_session_label("").length(), 1);
+        assert.equal(validate_session_label("012345678901234567890123456789012345678901234567890123456789012345678901234567890").length(), 1);
+        let h = create_session_header("abc123ef", "/w", "2026-08-30T12:00:00Z", label = "Work");
+        assert.equal(h.label, "Work");
+        let entries = [
+            HistoryEntry { type: "history", role: "user", text: "hi", provider: null, model: null, thinking: null },
+            HistoryEntry { type: "history", role: "assistant", text: "hello", provider: null, model: null, thinking: null },
+        ];
+        let md = format_session_markdown("abc123ef", "Work", "2026-08-30T12:00:00Z", "/w", entries);
+        assert.contains(md, "# Work (abc123ef)");
+        assert.contains(md, "## user");
+        assert.contains(md, "## assistant");
+        assert.contains(md, "hello");
+        let plain = format_session_markdown("abc123ef", null, "2026-08-30T12:00:00Z", "/w", entries);
+        assert.contains(plain, "# Session abc123ef")
     }
 
     test "session info names backend and lineage" {

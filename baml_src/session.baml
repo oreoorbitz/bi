@@ -10,6 +10,7 @@ function current_session_version() -> int {
 }
 
 // Session header — mirrors pi's SessionHeader (type session, version, id, timestamp, cwd, parentSession?)
+// plus bi's display label (/name). Old files read label as null.
 class SessionHeader {
     type: string, // always "session"
     version: int,
@@ -17,6 +18,7 @@ class SessionHeader {
     timestamp: string,
     cwd: string,
     parent_session: string?,
+    label: string?,
 }
 
 class NewSessionOptions {
@@ -65,6 +67,7 @@ function create_session_header(
     cwd: string,
     timestamp: string,
     parent_session: string? = null,
+    label: string? = null,
 ) -> SessionHeader throws baml.errors.InvalidArgument {
     validate_session_id(id);
     if (cwd.length() == 0) {
@@ -73,6 +76,15 @@ function create_session_header(
     if (timestamp.length() == 0) {
         throw baml.errors.InvalidArgument { message: "timestamp must be non-empty" }
     }
+    match (label) {
+        null => {},
+        let l: string => {
+            let problems = validate_session_label(l);
+            if (problems.length() > 0) {
+                throw baml.errors.InvalidArgument { message: problems.at(0) ?? "bad label" }
+            }
+        },
+    }
     SessionHeader {
         type: "session",
         version: current_session_version(),
@@ -80,6 +92,19 @@ function create_session_header(
         timestamp: timestamp,
         cwd: cwd,
         parent_session: parent_session,
+        label: label,
+    }
+}
+
+// /name policy: short human labels for the resume list. The host trims;
+// empty and over-long labels fail here instead of persisting junk.
+function validate_session_label(label: string) -> string[] {
+    if (label.length() == 0) {
+        ["label must be non-empty — /name <text>"]
+    } else if (label.length() > 80) {
+        ["label must be 80 chars or fewer"]
+    } else {
+        []
     }
 }
 
@@ -175,6 +200,7 @@ class ResumeEntry {
     timestamp: string,
     cwd: string,
     turns: int,
+    label: string?,
 }
 
 function format_resume_list(sessions: ResumeEntry[], current_id: string?) -> string {
@@ -194,7 +220,11 @@ function format_resume_list(sessions: ResumeEntry[], current_id: string?) -> str
             } else {
                 `${s.turns} turns`
             };
-            out = `${out}  ${mark} ${s.id} — ${tm} — ${s.cwd} — ${s.timestamp}\n`;
+            let name = match (s.label) {
+                null => "",
+                let l: string => ` — "${l}"`,
+            };
+            out = `${out}  ${mark} ${s.id}${name} — ${tm} — ${s.cwd} — ${s.timestamp}\n`;
         }
         out
     }
@@ -210,6 +240,7 @@ function format_session_info(
     thinking: string?,
     turns: int,
     messages: int,
+    label: string? = null,
 ) -> string {
     let parent = match (parent_session) {
         null => "none",
@@ -219,5 +250,35 @@ function format_session_info(
         null => "default",
         let t: string => t,
     };
-    `session ${id}\n  file: ${file}\n  cwd: ${cwd}\n  forked from: ${parent}\n  backend: ${provider}/${model} · thinking ${th}\n  turns: ${turns} · messages: ${messages}`
+    let name = match (label) {
+        null => "none",
+        let l: string => `"${l}"`,
+    };
+    `session ${id}\n  name: ${name}\n  file: ${file}\n  cwd: ${cwd}\n  forked from: ${parent}\n  backend: ${provider}/${model} · thinking ${th}\n  turns: ${turns} · messages: ${messages}`
+}
+
+// /export body: whole transcript as one markdown doc. pi exports HTML;
+// bi's transcript is already markdown-shaped, so markdown is the
+// faithful port (no HTML renderer to own).
+function format_session_markdown(
+    id: string,
+    label: string?,
+    timestamp: string,
+    cwd: string,
+    entries: HistoryEntry[],
+) -> string {
+    let title = match (label) {
+        null => `# Session ${id}`,
+        let l: string => `# ${l} (${id})`,
+    };
+    let out = `${title}\n\n_${timestamp} · ${cwd}_\n`;
+    for (let e in entries) {
+        let who = if (e.role == "user") {
+            "user"
+        } else {
+            "assistant"
+        };
+        out = `${out}\n## ${who}\n\n${e.text}\n`
+    }
+    out
 }
