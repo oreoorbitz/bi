@@ -1,0 +1,26 @@
+id = "bi#78"
+title = "Upstream: BAML string escapes for control chars (proposal 13)"
+status = "Open"
+kind = "Proposal"
+area = "tui"
+body = """
+bi#76 worked around a language gap with raw bytes: BAML 0.17.0 string
+literals decode neither backslash-x-HH nor backslash-u-HHHH (probed:
+lengths 4/6, not 1), so ESC/BEL cannot be typed. proposals/13 records
+the repro, impact, and workaround. Next: check
+https://github.com/BoundaryML/baml/issues for an existing report, file
+if absent, and link it here. If a later toolchain adds the escapes,
+revert the raw bytes to typed sequences (the length asserts will
+confirm). Acceptance: upstream issue linked, or a note that the gap
+closed upstream with the revert landed.
+"""
+
+[[edge]]
+from = "bi#78"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#78"
+to = "bi#76"
+kind = "DependsOn"
