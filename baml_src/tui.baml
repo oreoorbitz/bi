@@ -112,6 +112,36 @@ function diff_lines(old: string[], new_lines: string[]) -> string[] {
     out
 }
 
+// Select frame (bi#68): one frame for /model, /resume, /tree numbered
+// lists. Rows arrive pre-shaped — each list keeps its own numbering so
+// numeric picks resolve against the same text — and the cursor only
+// highlights a row for display (arrow-key picks wait on the bi#69
+// raw-mode layer). Out-of-range cursors clamp; every row is
+// width-capped like the ready frame. Rendered through HostTui.
+function render_select_frame(rows: string[], cursor: int, width: int) -> string[] {
+    let at = if (rows.length() == 0) {
+        0
+    } else if (cursor < 0) {
+        0
+    } else if (cursor >= rows.length()) {
+        rows.length() - 1
+    } else {
+        cursor
+    };
+    let out: string[] = [];
+    let i = 0;
+    for (let r in rows) {
+        let mark = if (rows.length() > 0 && i == at) {
+            ">"
+        } else {
+            " "
+        };
+        out.push(truncate_chars(`${mark} ${r}`, width));
+        i = i + 1
+    }
+    out
+}
+
 // Ready frame: the startup block (header + ready BAIS rows), width-capped.
 // First production frame from this file — renderReadyScreen's host-side
 // version is deleted with this change, not kept in parallel.
