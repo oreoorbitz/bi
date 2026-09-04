@@ -169,6 +169,7 @@ function bamlErrorMessage(e: unknown): string {
 	return raw.replace(/^baml error: (baml\.errors\.\w+: )?/, "").split("\n")[0];
 }
 import { HostTui, HostStatus, HostFooter, renderSelectList } from "./tui.js";
+import { ActionLog, safeJson } from "./actionlog.js";
 import { format_status, format_turn_summary, format_turn_error } from "../baml_sdk/index.js";
 import { runBiLoop } from "./agent_loop.js";
 import { editInExternalEditor, editorCommand } from "./editor.js";
@@ -1214,6 +1215,21 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 // call, done line after (failures show the first output line, successes
 // a char count). Same wrapper for REPL and `bi run`; throw semantics
 // unchanged (runAgent has no handler try/catch today).
+// bi#75: every tool call crosses this wrapper on both paths (REPL +
+// `bi run`), so the action log sees each one with zero per-site code.
+// Effect records (edit.write, bais.*) derive from the same call — the
+// executor stays untouched, the wrapper observes.
+function loggingHandler(log: ActionLog | null): (name: string, args: Record<string, unknown>) => Promise<string> {
+	return async (name: string, args: Record<string, unknown>): Promise<string> => {
+		log?.record("tool.call", `${name} ${safeJson(args).slice(0, 120)}`);
+		const out = await runToolWithStatus(name, args);
+		if (name === "write" || name === "edit") log?.record("edit.write", String((args as any)?.path ?? name));
+		if (name === "bais_move") log?.record("bais.move", `${String((args as any)?.id ?? "?")} -> ${String((args as any)?.status ?? "?")}`);
+		if (name === "bais_new") log?.record("bais.new", String((args as any)?.title ?? "").slice(0, 80));
+		return out;
+	};
+}
+
 async function runToolWithStatus(name: string, args: Record<string, unknown>): Promise<string> {
 	const theme = await activeTheme();
 	console.log(await format_tool_start_async(name, JSON.stringify(args), { theme }));
@@ -1239,6 +1255,10 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	const slash = await handleSlash(q, skills, history, opts.signal, backend, sess);
 	if (slash === "quit") return "quit";
 	if (slash !== "none") return slash;
+	// bi#75: the turn's own log lines (tool.* / edit.write / bais.*
+	// arrive via loggingHandler on the loop below).
+	const alog = sess ? new ActionLog(sessionIdFromFile(sess.file)) : null;
+	alog?.record("turn.start", q.slice(0, 80));
 	const skillsSection = skills.length ? `\n\n${await formatSkills(skills)}` : "";
 	// bi#32: staged files inject above the prompt, then clear — read fresh
 	// at send time so edits between /attach and send are picked up.
@@ -1335,6 +1355,7 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 		if (!supports) {
 			status.stop({ failed: true, detail: "image unsupported", turns: 0, messages: withUser.length, theme: turnTheme });
 			console.error(`[bi] ${backend.model} doesn't take image parts — /model an image-capable backend or /paste clear to drop the staged image`);
+			alog?.record("turn.end", "image-unsupported");
 			await stderrRule(turnTheme);
 			return withUser;
 		}
@@ -1351,6 +1372,7 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 			console.error(format_turn_error(`TurnFailure ${img.failure.message}`, { theme: turnTheme }));
 			const guidance = await GuidanceFor_async(img.failure.kind, backend.provider);
 			if (guidance) console.error(guidance);
+			alog?.record("turn.end", `failed:${img.failure.kind}`);
 			await stderrRule(turnTheme);
 			return withUser;
 		}
@@ -1360,12 +1382,13 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 		status.stop({ failed: false, detail: "", turns: 1, messages: out.length, theme: turnTheme });
 		const theme = await activeTheme();
 		console.log(await render_markdown_text_async(img.text, { theme }));
+		alog?.record("turn.end", "ok");
 		await stderrRule(turnTheme);
 		return out;
 	}
 	// BI_BASE_URL lets the REPL talk to a local gateway/proxy (and makes
 	// slow-turn behavior testable without real provider latency).
-	const turnP = runBiLoop(fullPrompt, { provider: backend.provider, model: backend.model, thinking: backend.thinking, maxTurns: 5, baseUrl: process.env.BI_BASE_URL ?? null, onEvent: (e) => status.onEvent(e), tools: loopTools, toolHandler: runToolWithStatus, history });
+	const turnP = runBiLoop(fullPrompt, { provider: backend.provider, model: backend.model, thinking: backend.thinking, maxTurns: 5, baseUrl: process.env.BI_BASE_URL ?? null, onEvent: (e) => status.onEvent(e), tools: loopTools, toolHandler: loggingHandler(alog), history });
 	type Settled = { done: true; result: Awaited<typeof turnP> } | { done: false };
 	let settled: Settled;
 	if (opts.aborted) {
@@ -1380,6 +1403,7 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 		if (opts.signal) opts.signal.aborted = true;
 		status.stop({ failed: true, detail: "aborted", turns: 0, messages: history.length, theme: turnTheme });
 		console.error("[bi] turn aborted — transcript unchanged (a late VM result is discarded on arrival)");
+		alog?.record("turn.end", "aborted");
 		await stderrRule(turnTheme);
 		void turnP.then(
 			() => console.error("[bi] late turn result discarded"),
@@ -1390,6 +1414,7 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	const result = settled.result;
 	if (opts.signal?.aborted) {
 		console.error("[bi] turn finished after abort — result discarded");
+		alog?.record("turn.end", "discarded");
 		return history;
 	}
 	const assistantCount = result.messages.filter((m: any) => m.role === "assistant").length;
@@ -1400,6 +1425,7 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 		// is anthropic-pinned today, so the provider is static here).
 		const guidance = await GuidanceFor_async(result.failure.kind, "anthropic");
 		if (guidance) console.error(guidance);
+		alog?.record("turn.end", `failed:${result.failure.kind}`);
 		await stderrRule(turnTheme);
 		return withUser;
 	}
@@ -1410,6 +1436,7 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 		if ((m as any).role !== "assistant") continue;
 		console.log(await render_markdown_text_async((m as any).text ?? JSON.stringify((m as any).content), { theme }));
 	}
+	alog?.record("turn.end", "ok");
 	await stderrRule(turnTheme);
 	return result.messages;
 }
@@ -1841,6 +1868,10 @@ async function main(): Promise<void> {
 		const taskId = getFlag(args, "--task");
 		let keeper: LeaseKeeper | undefined;
 		let subscriber: HubSubscriber | undefined;
+		// bi#75: headless runs log under run-<pid>; leased runs add
+		// claim/release lines so the drill replays who held what.
+		const turnLog = new ActionLog(`run-${process.pid}`);
+		turnLog.record("turn.start", String(prompt).slice(0, 80));
 		if (hubUrl !== undefined || taskId !== undefined) {
 			if (!hubUrl || !taskId) {
 				console.error("bi run: --hub and --task go together (leased mode needs both)");
@@ -1859,6 +1890,7 @@ async function main(): Promise<void> {
 			try {
 				const claimed = await keeper.acquire();
 				console.error(`[keeper] claimed ${taskId} fencing=${claimed.fencing} expires_lc=${claimed.expires_lc}`);
+				turnLog.record("lease.claim", `${taskId} fencing=${claimed.fencing}`);
 			} catch (e: any) {
 				console.error(`[keeper] claim failed: ${e instanceof Error ? e.message : e} (task may be held — pick another from the ready list)`);
 				process.exit(1);
@@ -1883,10 +1915,11 @@ async function main(): Promise<void> {
 				azureDeployment,
 				azureApiVersion,
 				tools: runTools,
-				toolHandler: runToolWithStatus,
+				toolHandler: loggingHandler(turnLog),
 				notify: subscriber?.queue,
 				keeper,
 			});
+			turnLog.record("turn.end", result.failure ? `failed:${result.failure.kind}` : "ok");
 		} finally {
 			// Deliberate free, not a loss: release first so leaseError()
 			// stays null and the run is judged on its work, then stop the
@@ -1895,6 +1928,7 @@ async function main(): Promise<void> {
 				try {
 					await keeper.release();
 					console.error(`[keeper] released ${taskId}`);
+					turnLog.record("lease.release", String(taskId));
 				} catch (e: any) {
 					console.error(`[keeper] release failed: ${e instanceof Error ? e.message : e}`);
 				}
