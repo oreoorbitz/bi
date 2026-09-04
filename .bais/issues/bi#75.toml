@@ -1,0 +1,31 @@
+id = "bi#75"
+title = "Host-recorded action log with fixed codebook (no agent gossip)"
+status = "Open"
+kind = "Feat"
+area = "bais/multi-agent"
+body = """
+Agents need a compact, checkable view of each other's behavior, but
+self-reported logs are untrustworthy (bi#37: agents cannot attest
+themselves) and agent-to-agent gossip needs routing/ordering for the
+same self-attested data. Instead the host loop — which already
+observes every action — appends one line per event to a shared
+append-only log: `<ts> <session> <code> <detail>` with a small fixed
+codebook (turn.start/end, tool.call, edit.write, bais.move, lease.claim,
+...). Writes are O(1) with no coordination; reads are `rg` over one
+file with one total order for free; entries are unforgable because the
+agent never holds the pen. Codes stay readable words (tool.call, not
+ax) — we pay per misread, not per bit. Full transcripts stay the
+verbose ground truth; status moves stay the coarse claim layer; this
+is the compact middle. Acceptance: parallel-agent drill replays who
+did what from the log alone; log write failure never breaks a turn.
+"""
+
+[[edge]]
+from = "bi#75"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#75"
+to = "bi#37"
+kind = "DependsOn"
