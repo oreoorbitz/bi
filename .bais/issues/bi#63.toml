@@ -1,6 +1,6 @@
 id = "bi#63"
 title = "Move notification text shaping into BAML"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "bi/agent"
 body = """
