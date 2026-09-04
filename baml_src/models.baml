@@ -279,6 +279,9 @@ function ListAllModels() -> Model[] {
     for (let m in _zai_models()) {
         out.push(m)
     }
+    for (let m in _meta_models()) {
+        out.push(m)
+    }
     for (let m in _huggingface_models()) {
         out.push(m)
     }
@@ -328,6 +331,7 @@ function ListModels(provider: string) -> Model[] {
         "moonshotai" => _moonshotai_models(),
         "nvidia" => _nvidia_models(),
         "zai" => _zai_models(),
+        "meta" => _meta_models(),
         "huggingface" => _huggingface_models(),
         "baseten" => _baseten_models(),
         "mistral" => _mistral_models(),
@@ -595,6 +599,77 @@ function _zai_models() -> Model[] {
             context_window: 1000000,
             max_tokens: 128000,
             cost: ModelCost { input: 0.075, output: 0.25, cache_read: 0.015, cache_write: null },
+        },
+    ]
+}
+
+// Meta Muse Spark (https://dev.meta.ai/docs/models): OpenAI-compatible
+// chat completions over https://api.meta.ai/v1. Spark always reasons
+// server-side; 1M-token window on every version; no long-context
+// premium. Standard tier (1.25/4.25/0.15 per 1M) vs contributor tier
+// (0.10/0.20/0.002 — training-eligible, discounted). Image/Video/PDF
+// understanding collapses to bi's "image" input tag.
+function _meta_models() -> Model[] {
+    [
+        Model {
+            id: "muse-spark-1.3",
+            name: "Muse Spark 1.3",
+            api: "openai-completions",
+            provider: "meta",
+            base_url: "https://api.meta.ai/v1",
+            reasoning: true,
+            input: ["text", "image"],
+            context_window: 1048576,
+            max_tokens: 8192,
+            cost: ModelCost { input: 1.25, output: 4.25, cache_read: 0.15, cache_write: null },
+        },
+        Model {
+            id: "muse-spark-1.3-contributor",
+            name: "Muse Spark 1.3 Contributor",
+            api: "openai-completions",
+            provider: "meta",
+            base_url: "https://api.meta.ai/v1",
+            reasoning: true,
+            input: ["text", "image"],
+            context_window: 1048576,
+            max_tokens: 8192,
+            cost: ModelCost { input: 0.10, output: 0.20, cache_read: 0.002, cache_write: null },
+        },
+        Model {
+            id: "muse-spark-1.2",
+            name: "Muse Spark 1.2",
+            api: "openai-completions",
+            provider: "meta",
+            base_url: "https://api.meta.ai/v1",
+            reasoning: true,
+            input: ["text", "image"],
+            context_window: 1048576,
+            max_tokens: 8192,
+            cost: ModelCost { input: 1.25, output: 4.25, cache_read: 0.15, cache_write: null },
+        },
+        Model {
+            id: "muse-spark-1.2-contributor",
+            name: "Muse Spark 1.2 Contributor",
+            api: "openai-completions",
+            provider: "meta",
+            base_url: "https://api.meta.ai/v1",
+            reasoning: true,
+            input: ["text", "image"],
+            context_window: 1048576,
+            max_tokens: 8192,
+            cost: ModelCost { input: 0.10, output: 0.20, cache_read: 0.002, cache_write: null },
+        },
+        Model {
+            id: "muse-spark-1.1",
+            name: "Muse Spark 1.1",
+            api: "openai-completions",
+            provider: "meta",
+            base_url: "https://api.meta.ai/v1",
+            reasoning: true,
+            input: ["text", "image"],
+            context_window: 1048576,
+            max_tokens: 8192,
+            cost: ModelCost { input: 1.25, output: 4.25, cache_read: 0.15, cache_write: null },
         },
     ]
 }

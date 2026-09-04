@@ -88,6 +88,19 @@ function _providers() -> Provider[] {
             api: "openai-completions",
             auth_env: "ZAI_API_KEY",
         },
+        // Meta Model API speaks OpenAI-compatible chat completions
+        // (https://dev.meta.ai/docs/protocols/chat-completions), so the
+        // plain openai-completions arm covers it: Bearer key + base_url,
+        // `developer`/`system` both accepted server-side. DIVERGENCE:
+        // Meta's docs/SDK call the key MODEL_API_KEY; bi namespaces it
+        // to META_API_KEY per the one-canonical-var-per-provider rule.
+        Provider {
+            id: "meta",
+            name: "Meta",
+            base_url: "https://api.meta.ai/v1",
+            api: "openai-completions",
+            auth_env: "META_API_KEY",
+        },
         Provider {
             id: "huggingface",
             name: "Hugging Face",

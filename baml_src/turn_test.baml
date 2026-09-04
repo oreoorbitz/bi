@@ -226,6 +226,11 @@ testset "turn plumbing" {
         assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
     }
 
+    test "meta invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("meta", "muse-spark-1.3", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
     test "huggingface invoke reaches the wire and classifies transport failure" {
         let result = SendTurn(
             "huggingface",

@@ -1,0 +1,7 @@
+id = "bi#65"
+title = "Meta provider support (Muse Spark via api.meta.ai)"
+status = "Open"
+kind = "Feat"
+area = "providers"
+body = """
+Seeded via `bi bais new` for bi#65."""

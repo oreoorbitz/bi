@@ -1,6 +1,19 @@
 testset "provider registry" {
-    test "ListProviders returns 21" {
-        assert.equal(ListProviders().length(), 21)
+    test "ListProviders returns 22" {
+        assert.equal(ListProviders().length(), 22)
+    }
+
+    test "GetProvider meta is openai-completions over api.meta.ai" {
+        let p = GetProvider("meta");
+        assert.not_null(p);
+        match (p) {
+            let prov: Provider => {
+                assert.equal(prov.base_url, "https://api.meta.ai/v1");
+                assert.equal(prov.api, "openai-completions");
+                assert.equal(prov.auth_env, "META_API_KEY")
+            },
+            _ => assert.is_true(false),
+        }
     }
 
     test "GetProvider groq has chat-completions api and auth env" {
@@ -66,6 +79,10 @@ testset "provider registry" {
         match (ProviderAuthEnv("nvidia")) {
             null => assert.is_true(false),
             let v: string => assert.equal(v, "NVIDIA_API_KEY"),
+        }
+        match (ProviderAuthEnv("meta")) {
+            null => assert.is_true(false),
+            let v: string => assert.equal(v, "META_API_KEY"),
         }
         match (ProviderAuthEnv("zai")) {
             null => assert.is_true(false),
@@ -240,7 +257,7 @@ testset "provider registry" {
     }
 
     test "RefreshAllModels returns provider count" {
-        assert.equal(RefreshAllModels(), 21)
+        assert.equal(RefreshAllModels(), 22)
     }
 
     test "RefreshModelsWithResult static vs remote vs unknown" {

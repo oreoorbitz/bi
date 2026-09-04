@@ -11,8 +11,8 @@ testset "model catalog" {
         assert.equal(ListModels("openai").length(), 2)
     }
 
-    test "ListAllModels returns 45" {
-        assert.equal(ListAllModels().length(), 45)
+    test "ListAllModels returns 50" {
+        assert.equal(ListAllModels().length(), 50)
     }
 
     test "ListModels azure returns advisory deployments" {
@@ -37,6 +37,7 @@ testset "model catalog" {
         assert.equal(ListModels("moonshotai").length(), 2);
         assert.equal(ListModels("nvidia").length(), 2);
         assert.equal(ListModels("zai").length(), 4);
+        assert.equal(ListModels("meta").length(), 5);
         assert.equal(ListModels("huggingface").length(), 2);
         assert.equal(ListModels("baseten").length(), 2);
         assert.equal(ListModels("mistral").length(), 2);
@@ -46,6 +47,22 @@ testset "model catalog" {
         assert.equal(ListModels("kimi-coding").length(), 2);
         assert.equal(ListModels("openrouter").length(), 2);
         assert.equal(ListModels("qwen-token-plan").length(), 2)
+    }
+
+    test "GetModel muse-spark-1.3 is meta reasoning with 1M context" {
+        let m = GetModel("muse-spark-1.3");
+        assert.not_null(m);
+        match (m) {
+            let model: Model => {
+                assert.equal(model.provider, "meta");
+                assert.equal(model.api, "openai-completions");
+                assert.is_true(model.reasoning);
+                assert.equal(model.context_window, 1048576);
+                assert.equal(model.cost.input, 1.25);
+                assert.equal(model.cost.output, 4.25)
+            },
+            _ => assert.is_true(false),
+        }
     }
 
     test "GetModel fireworks pins the anthropic-messages arm" {
