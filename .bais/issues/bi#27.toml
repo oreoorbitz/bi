@@ -1,6 +1,6 @@
 id = "bi#27"
 title = "Message and tool rendering (markdown, highlight, diff, images)"
-status = "Open"
+status = "Doing"
 kind = "Feat"
 area = "tui"
 body = """

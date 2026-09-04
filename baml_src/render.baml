@@ -1,8 +1,9 @@
 // bi/baml_src/render.baml — message shaping policy (bi#27).
 // BAML owns markdown→terminal-text transforms + tool status lines; the
 // host prints the shaped lines (ANSI/color arrives with bi#33 themes).
-// Deliberately no syntax highlighting or width-aware layout here — plain
-// readable text that survives pipes and narrow terminals.
+// Fenced code in known languages gets lexical highlighting (keywords,
+// strings, numbers, comments); unknown/plain fences pass through byte-
+// clean so pipes and narrow terminals never see noise.
 
 function find_from(cs: string[], target: string, from: int) -> int? {
     let i = from;
@@ -121,15 +122,26 @@ function render_prose_line(line: string, theme: string? = null) -> string {
     }
 }
 
-// Full message: code fences pass through with ··· delimiters (lang kept
-// on the opener), prose lines render. Trailing-newline shape preserved.
+// Full message: code fences render with ··· delimiters (lang kept on
+// the opener) and lexical highlighting inside known-language fences;
+// unknown/plain fence bodies pass through byte-clean. Prose lines
+// render. Trailing-newline shape preserved.
 function render_markdown_text(text: string, theme: string? = null) -> string {
     let lines = text.split("\n");
     let out = "";
     let in_fence = false;
+    let fence_lang: string? = null;
+    let in_block = false;
     for (let line in lines) {
         let rendered = if (line.slice(0, 3) == "```") {
             in_fence = !in_fence;
+            if (in_fence) {
+                fence_lang = canonical_lang(line.slice(3, line.length()).trim());
+                in_block = false
+            } else {
+                fence_lang = null;
+                in_block = false
+            };
             let lang = line.slice(3, line.length()).trim();
             if (lang.length() > 0 && in_fence) {
                 style_segment(`··· ${lang}`, "dim", theme)
@@ -137,7 +149,14 @@ function render_markdown_text(text: string, theme: string? = null) -> string {
                 style_segment("···", "dim", theme)
             }
         } else if (in_fence) {
-            line
+            match (fence_lang) {
+                null => line,
+                let lang: string => {
+                    let hl = highlight_code_line(line, lang, theme, in_block);
+                    in_block = hl.in_block;
+                    hl.text
+                },
+            }
         } else {
             render_prose_line(line, theme = theme)
         };
@@ -148,6 +167,292 @@ function render_markdown_text(text: string, theme: string? = null) -> string {
     } else {
         out
     }
+}
+
+// Syntax highlight (bi#27 slice 1): generic lexical pass over fenced
+// code lines in known languages — keywords (accent), strings (good),
+// numbers (busy), comments (dim). Per-line state only: block comments
+// thread through in_block, but multiline strings do not (documented
+// limit). Unknown/plain fences never reach here — the caller passes
+// those through untouched. Theme null/none degrades to byte-identical
+// plain text via style_segment passthrough.
+function canonical_lang(lang: string) -> string? {
+    if (lang == "ts" || lang == "typescript" || lang == "js" || lang == "javascript") {
+        "typescript"
+    } else if (lang == "py" || lang == "python") {
+        "python"
+    } else if (lang == "sh" || lang == "shell" || lang == "bash") {
+        "bash"
+    } else if (lang == "json") {
+        "json"
+    } else if (lang == "toml") {
+        "toml"
+    } else if (lang == "baml") {
+        "baml"
+    } else {
+        null
+    }
+}
+
+function highlight_keywords(lang: string) -> string[] {
+    if (lang == "typescript") {
+        [
+            "const",
+            "let",
+            "var",
+            "function",
+            "return",
+            "if",
+            "else",
+            "for",
+            "while",
+            "class",
+            "new",
+            "import",
+            "from",
+            "export",
+            "extends",
+            "interface",
+            "type",
+            "enum",
+            "null",
+            "true",
+            "false",
+            "undefined",
+            "this",
+            "typeof",
+            "instanceof",
+            "async",
+            "await",
+            "try",
+            "catch",
+            "throw",
+            "switch",
+            "case",
+            "break",
+            "continue",
+            "do",
+            "of",
+            "in",
+        ]
+    } else if (lang == "python") {
+        [
+            "def",
+            "return",
+            "if",
+            "else",
+            "elif",
+            "for",
+            "while",
+            "class",
+            "import",
+            "from",
+            "as",
+            "pass",
+            "None",
+            "True",
+            "False",
+            "and",
+            "or",
+            "not",
+            "in",
+            "is",
+            "lambda",
+            "try",
+            "except",
+            "raise",
+            "with",
+            "yield",
+            "del",
+            "assert",
+        ]
+    } else if (lang == "bash") {
+        [
+            "if",
+            "then",
+            "else",
+            "elif",
+            "fi",
+            "for",
+            "while",
+            "do",
+            "done",
+            "in",
+            "case",
+            "esac",
+            "function",
+            "return",
+            "exit",
+            "echo",
+            "export",
+            "local",
+            "set",
+            "true",
+            "false",
+        ]
+    } else if (lang == "toml") {
+        ["true", "false"]
+    } else if (lang == "baml") {
+        [
+            "function",
+            "test",
+            "class",
+            "let",
+            "match",
+            "if",
+            "else",
+            "for",
+            "in",
+            "true",
+            "false",
+            "null",
+        ]
+    } else {
+        []
+    }
+}
+
+function line_comment_markers(lang: string) -> string[] {
+    if (lang == "typescript" || lang == "baml") {
+        ["//"]
+    } else if (lang == "python" || lang == "bash" || lang == "toml") {
+        ["#"]
+    } else {
+        []
+    }
+}
+
+function has_string(items: string[], target: string) -> bool {
+    let found = false;
+    for (let s in items) {
+        if (s == target) {
+            found = true
+        }
+    }
+    found
+}
+
+function is_word_char(c: string) -> bool {
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$".index_of(c) != null
+}
+
+function is_digit(c: string) -> bool {
+    "0123456789".index_of(c) != null
+}
+
+class HighlightedLine {
+    text: string,
+    in_block: bool,
+}
+
+function highlight_code_line(
+    line: string,
+    lang: string,
+    theme: string?,
+    in_block: bool,
+) -> HighlightedLine {
+    // Defense in depth: only canonical languages highlight, so a direct
+    // caller with a stray label can never sprinkle escapes. The markdown
+    // walker already filters, but the contract holds here too.
+    if (canonical_lang(lang) == null) {
+        HighlightedLine { text: line, in_block: false }
+    } else {
+        highlight_known_line(line, lang, theme, in_block)
+    }
+}
+
+function highlight_known_line(
+    line: string,
+    lang: string,
+    theme: string?,
+    in_block: bool,
+) -> HighlightedLine {
+    let cs = line.chars();
+    let out = "";
+    let i = 0;
+    let block = in_block;
+    let keywords = highlight_keywords(lang);
+    let markers = line_comment_markers(lang);
+    let block_ok = lang == "typescript";
+    // Block-comment interior accumulates unstyled and flushes dim on
+    // close (or line end). The /* opener emits raw so a closer on a
+    // later line never duplicates or drops source chars.
+    let buf = "";
+    while (i < cs.length()) {
+        let c = cs.at(i) ?? "";
+        if (block) {
+            if (c == "*" && i + 1 < cs.length() && cs.at(i + 1) == "/") {
+                out = `${out}${style_segment(`${buf}*/`, "dim", theme)}`;
+                buf = "";
+                i = i + 2;
+                block = false
+            } else {
+                buf = `${buf}${c}`;
+                i = i + 1
+            }
+        } else if (block_ok && c == "/" && i + 1 < cs.length() && cs.at(i + 1) == "*") {
+            out = `${out}/*`;
+            i = i + 2;
+            block = true
+        } else if (c == "\"" || c == "'" || c == "`") {
+            let j = i + 1;
+            while (j < cs.length() && cs.at(j) != c) {
+                if (cs.at(j) == "\\") {
+                    j = j + 1
+                }
+                j = j + 1
+            }
+            ;
+            let end = if (j < cs.length()) {
+                j + 1
+            } else {
+                j
+            };
+            out = `${out}${style_segment(line.slice(i, end), "good", theme)}`;
+            i = end
+        } else if (is_digit(c)) {
+            let j = i + 1;
+            while (j < cs.length() && (is_digit(cs.at(j) ?? "") || cs.at(j) == ".")) {
+                j = j + 1
+            }
+            ;
+            out = `${out}${style_segment(line.slice(i, j), "busy", theme)}`;
+            i = j
+        } else if (is_word_char(c)) {
+            let j = i + 1;
+            while (j < cs.length() && is_word_char(cs.at(j) ?? "")) {
+                j = j + 1
+            }
+            ;
+            let word = line.slice(i, j);
+            let kw = false;
+            for (let k in keywords) {
+                if (k == word) {
+                    kw = true
+                }
+            }
+            ;
+            if (kw) {
+                out = `${out}${style_segment(word, "accent", theme)}`
+            } else {
+                out = `${out}${word}`
+            }
+            i = j
+        } else if (c == "/" && has_string(markers, "//") && i + 1 < cs.length() && cs.at(i + 1) == "/") {
+            out = `${out}${style_segment(line.slice(i, line.length()), "dim", theme)}`;
+            i = cs.length()
+        } else if (c == "#" && has_string(markers, "#")) {
+            out = `${out}${style_segment(line.slice(i, line.length()), "dim", theme)}`;
+            i = cs.length()
+        } else {
+            out = `${out}${c}`;
+            i = i + 1
+        }
+    }
+    if (block && buf.length() > 0) {
+        out = `${out}${style_segment(buf, "dim", theme)}`
+    }
+    HighlightedLine { text: out, in_block: block }
 }
 
 function truncate_chars(text: string, max: int) -> string {
@@ -198,6 +503,49 @@ test "headings rules and fences shape" {
     assert.contains(fenced, "x = 1");
     assert.contains(fenced, "after");
     assert.is_true(!fenced.includes("```"))
+}
+
+test "code fences highlight known langs, pass the rest through" {
+    // Unthemed output is byte-identical to the old passthrough.
+    assert.equal(
+        render_markdown_text("```ts\nconst x = 1 // hi\n```", theme = null),
+        "··· ts\nconst x = 1 // hi\n···",
+    );
+    assert.equal(
+        render_markdown_text("```zzz\nconst x = 1\n```", theme = null),
+        "··· zzz\nconst x = 1\n···",
+    );
+    // Themed output styles each lexical class (length grows by SGR
+    // envelopes); the source chars all survive.
+    let hi = render_markdown_text("```ts\nconst x = 1 // hi\n```", theme = "default");
+    assert.contains(hi, "const");
+    assert.contains(hi, "x = ");
+    assert.is_true(hi.length() > "··· ts\nconst x = 1 // hi\n···".length() + 9);
+    assert.is_true(!hi.includes("```"));
+    // Python comments use #, TS # is a private field, not a comment.
+    let py = highlight_code_line("x = 1 # c", "python", "default", false);
+    assert.contains(py.text, "# c");
+    assert.is_true(py.text.length() > "x = 1 # c".length());
+    let ts = highlight_code_line("#c", "typescript", "default", false);
+    assert.equal(ts.text, "#c");
+    // Strings swallow comment markers and escapes; keywords need
+    // boundaries (constant ≠ const + ant).
+    let st = highlight_code_line("const s = \"a // b\" // c", "typescript", "default", false);
+    assert.contains(st.text, "\"a // b\"");
+    let w = highlight_code_line("constant = 1", "typescript", "default", false);
+    assert.contains(w.text, "constant");
+    // Only the number takes a 9-byte SGR envelope — "const" inside
+    // "constant" stays unstyled (no second envelope).
+    assert.equal(w.text.length(), "constant = 1".length() + 9);
+    // Block comments thread across lines; unknown langs stay raw.
+    let b1 = highlight_code_line("/* open", "typescript", "default", false);
+    assert.is_true(b1.in_block);
+    let b2 = highlight_code_line("still shut */ done", "typescript", "default", true);
+    assert.is_true(!b2.in_block);
+    assert.contains(b2.text, "done");
+    let unk = highlight_code_line("const x = 1", "zzz", "default", false);
+    assert.equal(unk.text, "const x = 1");
+    assert.is_true(!unk.in_block);
 }
 
 test "inline spans strip pair markers and expand links" {
