@@ -1,0 +1,29 @@
+id = "bi#55"
+title = "SPEC principle: no fail-closed without a named reason"
+status = "Open"
+kind = "Feat"
+area = "bais/spec"
+body = """
+Session lesson, promoted to principle: every fail-closed path must
+return a machine-readable NAMED reason, or the conservatism is just
+silence. Dangling-blocker parks, hasStore fallback, fencing
+rejections, cap denials, chain-breaks, stalls — each fires correctly
+and each was invisible until a reporter was built beside it (bi#48's
+why-not being the flagship).
+Work: audit every reject/exclude/park path in hub + store + reducer
+and confirm each yields a reason code already visible in
+oversight/CLI (cap-denied, stale-fence, chain-break, ...); close any
+gap with the reason first, behavior unchanged. Then write the rule
+into SPEC.md: no new fail-closed path lands without (a) a named
+reason, (b) a surface where it appears (oversight feed or CLI
+output), (c) a test asserting the reason fires. bi#48 is the
+reference implementation.
+Acceptance: audit table of paths x reasons (all named, all surfaced);
+SPEC.md carries the rule; one deliberately triggered rejection per
+path shows its reason in `oversight --json`.
+"""
+
+[[edge]]
+from = "bi#55"
+to = "bi#48"
+kind = "Related"

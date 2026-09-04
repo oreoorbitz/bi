@@ -1,0 +1,32 @@
+id = "bi#56"
+title = "Agent protocol: durable handoff before terminal"
+status = "Open"
+kind = "Feat"
+area = "bais/protocol"
+body = """
+Session lesson, twice-paid: two validated deliverables
+(dispatch.baml, delta.baml) died in reaped worktrees because "copy
+it over" was a wish, not a step. Ephemeral work with no rendezvous
+is lost work — the same failure as bi#46's replay gap.
+Work: (1) standing spawn rule — every isolated-agent brief carries a
+mandatory pre-finish delivery clause (copy deliverables to a durable
+/tmp path, cmp-confirm, report the path); terminal reports without a
+confirmed handoff are rejected and respawned. (2) Document it as the
+agent protocol (AGENTS.md): live-only state, where the durable copy
+lives, who confirms. (3) Long term, bi#53's Handoff type is the
+typed version of this — a Handoff with an explicit durable pointer,
+not prose claiming "done".
+Acceptance: protocol documented; the next three isolated spawns all
+arrive with /tmp-confirmed handoffs, zero re-collects; one
+deliberate worktree-reap drill confirms the deliverable still lands.
+"""
+
+[[edge]]
+from = "bi#56"
+to = "bi#46"
+kind = "Related"
+
+[[edge]]
+from = "bi#56"
+to = "bi#53"
+kind = "Related"
