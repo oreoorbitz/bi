@@ -7,6 +7,8 @@
 import { getModel, listAllModels, listModels } from "./models.js";
 import { getProvider, listProviders } from "./provider.js";
 import { runAgent } from "./agent.js";
+import { HttpKeeperHub, LeaseKeeper } from "./keeper.js";
+import { HubSubscriber } from "./notify.js";
 import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, moveBaisIssue, checkBaisIssues, graphBaisIssues } from "./bais.js";
 import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
@@ -530,19 +532,75 @@ async function main(): Promise<void> {
 			console.error(`[bi] skills unavailable (${String(e?.message ?? e).split("\n")[0]})`);
 		}
 		console.error(`bi run — provider=${provider} model=${model} prompt="${prompt}"${baisContext ? ` (+${baisReadyCount} BAIS ready)` : ""} tools=${runTools.length} skills=${skillNames.length ? skillNames.join(",") : "none"}`);
-		const result = await runAgent(fullPrompt + skillsSection, {
-			provider,
-			model,
-			apiKey,
-			baseUrl,
-			temperature,
-			maxTurns,
-			azureResource,
-			azureDeployment,
-			azureApiVersion,
-			tools: runTools,
-			toolHandler: async (name, args) => handleTool(name, args),
-		});
+		// bi#62: leased run mode. --hub URL + --task ID claim the task
+		// through the hub coordinator before the first turn: the keeper
+		// holds + auto-renews (the LLM never renews), the subscriber feeds
+		// hub notifications as prompt context (the LLM never polls), and
+		// the lease releases when the run settles. Without --hub, behavior
+		// is exactly as before (fail-open: no coordinator, no claims).
+		const hubUrl = getFlag(args, "--hub");
+		const taskId = getFlag(args, "--task");
+		let keeper: LeaseKeeper | undefined;
+		let subscriber: HubSubscriber | undefined;
+		if (hubUrl !== undefined || taskId !== undefined) {
+			if (!hubUrl || !taskId) {
+				console.error("bi run: --hub and --task go together (leased mode needs both)");
+				process.exit(1);
+			}
+			const holder = getFlag(args, "--holder") ?? `did:key:bi-run-${process.pid}`;
+			const ttl = Number(getFlag(args, "--ttl") ?? 1000);
+			if (!Number.isFinite(ttl) || ttl <= 0) {
+				console.error("bi run: --ttl needs a positive number of lc ticks");
+				process.exit(1);
+			}
+			keeper = new LeaseKeeper({
+				hub: new HttpKeeperHub(hubUrl), task: taskId, holder, ttl,
+				onStatus: (m) => console.error(`[keeper] ${m}`),
+			});
+			try {
+				const claimed = await keeper.acquire();
+				console.error(`[keeper] claimed ${taskId} fencing=${claimed.fencing} expires_lc=${claimed.expires_lc}`);
+			} catch (e: any) {
+				console.error(`[keeper] claim failed: ${e instanceof Error ? e.message : e} (task may be held — pick another from the ready list)`);
+				process.exit(1);
+			}
+			subscriber = new HubSubscriber({
+				baseUrl: hubUrl, watch: [taskId],
+				onStatus: (m) => console.error(`[hub] ${m}`),
+			});
+			subscriber.start();
+		}
+		let result: Awaited<ReturnType<typeof runAgent>>;
+		try {
+			result = await runAgent(fullPrompt + skillsSection, {
+				provider,
+				model,
+				apiKey,
+				baseUrl,
+				temperature,
+				maxTurns,
+				azureResource,
+				azureDeployment,
+				azureApiVersion,
+				tools: runTools,
+				toolHandler: async (name, args) => handleTool(name, args),
+				notify: subscriber?.queue,
+				keeper,
+			});
+		} finally {
+			// Deliberate free, not a loss: release first so leaseError()
+			// stays null and the run is judged on its work, then stop the
+			// subscriber. Errors here warn; the run's own result stands.
+			if (keeper) {
+				try {
+					await keeper.release();
+					console.error(`[keeper] released ${taskId}`);
+				} catch (e: any) {
+					console.error(`[keeper] release failed: ${e instanceof Error ? e.message : e}`);
+				}
+			}
+			if (subscriber) await subscriber.stop();
+		}
 
 		// bi#14 run modes: --mode json emits one JSON RunEvent per line on
 		// stdout (schema in events.baml, BAML-validated); --print/-p emits
