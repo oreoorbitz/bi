@@ -7,7 +7,7 @@ import { resolveAuth } from "./auth.js";
 import { GetModel_async, RefreshModels_async, thinking_config_for_level_async, ModelSupportsReasoning_async } from "../baml_sdk/index.js";
 import { toHistory, type ConversationTurn } from "./conversation.js";
 import { maybeCompactHistory, type CompactionOptions } from "./compaction.js";
-import { SendTurn_async } from "../baml_sdk/index.js";
+import { SendTurn_async, SendTurnWithImage_async, ModelSupportsImage_async } from "../baml_sdk/index.js";
 import { toToolSpecs, type ToolSpec } from "./conversation.js";
 import { callWithRetry } from "./retry.js";
 import type { NotificationDrain } from "./notify.js";
@@ -91,6 +91,53 @@ function defaultLlmFn(options: AgentOptions): LlmFn {
 			}),
 		);
 	};
+}
+
+export interface ImageTurnOptions {
+	provider?: string;
+	model?: string;
+	apiKey?: string | null;
+	baseUrl?: string | null;
+	temperature?: number | null;
+	thinkingLevel?: string | null;
+	imageBase64: string;
+	imageMime: string;
+}
+
+// bi#32: single-shot image turn for pasted clipboard images. Mirrors
+// defaultLlmFn's auth + thinking guards; the SendTurnWithImage wire
+// carries no tools and no prior history by construction, so image turns
+// get answers, not agency. Consumed one image per turn by the caller.
+export async function runSingleImageTurn(
+	prompt: string,
+	options: ImageTurnOptions,
+): Promise<{ text: string } | { failure: TurnFailure }> {
+	const provider = options.provider ?? "anthropic";
+	const model = options.model ?? "claude-haiku-4-5";
+	const resolved = await resolveAuth(provider, options.apiKey);
+	if ("failure" in resolved) return { failure: resolved.failure };
+	if (!(await ModelSupportsImage_async(model))) {
+		return {
+			failure: new TurnFailure({ kind: "invalid_argument", message: `model "${model}" doesn't take image parts — switch to one that does (bare /model lists inputs)`, retry_safe: false }),
+		};
+	}
+	let thinking: any = null;
+	if (options.thinkingLevel && options.thinkingLevel !== "off") {
+		if (await ModelSupportsReasoning_async(model)) {
+			thinking = await thinking_config_for_level_async(options.thinkingLevel);
+		}
+	} else if (options.thinkingLevel === "off") {
+		thinking = await thinking_config_for_level_async("off");
+	}
+	const res = await callWithRetry(provider, () =>
+		SendTurnWithImage_async(provider, model, resolved.auth.key, prompt, options.imageBase64, options.imageMime, {
+			base_url: options.baseUrl ?? null,
+			temperature: options.temperature ?? null,
+			thinking,
+		}),
+	);
+	if (res instanceof TurnFailure) return { failure: res };
+	return { text: res.terminal_text() ?? "" };
 }
 
 export async function runAgent(

@@ -900,3 +900,20 @@ function ModelSupportsReasoning(id: string) -> bool {
         let m: Model => m.reasoning,
     }
 }
+
+// Image parts only reach models whose input list says so — pasting onto
+// a text-only model fails here instead of at the provider wire.
+function ModelSupportsImage(id: string) -> bool {
+    match (GetModel(id)) {
+        null => false,
+        let m: Model => {
+            let ok = false;
+            for (let i in m.input) {
+                if (i == "image") {
+                    ok = true
+                }
+            }
+            ok
+        },
+    }
+}

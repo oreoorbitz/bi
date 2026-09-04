@@ -125,6 +125,13 @@ testset "model catalog" {
         assert.is_true(GetModel("nope") is null)
     }
 
+    test "ModelSupportsImage follows the input list" {
+        assert.is_true(ModelSupportsImage("muse-spark-1.3"));
+        assert.is_true(ModelSupportsImage("grok-4.6"));
+        assert.is_true(!ModelSupportsImage("grok-build-0.1"));
+        assert.is_true(!ModelSupportsImage("bogus-model"))
+    }
+
     test "ModelSupportsReasoning true for reasoning model" {
         assert.is_true(ModelSupportsReasoning("claude-sonnet-4-5"));
         assert.is_true(ModelSupportsReasoning("gemini-2.5-pro"))

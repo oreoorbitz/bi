@@ -108,6 +108,30 @@ function trust_prompt_contains_bi(prompt: string) -> bool {
     prompt.includes("bi") && prompt.includes(".bi")
 }
 
+// Project trust decisions (bi#29): allow persists, deny persists,
+// session-only lives in memory. The store maps absolute dirs to
+// allow/deny; anything absent is undecided. Headless (no TTY) defaults
+// deny — same fail-closed as pi without a UI.
+function parse_trust_answer(word: string) -> string? {
+    let w = word.trim();
+    if (w == "y" || w == "Y" || w == "yes" || w == "YES" || w == "allow" || w == "Allow") {
+        "allow"
+    } else if (w == "n" || w == "N" || w == "no" || w == "NO" || w == "deny" || w == "Deny") {
+        "deny"
+    } else if (w == "s" || w == "S" || w == "session" || w == "Session") {
+        "session"
+    } else {
+        null
+    }
+}
+
+function format_trust_status(cwd: string, decision: string?) -> string {
+    match (decision) {
+        null => `trust ${cwd}: undecided — /trust allow|deny|session to decide`,
+        let d: string => `trust ${cwd}: ${d}`,
+    }
+}
+
 // Transcript persistence (bi#30) — session files are JSONL: one header
 // line, then one history line per message. BAML owns the entry schema +
 // validation + all shaped text; the host owns JSON encode/decode + FS.

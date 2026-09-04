@@ -159,7 +159,13 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
             name: "copy",
             description: "Copy last agent message to clipboard",
             argument_hint: null,
-            scope: "bi#32",
+            scope: null,
+        },
+        BuiltinSlashCommand {
+            name: "paste",
+            description: "Stage a clipboard image for the next turn",
+            argument_hint: null,
+            scope: null,
         },
         BuiltinSlashCommand {
             name: "name",
@@ -217,9 +223,9 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
         },
         BuiltinSlashCommand {
             name: "trust",
-            description: "Save project trust decision for future sessions",
-            argument_hint: null,
-            scope: "bi#29",
+            description: "Show or set the project trust decision",
+            argument_hint: "[allow|deny|session|forget]",
+            scope: null,
         },
         BuiltinSlashCommand {
             name: "login",
@@ -349,11 +355,12 @@ test "slash dispatch finds builtins then skills" {
     assert.equal(lookup_slash("/theme", skills), "theme");
     assert.equal(lookup_slash("/attach", skills), "attach");
     assert.equal(lookup_slash("/editor", skills), "editor");
-    assert.equal(builtin_slash_commands().length(), 27)
+    assert.equal(lookup_slash("/paste", skills), "paste");
+    assert.equal(builtin_slash_commands().length(), 28)
 }
 
 test "registry is pi's 23 plus bi help" {
-    for (let want in ["help", "settings", "model", "tree", "thinking", "scoped-models", "export", "import", "share", "copy", "name", "session", "changelog", "hotkeys", "theme", "attach", "editor", "fork", "clone", "trust", "login", "logout", "new", "compact", "resume", "reload", "quit"]) {
+    for (let want in ["help", "settings", "model", "tree", "thinking", "scoped-models", "export", "import", "share", "copy", "paste", "name", "session", "changelog", "hotkeys", "theme", "attach", "editor", "fork", "clone", "trust", "login", "logout", "new", "compact", "resume", "reload", "quit"]) {
         let found = false;
         for (let b in builtin_slash_commands()) {
             if (b.name == want) {
@@ -383,7 +390,7 @@ test "scope marks live vs owning issue" {
             "thinking" => assert.is_true(b.scope is null),
             "scoped-models" => assert.equal(b.scope, "bi#28"),
             "settings" => assert.is_true(b.scope is null),
-            "trust" => assert.equal(b.scope, "bi#29"),
+            "trust" => assert.is_true(b.scope is null),
             "clone" => assert.equal(b.scope, "bi#30"),
             "export" => assert.equal(b.scope, "bi#30"),
             "share" => assert.equal(b.scope, "bi#30"),
@@ -392,7 +399,8 @@ test "scope marks live vs owning issue" {
             "tree" => assert.is_true(b.scope is null),
             "attach" => assert.is_true(b.scope is null),
             "editor" => assert.is_true(b.scope is null),
-            "copy" => assert.equal(b.scope, "bi#32"),
+            "copy" => assert.is_true(b.scope is null),
+            "paste" => assert.is_true(b.scope is null),
             "changelog" => assert.equal(b.scope, "bi#31"),
             _ => assert.is_true(false),
         }

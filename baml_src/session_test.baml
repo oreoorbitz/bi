@@ -157,4 +157,21 @@ testset "session header + trust (bi namespace)" {
         assert.contains(forked, "forked from: abc123ef");
         assert.contains(forked, "thinking default")
     }
+
+    test "trust answers parse to decisions" {
+        assert.equal(parse_trust_answer("y"), "allow");
+        assert.equal(parse_trust_answer("YES"), "allow");
+        assert.equal(parse_trust_answer("n"), "deny");
+        assert.equal(parse_trust_answer("deny"), "deny");
+        assert.equal(parse_trust_answer("s"), "session");
+        assert.is_true(parse_trust_answer("maybe") is null);
+        assert.is_true(parse_trust_answer("") is null)
+    }
+
+    test "trust status names cwd and decision" {
+        assert.contains(format_trust_status("/work", null), "undecided");
+        assert.contains(format_trust_status("/work", null), "/trust allow|deny|session");
+        assert.equal(format_trust_status("/work", "allow"), "trust /work: allow");
+        assert.equal(format_trust_status("/work", "session"), "trust /work: session")
+    }
 }
