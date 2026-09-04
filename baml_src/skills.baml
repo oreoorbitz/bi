@@ -297,6 +297,12 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
             scope: null,
         },
         BuiltinSlashCommand {
+            name: "issues",
+            description: "List BAIS issues, stage one into the agent context, or drop it",
+            argument_hint: "[n|id|all|drop]",
+            scope: null,
+        },
+        BuiltinSlashCommand {
             name: "reload",
             description: "Reload keybindings, extensions, skills, prompts, themes, and context files",
             argument_hint: null,
@@ -511,7 +517,7 @@ test "slash dispatch finds builtins then skills" {
     assert.equal(lookup_slash("/oauth", skills), "oauth");
     assert.equal(lookup_slash("/config", skills), "config");
     assert.equal(lookup_slash("/skills", skills), "skills");
-    assert.equal(builtin_slash_commands().length(), 31)
+    assert.equal(builtin_slash_commands().length(), 32)
 }
 
 test "registry is pi's 23 plus bi help" {
@@ -546,6 +552,7 @@ test "registry is pi's 23 plus bi help" {
             "new",
             "compact",
             "resume",
+            "issues",
             "reload",
             "quit",
         ]
@@ -567,6 +574,7 @@ test "scope marks live vs owning issue" {
             "session" => assert.is_true(b.scope is null),
             "new" => assert.is_true(b.scope is null),
             "resume" => assert.is_true(b.scope is null),
+            "issues" => assert.is_true(b.scope is null),
             "fork" => assert.is_true(b.scope is null),
             "compact" => assert.is_true(b.scope is null),
             "reload" => assert.is_true(b.scope is null),

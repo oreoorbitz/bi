@@ -469,6 +469,172 @@ export async function checkBaisIssues(
 	};
 }
 
+// Fast list path for /issues: readdir + strict line scan, zero BAML VM
+// calls. This is the payoff of the file-per-issue standard — the list is
+// O(file bytes) while a full load pays one VM validation per file. Full
+// BAML validation still happens, but only for the O(1) files the agent
+// actually stages.
+//
+// Scalars come from top-level `key = "value"` lines; edges from
+// `[[edge]]` blocks; `body = """` spans are skipped so body text can
+// never masquerade as frontmatter. Anything off-shape marks the file
+// unparseable: it still lists (an honest row, never selectable) but its
+// edges are dropped, so a corrupt file can neither block nor unblock
+// work — the same never-fabricate rule as loadBaisIssues.
+export type BaisHeader = {
+	id: string;
+	title: string;
+	status: string;
+	kind: string;
+	file: string;
+	parseable: boolean;
+};
+
+export type BaisScan = { headers: BaisHeader[]; edges: BaisEdge[] };
+
+export function baisIssuesDir(dir?: string): string {
+	return issuesDirOrDefault(dir);
+}
+
+const SCALAR_RE = /^([A-Za-z_][A-Za-z0-9_]*) = "(.*)"$/;
+
+export function scanBaisHeaders(dir?: string): BaisScan {
+	const issuesDir = issuesDirOrDefault(dir);
+	const headers: BaisHeader[] = [];
+	const edges: BaisEdge[] = [];
+	if (!existsSync(issuesDir)) return { headers, edges };
+	const files = readdirSync(issuesDir).filter((f) => f.endsWith(".toml"));
+	for (const f of files) {
+		let text: string;
+		try {
+			text = readFileSync(join(issuesDir, f), "utf8");
+		} catch {
+			continue;
+		}
+		const scalars = new Map<string, string>();
+		const fileEdges: BaisEdge[] = [];
+		let ok = true;
+		let inBody = false;
+		let cur: { from?: string; to?: string; kind?: string } | null = null;
+		const flushEdge = () => {
+			if (!cur) return;
+			if (cur.from && cur.to && cur.kind) fileEdges.push({ from: cur.from, to: cur.to, kind: cur.kind });
+			else ok = false;
+			cur = null;
+		};
+		for (const rawLine of text.split("\n")) {
+			const line = rawLine.trim();
+			if (inBody) {
+				if (line === `"""`) inBody = false;
+				continue;
+			}
+			if (line === `[[edge]]`) {
+				flushEdge();
+				cur = {};
+				continue;
+			}
+			if (line.startsWith("[[") && line.endsWith("]]")) {
+				flushEdge();
+				continue;
+			}
+			const m = line.match(SCALAR_RE);
+			if (!m) {
+				// Blank lines and comments are layout, not content.
+				if (line === "" || line.startsWith("#")) continue;
+				ok = false;
+				continue;
+			}
+			const [, key, value] = m;
+			if (key === "body") {
+				// Body is prose, never frontmatter: a lone `body = """`
+				// opener starts a skipped span, anything else body-shaped
+				// on one line is opaque and skipped as-is.
+				if (line === `body = """`) inBody = true;
+				continue;
+			}
+			if (line.includes(`"""`)) {
+				ok = false;
+				continue;
+			}
+			if (cur) {
+				if (key === "from" || key === "to" || key === "kind") (cur as any)[key] = value;
+				continue;
+			}
+			if (scalars.has(key)) ok = false; // duplicate top-level key
+			else scalars.set(key, value);
+		}
+		flushEdge();
+		const id = scalars.get("id") ?? "";
+		const title = scalars.get("title") ?? "";
+		const status = scalars.get("status") ?? "";
+		const kind = scalars.get("kind") ?? "";
+		const parseable = ok && id !== "" && title !== "" && status !== "" && kind !== "";
+		headers.push({ id: id || f, title, status, kind, file: join(issuesDir, f), parseable });
+		if (parseable) edges.push(...fileEdges);
+	}
+	return { headers, edges };
+}
+
+// Blockers pointing at an id, from the scan's own edges (same Blocks
+// rule as filterReadyIssues: unclosed or unresolvable blockers block).
+export function scannedBlockers(id: string, scan: BaisScan, byId: Map<string, BaisHeader>): string[] {
+	const out: string[] = [];
+	for (const e of scan.edges) {
+		if (e.kind !== "Blocks" || e.to !== id) continue;
+		const blocker = byId.get(e.from);
+		if (!blocker || (blocker.status !== "Done" && blocker.status !== "Dropped")) out.push(e.from);
+	}
+	return out;
+}
+
+// Staged-issue deep read: single-file read + BAML validation each, with
+// an mtime memo so unchanged files cost no VM call across turns. Bodies
+// are re-read (never baked) so mid-session edits show up next turn.
+// Missing ids (deleted/moved since staging) come back separately so the
+// caller can prune the staged set instead of showing ghosts.
+export type StagedIssueContext = {
+	file: BaisFile;
+	neighbors: { id: string; title: string; status: string }[];
+};
+
+const stagedCache = new Map<string, { mtimeMs: number; file: BaisFile }>();
+
+export async function loadStagedIssues(ids: string[], dir?: string): Promise<{ staged: StagedIssueContext[]; missing: string[] }> {
+	const scan = scanBaisHeaders(dir);
+	const byId = new Map(scan.headers.map((h) => [h.id, h]));
+	const staged: StagedIssueContext[] = [];
+	const missing: string[] = [];
+	for (const id of ids) {
+		const h = byId.get(id);
+		if (!h || !h.parseable) {
+			missing.push(id);
+			continue;
+		}
+		try {
+			const mtimeMs = statSync(h.file).mtimeMs;
+			let file = stagedCache.get(h.file)?.mtimeMs === mtimeMs ? stagedCache.get(h.file)!.file : null;
+			if (!file) {
+				file = await validateViaBaisBaml(readFileSync(h.file, "utf8"));
+				stagedCache.set(h.file, { mtimeMs, file });
+			}
+			const seen = new Set<string>();
+			const neighbors: { id: string; title: string; status: string }[] = [];
+			for (const e of file.edges) {
+				for (const nid of [e.from, e.to]) {
+					if (nid === id || seen.has(nid)) continue;
+					seen.add(nid);
+					const n = byId.get(nid);
+					neighbors.push(n ? { id: nid, title: n.title, status: n.status } : { id: nid, title: "(unresolved — typo or cross-project edge)", status: "?" });
+				}
+			}
+			staged.push({ file, neighbors });
+		} catch {
+			missing.push(id);
+		}
+	}
+	return { staged, missing };
+}
+
 export async function graphBaisIssues(fromId: string, dir?: string): Promise<BaisFile[]> {
 	const all = await listBaisIssues(dir);
 	const edges = all.flatMap((f) => f.edges);

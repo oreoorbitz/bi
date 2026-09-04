@@ -9,12 +9,12 @@ import { getProvider, listProviders } from "./provider.js";
 import { runAgent, runSingleImageTurn } from "./agent.js";
 import { HttpKeeperHub, LeaseKeeper } from "./keeper.js";
 import { HubSubscriber } from "./notify.js";
-import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, moveBaisIssue, checkBaisIssues, graphBaisIssues } from "./bais.js";
+import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, moveBaisIssue, checkBaisIssues, graphBaisIssues, scanBaisHeaders, scannedBlockers, loadStagedIssues } from "./bais.js";
 import { listTools, handleTool, emitToolDiff, setTrustReader } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
 import { listCredentials } from "./auth.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, render_footer_frame_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, render_ready_frame_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, render_footer_frame_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, format_issue_row_async, format_issue_context_async, render_ready_frame_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
 import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
 import { readClipboardImage, writeClipboardText, clipboardSupportsImage } from "./clipboard.js";
@@ -109,6 +109,8 @@ async function argCandidates(cmd: string, names: string[]): Promise<string[]> {
 				return ["all"];
 			case "settings":
 				return await setting_keys_async();
+			case "issues":
+				return [...scanBaisHeaders().headers.map((h) => h.id), "all", "drop"];
 			case "help":
 				return names.map((n) => n.replace(/^\//, ""));
 			default:
@@ -257,6 +259,10 @@ export interface ReplSessionState {
 	images: string[];
 	// bi#29: reload project skills when /trust changes the decision.
 	skillsDirty: boolean;
+	// bi#79: staged BAIS working set (sticky across turns until dropped)
+	// + the ids behind the last /issues listing (numbers resolve by it).
+	stagedIssues: string[];
+	issueList: string[];
 }
 
 // bi#29: effective project trust, resolved once per process. Stored
@@ -836,6 +842,83 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			);
 			return history;
 		}
+		// bi#79: /issues lists BAIS issues through the shared select
+		// frame and stages picks into a sticky working set the agent sees
+		// every turn. Listing is the VM-free header scan (readdir + line
+		// scan); only staged files pay BAML validation, one file each.
+		if (t.name === "issues") {
+			if (!sess) {
+				console.error("[bi] /issues needs a REPL session");
+				return history;
+			}
+			const arg = (t.args ?? "").trim();
+			const scan = scanBaisHeaders();
+			const byId = new Map(scan.headers.map((h) => [h.id, h]));
+			if (arg === "" || arg === "all") {
+				const listed = (arg === "all" ? [...scan.headers] : scan.headers.filter((h) => h.status === "Open"))
+					.sort((a, b) => a.id.localeCompare(b.id));
+				if (!listed.length) {
+					console.error(arg === "all" ? "[bi] no BAIS issues — `bi bais new \"title\"` to add one" : "[bi] no open BAIS issues — /issues all lists every status");
+					return history;
+				}
+				// Numbers resolve by position: unparseable rows hold an
+				// empty slot so every number stays aligned with its row.
+				sess.issueList = listed.map((h) => (h.parseable ? h.id : ""));
+				const rows: string[] = [];
+				for (let i = 0; i < listed.length; i++) {
+					const h = listed[i];
+					rows.push(
+						h.parseable
+							? await format_issue_row_async(i + 1, h.id, h.status, h.kind, h.title, scannedBlockers(h.id, scan, byId))
+							: await format_issue_row_async(i + 1, h.file, "?", "?", "(unparseable — bais check names the fix)", []),
+					);
+				}
+				await renderSelectList(rows.join("\n"), 0, undefined, await activeTheme());
+				return history;
+			}
+			const dropM = arg.match(/^drop(?:\s+(.+))?$/);
+			if (dropM) {
+				const which = (dropM[1] ?? "").trim();
+				if (!which || which === "all") {
+					const n = sess.stagedIssues.length;
+					sess.stagedIssues = [];
+					console.error(n ? `[bi] dropped ${n} staged issue(s)` : "[bi] no staged issues");
+				} else {
+					const at = sess.stagedIssues.indexOf(which);
+					if (at === -1) console.error(`[bi] ${which} is not staged (${sess.stagedIssues.length} staged)`);
+					else {
+						sess.stagedIssues.splice(at, 1);
+						console.error(`[bi] dropped ${which} (${sess.stagedIssues.length} staged)`);
+					}
+				}
+				return history;
+			}
+			let stageId: string;
+			if (/^\d+$/.test(arg)) {
+				const pick = sess.issueList[Number(arg) - 1];
+				if (!pick) {
+					console.error(`no issue row ${arg} — bare /issues re-lists (unparseable rows cannot stage)`);
+					return history;
+				}
+				stageId = pick;
+			} else {
+				stageId = arg;
+			}
+			const header = byId.get(stageId);
+			if (!header || !header.parseable) {
+				console.error(`unknown issue "${stageId}" — bare /issues lists numbers and ids`);
+				return history;
+			}
+			// Single-file BAML validation: the only VM call on this path.
+			const loaded = await loadStagedIssues([stageId]);
+			if (!loaded.staged.length) {
+				console.error(`[bi] ${stageId} failed validation — bais check names the fix`);
+				return history;
+			}
+			if (!sess.stagedIssues.includes(stageId)) sess.stagedIssues.push(stageId);
+			console.error(`[bi] staged ${stageId} (${sess.stagedIssues.length} staged — full body + ${loaded.staged[0].neighbors.length} neighbor(s) ride every turn until /issues drop)`);
+			return history;
+		}
 		if (t.name === "new") {
 			const f = createSessionFile({ cwd: process.cwd() });
 			if (sess) {
@@ -1181,7 +1264,37 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 		sess.attachments = [];
 		if (blocks.length) attachSection = `\n\n[Attachments]\n${blocks.join("\n")}`;
 	}
-	const fullPrompt = q + skillsSection + `\n\n[BAIS ready]\n${(await readyBaisIssues()).map((f) => `- ${f.issue.id} ${f.issue.title}`).join("\n")}` + attachSection;
+	// bi#79: staged working set rides every turn (fresh single-file
+	// reads, mtime-memoized validation). Missing files prune the set
+	// instead of showing ghosts; the raw line stays out of history.
+	let issueSection = "";
+	if (sess?.stagedIssues.length) {
+		const loaded = await loadStagedIssues(sess.stagedIssues);
+		if (loaded.missing.length) sess.stagedIssues = sess.stagedIssues.filter((id) => !loaded.missing.includes(id));
+		const contexts: string[] = [];
+		for (const s of loaded.staged) {
+			const f = s.file;
+			contexts.push(
+				await format_issue_context_async(
+					f.issue.id,
+					f.issue.title,
+					f.issue.status,
+					f.issue.kind,
+					f.issue.area,
+					f.issue.body,
+					4000,
+					f.edges.map((e) => e.from),
+					f.edges.map((e) => e.to),
+					f.edges.map((e) => e.kind),
+					s.neighbors.map((n) => n.id),
+					s.neighbors.map((n) => n.title),
+					s.neighbors.map((n) => n.status),
+				),
+			);
+		}
+		if (contexts.length) issueSection = `\n\n[BAIS issues — staged via /issues, single-file BAML-validated reads]\n${contexts.join("\n\n")}`;
+	}
+	const fullPrompt = q + skillsSection + `\n\n[BAIS ready]\n${(await readyBaisIssues()).map((f) => `- ${f.issue.id} ${f.issue.title}`).join("\n")}` + attachSection + issueSection;
 	// BAML loop validation — runBiLoop wraps runAgent with LoopContext (agent_loop.baml).
 	// Same first-class tools as `bi run` so the interactive agent manages .bais too.
 	// The raw user line (not the injected context) joins history — fresh BAIS
@@ -1431,7 +1544,7 @@ async function repl(skills: Skill[]): Promise<void> {
 	}
 	// bi#30: session pointer — file/turn/persisted mutate via /new /resume
 	// /fork; turns append to the file as they land (memory authoritative).
-	const sess: ReplSessionState = { file: sessFile, turn: 0, persisted: 0, tree: [], treeRoot: process.cwd(), attachments: [], images: [], skillsDirty: false };
+	const sess: ReplSessionState = { file: sessFile, turn: 0, persisted: 0, tree: [], treeRoot: process.cwd(), attachments: [], images: [], skillsDirty: false, stagedIssues: [], issueList: [] };
 	try {
 		for (;;) {
 			// bi#29: /trust swaps the project skill set live — reload on
