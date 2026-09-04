@@ -45,3 +45,14 @@ testset "tools registry" {
         }
     }
 }
+
+testset "write/edit refusal policy (bi#77)" {
+    test "refusals name the fix" {
+        assert.contains(refuse_write_outside_root("../x"), "outside the project root");
+        assert.contains(refuse_write_outside_root("../x"), "symlink escapes included");
+        assert.contains(refuse_write_untrusted(), "/trust allow|session");
+        assert.contains(refuse_write_too_large("f", 10), "10 byte tool cap");
+        assert.contains(edit_missing_text("f", 2), "edit 2 does not match");
+        assert.contains(edit_missing_text("f", 2), "no edits applied")
+    }
+}

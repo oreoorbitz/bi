@@ -10,7 +10,7 @@ import { runAgent, runSingleImageTurn } from "./agent.js";
 import { HttpKeeperHub, LeaseKeeper } from "./keeper.js";
 import { HubSubscriber } from "./notify.js";
 import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, moveBaisIssue, checkBaisIssues, graphBaisIssues } from "./bais.js";
-import { listTools, handleTool, emitToolDiff } from "./tools.js";
+import { listTools, handleTool, emitToolDiff, setTrustReader } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
 import { listCredentials } from "./auth.js";
@@ -223,6 +223,11 @@ export interface ReplSessionState {
 // closed (deny) headless — pi parity without a UI. /trust mutates this
 // mid-session (persisting allow/deny, never session-only).
 let effectiveTrust: TrustDecision | null = null;
+
+// Write/edit executors read live loop trust (stored file + in-memory
+// session answer) through this reader — a mid-session `/trust deny`
+// refuses the very next model write.
+setTrustReader(() => effectiveTrust ?? getStoredTrust(process.cwd()));
 
 function askOneLine(prompt: string): Promise<string> {
 	return new Promise((resolve) => {

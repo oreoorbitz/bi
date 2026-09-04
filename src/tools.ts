@@ -2,8 +2,11 @@
 // BAML owns the plain-data spec (ListTools/GetTool), TS host owns executors
 // (actual read/write/bash + bais_*). This mirrors bi's ToolSpec handling (limitation 4).
 
-import { GetTool_async, ListTools_async, render_tool_diff_async, type ToolSpec } from "../baml_sdk/index.js";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, resolve, sep } from "node:path";
+import { GetTool_async, ListTools_async, render_tool_diff_async, refuse_write_outside_root_async, refuse_write_untrusted_async, refuse_write_too_large_async, edit_missing_text_async, type ToolSpec } from "../baml_sdk/index.js";
 import { checkBaisIssues, createBaisIssue, graphBaisIssues, loadBaisIssues, moveBaisIssue, readyBaisIssues } from "./bais.js";
+import { getStoredTrust } from "./trust.js";
 
 export type { ToolSpec } from "../baml_sdk/index.js";
 
@@ -56,9 +59,103 @@ export async function emitToolDiff(name: string, output: string): Promise<void> 
 	if (shaped.diffable) for (const l of shaped.lines) console.log(l);
 }
 
+// bi#77: write/edit executors with cwd jail + affirmative project
+// trust. Only these two pi tools run: read/bash/ls/grep/find stay on
+// the "need host impl" error until their own issues land.
+export const TOOL_WRITE_CAP = 1_000_000;
+
+// Effective trust lives in the loop (in-memory session answer + stored
+// file); the loop registers a live reader once, so a mid-session
+// `/trust deny` refuses the very next write — no stale latch.
+let trustReader: () => string | null = () => getStoredTrust(process.cwd());
+export function setTrustReader(fn: () => string | null): void {
+	trustReader = fn;
+}
+
+// Resolve inside the project cwd or throw the BAML refusal. Symlink
+// escapes resolve through the nearest existing ancestor, so a link
+// pointing outside still refuses.
+async function jailResolve(p: string): Promise<string> {
+	const root = realpathSync(process.cwd());
+	const abs = resolve(root, p);
+	let probe = abs;
+	while (!existsSync(probe)) {
+		const parent = dirname(probe);
+		if (parent === probe) break;
+		probe = parent;
+	}
+	const real = probe === abs ? abs : realpathSync(probe) + abs.slice(probe.length);
+	if (real !== root && !real.startsWith(root + sep)) {
+		throw new Error(await refuse_write_outside_root_async(p));
+	}
+	return real;
+}
+
+// Affirmative trust only: stored allow, or session trust for this run.
+// Stored deny AND undecided both refuse (named fix, BAML-owned).
+async function gateWriteTrust(): Promise<void> {
+	const t = trustReader();
+	if (t === "allow" || t === "session") return;
+	throw new Error(await refuse_write_untrusted_async());
+}
+
+function diffEnvelope(path: string, before: string, after: string): string {
+	return JSON.stringify({ path, before, after });
+}
+
+async function execWrite(args: Record<string, unknown>): Promise<string> {
+	const p = args.path;
+	const content = args.content;
+	if (typeof p !== "string" || !p) throw new Error('write requires a "path" string');
+	if (typeof content !== "string") throw new Error('write requires a "content" string');
+	if (Buffer.byteLength(content) > TOOL_WRITE_CAP) {
+		throw new Error(await refuse_write_too_large_async(p, TOOL_WRITE_CAP));
+	}
+	await gateWriteTrust();
+	const abs = await jailResolve(p);
+	const before = existsSync(abs) ? readFileSync(abs, "utf8") : "";
+	if (Buffer.byteLength(before) > TOOL_WRITE_CAP) {
+		throw new Error(await refuse_write_too_large_async(p, TOOL_WRITE_CAP));
+	}
+	mkdirSync(dirname(abs), { recursive: true });
+	writeFileSync(abs, content);
+	return diffEnvelope(p, before, content);
+}
+
+async function execEdit(args: Record<string, unknown>): Promise<string> {
+	const p = args.path;
+	const edits = args.edits;
+	if (typeof p !== "string" || !p) throw new Error('edit requires a "path" string');
+	if (!Array.isArray(edits) || edits.length === 0) throw new Error('edit requires a non-empty "edits" array');
+	await gateWriteTrust();
+	const abs = await jailResolve(p);
+	let current: string;
+	try {
+		current = readFileSync(abs, "utf8");
+	} catch {
+		throw new Error(`edit target unreadable: "${p}" — write it first or check the path`);
+	}
+	// Validate every oldText before touching disk: atomic or nothing.
+	const pairs: { oldText: string; newText: string }[] = [];
+	for (let i = 0; i < edits.length; i++) {
+		const e = edits[i] as Record<string, unknown>;
+		if (typeof e?.oldText !== "string" || typeof e?.newText !== "string") {
+			throw new Error(`edit ${i} needs string oldText/newText`);
+		}
+		if (!current.includes(e.oldText)) throw new Error(await edit_missing_text_async(p, i));
+		pairs.push({ oldText: e.oldText, newText: e.newText });
+	}
+	let next = current;
+	for (const pair of pairs) next = next.replace(pair.oldText, pair.newText);
+	if (Buffer.byteLength(next) > TOOL_WRITE_CAP) {
+		throw new Error(await refuse_write_too_large_async(p, TOOL_WRITE_CAP));
+	}
+	writeFileSync(abs, next);
+	return diffEnvelope(p, current, next);
+}
+
 // BAML is spec, host is executor — dispatch table for the agent loop.
-// pi's built-in tools (read/write/edit/bash/ls/grep/find) get host impls
-// elsewhere; bais_* tools are first-class here so the LLM can manage .bais.
+// bais_* tools are first-class here so the LLM can manage .bais.
 export async function handleTool(name: string, args: Record<string, unknown>): Promise<string> {
 	// self-adjust telemetry → BAIS: sub-agent patterns become issues
 	if (name === "report_subagent_timeout") {
@@ -128,7 +225,13 @@ export async function handleTool(name: string, args: Record<string, unknown>): P
 			const files = await graphBaisIssues(from);
 			return JSON.stringify(files, null, 2);
 		}
+		case "write": {
+			return execWrite(args);
+		}
+		case "edit": {
+			return execEdit(args);
+		}
 		default:
-			throw new Error(`unknown tool ${name} — bais_* tools handled here, others need host impl`);
+			throw new Error(`unknown tool ${name} — write/edit/bais_* tools handled here, others need host impl`);
 	}
 }

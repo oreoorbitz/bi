@@ -28,7 +28,7 @@ function _tool_read() -> ToolSpec {
 function _tool_write() -> ToolSpec {
     ToolSpec {
         name: "write",
-        description: "Create or overwrite a file with content.",
+        description: "Create or overwrite a file with content. Paths stay inside the project directory (escapes refuse); writes need project trust — a refusal names the fix, do not retry blindly.",
         input_schema: {
             "type": "object",
             "properties": {
@@ -47,7 +47,7 @@ function _tool_write() -> ToolSpec {
 function _tool_edit() -> ToolSpec {
     ToolSpec {
         name: "edit",
-        description: "Edit a file by replacing text. Use for surgical edits.",
+        description: "Edit a file by replacing text. Use for surgical edits. All oldText values must match or nothing applies; same trust and path rules as write.",
         input_schema: {
             "type": "object",
             "properties": {
@@ -273,6 +273,28 @@ function _tool_report_reconcile_conflict() -> ToolSpec {
             "additionalProperties": false,
         },
     }
+}
+
+// bi#77 write/edit execution policy. The host enforces; BAML owns every
+// refusal string and the envelope contract (path + before/after, after
+// null never — a write always produces content). Trust jail: cwd jail +
+// affirmative project trust (allow, or session for this run); deny and
+// undecided refuse with the fix named. Edits are atomic: all oldTexts
+// must match before any write lands.
+function refuse_write_outside_root(path: string) -> string {
+    `refusing to write outside the project root: "${path}" — paths resolve inside the working directory (symlink escapes included)`
+}
+
+function refuse_write_untrusted() -> string {
+    `refusing to write: project trust is not allow — run interactively and answer the trust prompt, or /trust allow|session first`
+}
+
+function refuse_write_too_large(path: string, limit: int) -> string {
+    `refusing to write "${path}": content exceeds the ${limit} byte tool cap`
+}
+
+function edit_missing_text(path: string, index: int) -> string {
+    `edit ${index} does not match "${path}": oldText not found — no edits applied`
 }
 
 function ListTools() -> ToolSpec[] {

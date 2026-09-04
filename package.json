@@ -10,7 +10,7 @@
 	"scripts": {
 		"build": "tsc -p tsconfig.json",
 		"typecheck": "tsc -p tsconfig.json --noEmit",
-		"test": "node scripts/keeper.mjs && node scripts/notify.mjs && node scripts/leased-flags.mjs && node scripts/ready-shape.mjs && node scripts/auth-chain.mjs && node scripts/tui-diff.mjs && node scripts/tool-diff.mjs && node scripts/footer-pin.mjs"
+		"test": "node scripts/keeper.mjs && node scripts/notify.mjs && node scripts/leased-flags.mjs && node scripts/ready-shape.mjs && node scripts/auth-chain.mjs && node scripts/tui-diff.mjs && node scripts/tool-diff.mjs && node scripts/footer-pin.mjs && node scripts/write-jail.mjs"
 	},
 	"dependencies": {
 		"@boundaryml/baml-bridge": "0.17.0"
