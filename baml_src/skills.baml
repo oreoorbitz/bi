@@ -79,6 +79,26 @@ function validate_skill_description(description: string) -> string[] {
 
 // XML prompt format per agentskills.io; disable-model-invocation skills stay
 // out (explicit /slash only). Empty registry formats to "" (no section).
+// /skills body (bi#29 extensions surface): what the loop actually sees —
+// the trust-gated discovery set, not the disk. Install is a dir drop
+// (.bi/skills or ~/.bi/skills); this list is the only inventory.
+function format_skills_list(skills: Skill[]) -> string {
+    if (skills.length() == 0) {
+        "(no skills — drop a SKILL.md dir into .bi/skills)"
+    } else {
+        let out = "";
+        for (let s in skills) {
+            let flag = if (s.disable_model_invocation) {
+                " (prompt-only)"
+            } else {
+                ""
+            };
+            out = `${out}${s.name}${flag} — ${s.description}\n`
+        };
+        out
+    }
+}
+
 function format_skills_for_prompt(skills: Skill[]) -> string {
     let out = "";
     for (let s in skills) {
@@ -252,6 +272,12 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
             scope: null,
         },
         BuiltinSlashCommand {
+            name: "skills",
+            description: "List installed skills (the extensions surface)",
+            argument_hint: null,
+            scope: null,
+        },
+        BuiltinSlashCommand {
             name: "new",
             description: "Start a new session",
             argument_hint: null,
@@ -351,6 +377,28 @@ test "prompt format is XML, disabled excluded, empty is empty" {
     assert.equal(format_skills_for_prompt([]), "")
 }
 
+test "skills list names every skill, flags prompt-only, empty is explicit" {
+    let skills = [
+        Skill {
+            name: "review",
+            description: "Review code",
+            file_path: "r/SKILL.md",
+            disable_model_invocation: false,
+        },
+        Skill {
+            name: "secret",
+            description: "Hidden",
+            file_path: "s/SKILL.md",
+            disable_model_invocation: true,
+        },
+    ];
+    let out = format_skills_list(skills);
+    assert.contains(out, "review — Review code");
+    assert.contains(out, "secret (prompt-only) — Hidden");
+    assert.is_true(out.index_of("review (prompt-only)") == null);
+    assert.equal(format_skills_list([]), "(no skills — drop a SKILL.md dir into .bi/skills)")
+}
+
 test "slash dispatch finds builtins then skills" {
     let skills = [
         Skill {
@@ -371,11 +419,12 @@ test "slash dispatch finds builtins then skills" {
     assert.equal(lookup_slash("/paste", skills), "paste");
     assert.equal(lookup_slash("/oauth", skills), "oauth");
     assert.equal(lookup_slash("/config", skills), "config");
-    assert.equal(builtin_slash_commands().length(), 30)
+    assert.equal(lookup_slash("/skills", skills), "skills");
+    assert.equal(builtin_slash_commands().length(), 31)
 }
 
 test "registry is pi's 23 plus bi help" {
-    for (let want in ["help", "settings", "model", "tree", "thinking", "scoped-models", "export", "import", "share", "copy", "paste", "name", "session", "changelog", "hotkeys", "theme", "attach", "editor", "fork", "clone", "trust", "login", "logout", "oauth", "config", "new", "compact", "resume", "reload", "quit"]) {
+    for (let want in ["help", "settings", "model", "tree", "thinking", "scoped-models", "export", "import", "share", "copy", "paste", "name", "session", "changelog", "hotkeys", "theme", "attach", "editor", "fork", "clone", "trust", "login", "logout", "oauth", "config", "skills", "new", "compact", "resume", "reload", "quit"]) {
         let found = false;
         for (let b in builtin_slash_commands()) {
             if (b.name == want) {
@@ -418,6 +467,7 @@ test "scope marks live vs owning issue" {
             "paste" => assert.is_true(b.scope is null),
             "oauth" => assert.is_true(b.scope is null),
             "config" => assert.is_true(b.scope is null),
+            "skills" => assert.is_true(b.scope is null),
             "changelog" => assert.equal(b.scope, "bi#31"),
             _ => assert.is_true(false),
         }

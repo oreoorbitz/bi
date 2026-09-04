@@ -14,7 +14,7 @@ import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
 import { listCredentials } from "./auth.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
 import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
 import { readClipboardImage, writeClipboardText, clipboardSupportsImage } from "./clipboard.js";
@@ -375,6 +375,19 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			console.log(await hotkeys_text_async());
 			return history;
 		}
+		if (t.name === "skills") {
+			// bi#29: pi's extension-selector as an inventory list. Same
+			// trust-gated discovery the loop sees (project dir excluded
+			// on deny); BAML shapes the rows, host reports load warnings.
+			try {
+				const { skills, diagnostics } = await loadSkills(await trustedSkillDirs(true));
+				console.log(await format_skills_list_async(skills));
+				for (const d of diagnostics) console.error(`[bi] skill ${d.file}: ${d.message}`);
+			} catch (e) {
+				console.error(`[bi] skills list failed (${e instanceof Error ? e.message : e})`);
+			}
+			return history;
+		}
 		// bi#33: bare /theme lists (current marked), `preview` samples
 		// every role in each palette, a name persists the choice.
 		if (t.name === "theme") {
@@ -705,8 +718,8 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			return history;
 		}
 		// bi#29 slice 1: bare lists, get reads, set validates through
-		// BAML before persisting, unset drops the key. Trust/config/oauth/
-		// extension selectors stay scoped until their stores exist.
+		// BAML before persisting, unset drops the key. The remaining
+		// bi#29 selectors live as /trust, /config, /oauth, /skills.
 		if (t.name === "settings") {
 			const parts = t.args ? t.args.split(/\s+/) : [];
 			const stored = loadUserSettings();
