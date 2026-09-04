@@ -1,6 +1,6 @@
 id = "bi#56"
 title = "Agent protocol: durable handoff before terminal"
-status = "Open"
+status = "Doing"
 kind = "Feat"
 area = "bais/protocol"
 body = """
