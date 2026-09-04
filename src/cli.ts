@@ -6,20 +6,23 @@
 
 import { getModel, listAllModels, listModels } from "./models.js";
 import { getProvider, listProviders } from "./provider.js";
-import { runAgent } from "./agent.js";
+import { runAgent, runSingleImageTurn } from "./agent.js";
 import { HttpKeeperHub, LeaseKeeper } from "./keeper.js";
 import { HubSubscriber } from "./notify.js";
 import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, moveBaisIssue, checkBaisIssues, graphBaisIssues } from "./bais.js";
 import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, GuidanceFor_async } from "../baml_sdk/index.js";
-import { loadSkills, formatSkills, skillBody, resolveSlash, type Skill } from "./skills.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
+import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
+import { readClipboardImage, writeClipboardText, clipboardSupportsImage } from "./clipboard.js";
 import { runResultToJsonLines, finalText } from "./events.js";
 import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow, appendSessionEntries, loadSessionTranscript, sessionResumeList, sessionIdFromFile } from "./session.js";
 import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { homedir } from "node:os";
 
 // REPL input history (~/.bi/history, next to the sessions dir). One line
 // per entry, oldest-first on disk; readline wants most-recent-first live.
@@ -194,10 +197,72 @@ export interface ReplSessionState {
 	turn: number;
 	persisted: number;
 	// bi#32: last /tree listing (numbers resolve against it) + staged
-	// attachment paths (consumed by the next turn).
+	// attachment paths (consumed by the next turn) + staged clipboard
+	// images (one consumed per image turn).
 	tree: { path: string; is_dir: boolean; depth: number }[];
 	treeRoot: string;
 	attachments: string[];
+	images: string[];
+	// bi#29: reload project skills when /trust changes the decision.
+	skillsDirty: boolean;
+}
+
+// bi#29: effective project trust, resolved once per process. Stored
+// allow/deny wins; undecided asks on an interactive TTY and fails
+// closed (deny) headless — pi parity without a UI. /trust mutates this
+// mid-session (persisting allow/deny, never session-only).
+let effectiveTrust: TrustDecision | null = null;
+
+function askOneLine(prompt: string): Promise<string> {
+	return new Promise((resolve) => {
+		const rl = createInterface({ input: process.stdin, output: process.stderr });
+		rl.question(prompt, (a) => {
+			rl.close();
+			resolve(a);
+		});
+	});
+}
+
+async function ensureTrust(interactive: boolean): Promise<TrustDecision> {
+	if (effectiveTrust) return effectiveTrust;
+	const stored = getStoredTrust(process.cwd());
+	if (stored) {
+		effectiveTrust = stored;
+		return stored;
+	}
+	if (!interactive || !process.stdin.isTTY) {
+		effectiveTrust = "deny";
+		return "deny";
+	}
+	console.error(await format_project_trust_prompt_async(process.cwd()));
+	const parsed = await parse_trust_answer_async((await askOneLine("Trust this project? [y]es / [n]o / [s]ession-only: ")).trim());
+	if (parsed === "allow" || parsed === "deny") {
+		try {
+			setStoredTrust(process.cwd(), parsed);
+		} catch (e) {
+			console.error(`[bi] trust persist failed (${e instanceof Error ? e.message : e}) — session-only from here`);
+			effectiveTrust = "session";
+			return "session";
+		}
+		effectiveTrust = parsed;
+	} else if (parsed === "session") {
+		effectiveTrust = "session";
+	} else {
+		// Fail closed with a named reason (bi#55): the answer was not
+		// recognized, so the project stays untrusted; /trust re-decides.
+		console.error(`[bi] unrecognized answer — project denied (${process.cwd()} stays untrusted; /trust to decide)`);
+		effectiveTrust = "deny";
+	}
+	return effectiveTrust;
+}
+
+// Skill dirs minus the project dir unless trusted — the one enforcement
+// point: project SKILL.md bodies enter prompts, so deny excludes them.
+async function trustedSkillDirs(interactive: boolean): Promise<string[]> {
+	const trust = await ensureTrust(interactive);
+	const dirs = skillDirs();
+	if (trust === "allow" || trust === "session") return dirs;
+	return dirs.filter((d) => d === join(homedir(), ".bi", "skills"));
 }
 
 // bi#32: directory walk for /tree. Depth- and count-capped; skips the
@@ -257,7 +322,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			return history;
 		}
 		if (t.name === "reload") {
-			const fresh = await loadSkills();
+			const fresh = await loadSkills(await trustedSkillDirs(true));
 			console.error(`[bi] reloaded ${fresh.skills.length} skill(s)`);
 			return history;
 		}
@@ -315,10 +380,118 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			console.error(`[bi] theme now ${t.args}`);
 			return history;
 		}
+		// bi#29: trust decisions persist (allow/deny) or hold for the
+		// session; project skills reload on change (sess.skillsDirty).
+		if (t.name === "trust") {
+			const cwd = process.cwd();
+			const verb = (t.args ?? "").trim().split(/\s+/)[0] ?? "";
+			if (!verb) {
+				console.log(await format_trust_status_async(cwd, effectiveTrust));
+				return history;
+			}
+			if (verb === "allow" || verb === "deny") {
+				try {
+					setStoredTrust(cwd, verb);
+				} catch (e) {
+					console.error(`[bi] trust persist failed (${e instanceof Error ? e.message : e})`);
+					return history;
+				}
+				effectiveTrust = verb;
+				if (sess) sess.skillsDirty = true;
+				console.error(`[bi] trust ${cwd}: ${verb} (persisted — project skills reload next turn)`);
+				return history;
+			}
+			if (verb === "session") {
+				effectiveTrust = "session";
+				if (sess) sess.skillsDirty = true;
+				console.error(`[bi] trust ${cwd}: session-only (not persisted)`);
+				return history;
+			}
+			if (verb === "forget") {
+				let had = false;
+				try {
+					had = forgetStoredTrust(cwd);
+				} catch (e) {
+					console.error(`[bi] trust persist failed (${e instanceof Error ? e.message : e})`);
+					return history;
+				}
+				effectiveTrust = "session";
+				if (sess) sess.skillsDirty = true;
+				console.error(had ? `[bi] forgot stored decision for ${cwd} (session-only from here)` : `[bi] no stored decision for ${cwd}`);
+				return history;
+			}
+			console.error("usage: /trust [allow|deny|session|forget]");
+			return history;
+		}
+		// bi#32: /copy writes the last assistant text to the clipboard
+		// (reads need no command — text pastes through the terminal).
+		if (t.name === "copy") {
+			let text: string | null = null;
+			for (let i = history.length - 1; i >= 0; i--) {
+				const m = history[i];
+				if (m?.role !== "assistant") continue;
+				if (typeof m.text === "string" && m.text) {
+					text = m.text;
+					break;
+				}
+				if (Array.isArray(m.content)) {
+					const block = m.content.find((b: any) => b?.type === "text" && typeof b.text === "string" && b.text);
+					if (block) {
+						text = block.text;
+						break;
+					}
+				}
+			}
+			if (!text) {
+				console.error("nothing to copy yet — no assistant messages");
+				return history;
+			}
+			if (!writeClipboardText(text)) {
+				console.error("clipboard write failed on this platform");
+				return history;
+			}
+			console.error(`[bi] copied ${text.length} chars`);
+			return history;
+		}
+		// bi#32: /paste stages a clipboard image for the next turn (PNG
+		// only, 5mb cap). macOS/Linux via stock tools; elsewhere clean.
+		if (t.name === "paste") {
+			if (t.args.trim() === "clear") {
+				const n = sess?.images.length ?? 0;
+				if (sess) sess.images = [];
+				console.error(n ? `[bi] dropped ${n} staged image(s)` : "[bi] no staged images");
+				return history;
+			}
+			if (!clipboardSupportsImage()) {
+				console.error("image paste needs macOS or Linux with xclip/wl-paste");
+				return history;
+			}
+			const img = readClipboardImage();
+			if (!img) {
+				console.error("no image on the clipboard (text pastes normally through the terminal)");
+				return history;
+			}
+			if (img.bytes.length > 5_000_000) {
+				console.error(`clipboard image is ${(img.bytes.length / 1_048_576).toFixed(1)}mb (5mb cap)`);
+				return history;
+			}
+			const dir = join(dirname(getBiSessionsDir()), "paste");
+			const file = join(dir, `paste-${Date.now()}.png`);
+			try {
+				mkdirSync(dir, { recursive: true });
+				writeFileSync(file, img.bytes);
+			} catch (e) {
+				console.error(`[bi] paste save failed (${e instanceof Error ? e.message : e})`);
+				return history;
+			}
+			if (sess) sess.images.push(file);
+			console.error(`[bi] pasted image ${(img.bytes.length / 1024).toFixed(0)}kb — sent with the next turn (${sess?.images.length ?? 0} staged, one per turn, no tools on image turns)`);
+			return history;
+		}
 		// bi#32 slice 1: /tree browses (numbers resolve against the last
 		// listing), /attach stages files for the next turn, /editor
-		// composes the prompt in $EDITOR. Image paste and custom hotkeys
-		// stay scoped (turn image pipeline / raw-mode input layer).
+		// composes the prompt in $EDITOR. Custom hotkeys stay scoped
+		// (raw-mode input layer).
 		if (t.name === "tree") {
 			let root = process.cwd();
 			const arg = t.args.trim();
@@ -641,6 +814,55 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	// BAML shapes every line, the host only schedules repaints.
 	const status = new HostStatus("thinking", { formatStatus: format_status, formatSummary: format_turn_summary });
 	status.start();
+	// bi#32: staged images take a single-shot image turn (no tools — the
+	// SendTurnWithImage wire carries none by construction). The first
+	// staged image goes with this prompt; the rest wait their turn.
+	// Attachments ride along inside fullPrompt. Failures keep the image
+	// staged so a retry (login, backend switch) can resend it.
+	let imageB64: string | null = null;
+	if (sess?.images.length) {
+		try {
+			imageB64 = readFileSync(sess.images[0]).toString("base64");
+		} catch {
+			console.error(`[bi] staged image unreadable, dropped: ${sess.images[0]}`);
+			sess.images = sess.images.slice(1);
+		}
+	}
+	if (imageB64 && sess) {
+		// BAML owns the capability call — offline, key-independent, so it
+		// runs before any auth fail-fast inside the image turn.
+		let supports = true;
+		try {
+			supports = await ModelSupportsImage_async(backend.model);
+		} catch {}
+		if (!supports) {
+			status.stop({ failed: true, detail: "image unsupported", turns: 0, messages: withUser.length });
+			console.error(`[bi] ${backend.model} doesn't take image parts — /model an image-capable backend or /paste clear to drop the staged image`);
+			return withUser;
+		}
+		const img = await runSingleImageTurn(fullPrompt, {
+			provider: backend.provider,
+			model: backend.model,
+			thinkingLevel: backend.thinking,
+			baseUrl: process.env.BI_BASE_URL ?? null,
+			imageBase64: imageB64,
+			imageMime: "image/png",
+		});
+		if ("failure" in img) {
+			status.stop({ failed: true, detail: `TurnFailure ${img.failure.kind}`, turns: 1, messages: withUser.length });
+			console.error(`TurnFailure ${img.failure.message}`);
+			const guidance = await GuidanceFor_async(img.failure.kind, backend.provider);
+			if (guidance) console.error(guidance);
+			return withUser;
+		}
+		sess.images = sess.images.slice(1);
+		if (sess.images.length) console.error(`[bi] ${sess.images.length} image(s) still staged — one per turn`);
+		const out = [...withUser, { role: "assistant", text: img.text, clientId: `${backend.provider}/${backend.model}` }];
+		status.stop({ failed: false, detail: "", turns: 1, messages: out.length });
+		const theme = await activeTheme();
+		console.log(await render_markdown_text_async(img.text, { theme }));
+		return out;
+	}
 	// BI_BASE_URL lets the REPL talk to a local gateway/proxy (and makes
 	// slow-turn behavior testable without real provider latency).
 	const turnP = runBiLoop(fullPrompt, { provider: backend.provider, model: backend.model, thinking: backend.thinking, maxTurns: 5, baseUrl: process.env.BI_BASE_URL ?? null, onEvent: (e) => status.onEvent(e), tools: loopTools, toolHandler: runToolWithStatus, history });
@@ -781,9 +1003,19 @@ async function repl(skills: Skill[]): Promise<void> {
 	}
 	// bi#30: session pointer — file/turn/persisted mutate via /new /resume
 	// /fork; turns append to the file as they land (memory authoritative).
-	const sess: ReplSessionState = { file: sessFile, turn: 0, persisted: 0, tree: [], treeRoot: process.cwd(), attachments: [] };
+	const sess: ReplSessionState = { file: sessFile, turn: 0, persisted: 0, tree: [], treeRoot: process.cwd(), attachments: [], images: [], skillsDirty: false };
 	try {
 		for (;;) {
+			// bi#29: /trust swaps the project skill set live — reload on
+			// change so the next turn's context matches the decision.
+			if (sess.skillsDirty) {
+				sess.skillsDirty = false;
+				const fresh = await loadSkills(await trustedSkillDirs(true)).catch(() => ({ skills: [], diagnostics: [] }));
+				skills.length = 0;
+				skills.push(...fresh.skills);
+				for (const d of fresh.diagnostics) console.error(`[skills] ${d.file}: ${d.message}`);
+				console.error(`[bi] project skills reloaded (${skills.length} active)`);
+			}
 			let line: string;
 			try {
 				line = await reader.askMultiline(`bi[${sess.turn}]> `);
@@ -866,7 +1098,7 @@ async function main(): Promise<void> {
 		// interactive REPL: persistent loop with cross-turn history (Ctrl-D or
 		// /quit to leave, Ctrl-C at the prompt re-prompts, Ctrl-C mid-turn aborts)
 		if (process.stdin.isTTY && process.stdout.isTTY && !hasFlag(args, "--print") && !hasFlag(args, "-p")) {
-			const { skills, diagnostics } = await loadSkills().catch(() => ({ skills: [], diagnostics: [] }));
+			const { skills, diagnostics } = await loadSkills(await trustedSkillDirs(true)).catch(() => ({ skills: [], diagnostics: [] }));
 			for (const d of diagnostics) console.error(`[skills] ${d.file}: ${d.message}`);
 			await repl(skills);
 		}
@@ -1034,7 +1266,7 @@ async function main(): Promise<void> {
 		let skillsSection = "";
 		let skillNames: string[] = [];
 		try {
-			const { skills, diagnostics } = await loadSkills();
+			const { skills, diagnostics } = await loadSkills(await trustedSkillDirs(false));
 			for (const d of diagnostics) console.error(`[skills] ${d.file}: ${d.message}`);
 			if (skills.length) {
 				skillsSection = `\n\n${await formatSkills(skills)}`;
