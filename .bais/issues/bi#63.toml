@@ -1,0 +1,31 @@
+id = "bi#63"
+title = "Move notification text shaping into BAML"
+status = "Open"
+kind = "Feat"
+area = "bi/agent"
+body = """
+Boundary discipline: shaping prompt-facing text is BAML's job, but
+shapeNotificationText lives in TS (bi/src/notify.ts). Every
+TS-shaped string is policy the typechecker cannot see and baml test
+cannot prove.
+Work: BAML function(s) shaping hub notifications into prompt context
+lines (release/expiry/oversight kinds — mirror the HubEvent
+vocabulary, including bi#53 message types where they apply); host
+keeps transport + queue + drain timing, calls the SDK shaper.
+baml tests on literal events (malformed -> dropped shape, never
+prompt text). Delete the TS shaper; the notify probe asserts
+identical output before/after.
+Acceptance: byte-identical prompt context for the probe fixtures;
+TS shaper removed (no fork); new notification kinds land as BAML
+arms first (ties to bi#54 exhaustiveness).
+"""
+
+[[edge]]
+from = "bi#63"
+to = "bi#53"
+kind = "Related"
+
+[[edge]]
+from = "bi#63"
+to = "bi#44"
+kind = "Related"

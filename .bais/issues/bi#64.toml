@@ -1,0 +1,28 @@
+id = "bi#64"
+title = "Boundary sweep: host mirrors that decide (single-source the policy)"
+status = "Open"
+kind = "Feat"
+area = "bais/host"
+body = """
+Standing rule: the host executes, never decides. Audit every host
+mirror of BAML policy and either delete it (call the SDK) or justify
+it in comments with the BAML function it tracks: readyBaisIssues /
+filterReadyIssues (bi/src/bais.ts mirrors graph rules), host graph
+mirrors (bais/src/graph.ts), urgency serving (pending bi#51 host
+half), any TS that branches on status/kind/role. Precedent for why:
+the seed-lc ordering bug lived host-side and broke transition apply
+for half the backlog — mirrors diverge silently.
+Work: list each mirror with its canonical BAML source; delete or
+shrink to a thin SDK call; where a mirror must stay (hot path),
+pin it with a conformance probe asserting equality on fixtures
+(ready-shape.mjs is the template). New mirrors need a justification
+comment + probe at authoring time.
+Acceptance: audit table (mirror x source x verdict); zero
+unjustified decision-branches in host code; conformance probes for
+ survivors, all green.
+"""
+
+[[edge]]
+from = "bi#64"
+to = "bi#58"
+kind = "Related"
