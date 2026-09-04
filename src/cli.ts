@@ -13,13 +13,13 @@ import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, mo
 import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, type Skill } from "./skills.js";
 import { runResultToJsonLines, finalText } from "./events.js";
 import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow, appendSessionEntries, loadSessionTranscript, sessionResumeList, sessionIdFromFile } from "./session.js";
 import { createInterface } from "node:readline";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative, resolve } from "node:path";
 
 // REPL input history (~/.bi/history, next to the sessions dir). One line
 // per entry, oldest-first on disk; readline wants most-recent-first live.
@@ -114,6 +114,7 @@ function bamlErrorMessage(e: unknown): string {
 import { HostTui, HostStatus, renderReadyScreen } from "./tui.js";
 import { format_status, format_turn_summary } from "../baml_sdk/index.js";
 import { runBiLoop } from "./agent_loop.js";
+import { editInExternalEditor, editorCommand } from "./editor.js";
 
 function printHelp(): void {
 	// BAML is spec: format_help() is bi-renamed pi help (APP_NAME bi, .bi)
@@ -192,6 +193,50 @@ export interface ReplSessionState {
 	file: string;
 	turn: number;
 	persisted: number;
+	// bi#32: last /tree listing (numbers resolve against it) + staged
+	// attachment paths (consumed by the next turn).
+	tree: { path: string; is_dir: boolean; depth: number }[];
+	treeRoot: string;
+	attachments: string[];
+}
+
+// bi#32: directory walk for /tree. Depth- and count-capped; skips the
+// BAML skip-names set, dotfiles except .bais/.bi (mirrors
+// tree_should_skip inline — a hot path running per directory entry, so
+// one skip-set fetch instead of a VM call per name; BAML stays truth),
+// and all symlinks (cycle-safe v1).
+async function buildTree(root: string, maxDepth = 3, cap = 200): Promise<{ rows: { path: string; is_dir: boolean; depth: number }[]; capped: boolean }> {
+	const skip = new Set(await tree_skip_names_async());
+	const rows: { path: string; is_dir: boolean; depth: number }[] = [];
+	let capped = false;
+	const walk = (dir: string, prefix: string, depth: number): void => {
+		if (depth > maxDepth || rows.length >= cap) return;
+		let ents;
+		try {
+			ents = readdirSync(dir, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		const sorted = [...ents].sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name));
+		for (const e of sorted) {
+			if (rows.length >= cap) {
+				capped = true;
+				return;
+			}
+			if (skip.has(e.name)) continue;
+			if (e.name.startsWith(".") && e.name !== ".bais" && e.name !== ".bi") continue;
+			if (e.isSymbolicLink()) continue;
+			const rel = prefix ? `${prefix}/${e.name}` : e.name;
+			if (e.isDirectory()) {
+				rows.push({ path: rel, is_dir: true, depth });
+				walk(join(dir, e.name), rel, depth + 1);
+			} else if (e.isFile()) {
+				rows.push({ path: rel, is_dir: false, depth });
+			}
+		}
+	};
+	walk(root, "", 0);
+	return { rows, capped };
 }
 
 async function handleSlash(line: string, skills: Skill[], history: any[], signal?: TurnSignal, backend?: ReplBackend, sess?: ReplSessionState): Promise<any[] | "quit" | "none"> {
@@ -269,6 +314,104 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			}
 			console.error(`[bi] theme now ${t.args}`);
 			return history;
+		}
+		// bi#32 slice 1: /tree browses (numbers resolve against the last
+		// listing), /attach stages files for the next turn, /editor
+		// composes the prompt in $EDITOR. Image paste and custom hotkeys
+		// stay scoped (turn image pipeline / raw-mode input layer).
+		if (t.name === "tree") {
+			let root = process.cwd();
+			const arg = t.args.trim();
+			if (arg) {
+				if (/^\d+$/.test(arg) && sess) {
+					const row = sess.tree[Number(arg) - 1];
+					if (!row) {
+						console.error(`no tree row ${arg} — bare /tree re-lists`);
+						return history;
+					}
+					if (!row.is_dir) {
+						console.error(`row ${arg} is a file — /attach ${arg} stages it`);
+						return history;
+					}
+					root = join(sess.treeRoot, row.path);
+				} else {
+					root = resolve(process.cwd(), arg);
+				}
+			}
+			let st;
+			try {
+				st = statSync(root);
+			} catch {
+				console.error(`unknown directory "${t.args}"`);
+				return history;
+			}
+			if (!st.isDirectory()) {
+				console.error(`not a directory: ${root}`);
+				return history;
+			}
+			const { rows, capped } = await buildTree(root);
+			if (sess) {
+				sess.tree = rows;
+				sess.treeRoot = root;
+			}
+			console.log(await format_tree_async(rows));
+			if (capped) console.error("[bi] tree capped at 200 entries, depth 3 — narrow with /tree <dir>");
+			return history;
+		}
+		if (t.name === "attach") {
+			if (!t.args.trim()) {
+				if (!sess || !sess.attachments.length) console.log("(no staged files)");
+				else for (const f of sess.attachments) console.log(`staged: ${f}`);
+				return history;
+			}
+			const arg = t.args.trim();
+			let file: string;
+			if (/^\d+$/.test(arg) && sess) {
+				const row = sess.tree[Number(arg) - 1];
+				if (!row) {
+					console.error(`no tree row ${arg} — bare /tree re-lists`);
+					return history;
+				}
+				if (row.is_dir) {
+					console.error(`row ${arg} is a directory — /tree ${arg} browses it`);
+					return history;
+				}
+				file = join(sess.treeRoot, row.path);
+			} else {
+				file = resolve(process.cwd(), arg);
+			}
+			let st;
+			try {
+				st = statSync(file);
+			} catch {
+				console.error(`unknown file "${t.args}" — /tree browses, /attach <n|path> stages`);
+				return history;
+			}
+			if (!st.isFile()) {
+				console.error(`not a file: ${file}`);
+				return history;
+			}
+			if (st.size > 100_000) {
+				console.error(`refusing ${(st.size / 1024).toFixed(0)}kb file (100kb cap) — excerpt it first`);
+				return history;
+			}
+			if (sess && !sess.attachments.includes(file)) sess.attachments.push(file);
+			console.error(`[bi] staged ${file} (${sess?.attachments.length ?? 0} staged — sent with the next turn)`);
+			return history;
+		}
+		if (t.name === "editor") {
+			const res = await editInExternalEditor(editorCommand(), t.args);
+			if (res.status === "failed") {
+				console.error("[bi] editor exited nonzero — nothing sent");
+				return history;
+			}
+			if (!res.content.trim()) {
+				console.error("[bi] empty — nothing sent");
+				return history;
+			}
+			// The composed text runs as the turn (a leading / still
+			// dispatches as a slash — composed slashes stay meaningful).
+			return runOnePrompt(res.content, skills, history, signal ? { signal } : undefined, backend, sess);
 		}
 		// bi#28: bare /model lists the catalog (current marked), with an
 		// argument it switches the live backend — provider follows the
@@ -460,7 +603,31 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	if (slash === "quit") return "quit";
 	if (slash !== "none") return slash;
 	const skillsSection = skills.length ? `\n\n${await formatSkills(skills)}` : "";
-	const fullPrompt = q + skillsSection + `\n\n[BAIS ready]\n${(await readyBaisIssues()).map((f) => `- ${f.issue.id} ${f.issue.title}`).join("\n")}`;
+	// bi#32: staged files inject above the prompt, then clear — read fresh
+	// at send time so edits between /attach and send are picked up.
+	// Binary content refuses (NUL byte); unreadable files warn and skip.
+	let attachSection = "";
+	if (sess?.attachments.length) {
+		const blocks: string[] = [];
+		for (const f of sess.attachments) {
+			let content: string;
+			try {
+				content = readFileSync(f, "utf8");
+			} catch {
+				console.error(`[bi] attached file unreadable, skipped: ${f}`);
+				continue;
+			}
+			if (content.split('').some((ch) => ch.charCodeAt(0) === 0)) {
+				console.error(`[bi] attached file looks binary, skipped: ${f}`);
+				continue;
+			}
+			const name = relative(process.cwd(), f) || basename(f);
+			blocks.push(await format_attachment_async(name, content, 200));
+		}
+		sess.attachments = [];
+		if (blocks.length) attachSection = `\n\n[Attachments]\n${blocks.join("\n")}`;
+	}
+	const fullPrompt = q + skillsSection + `\n\n[BAIS ready]\n${(await readyBaisIssues()).map((f) => `- ${f.issue.id} ${f.issue.title}`).join("\n")}` + attachSection;
 	// BAML loop validation — runBiLoop wraps runAgent with LoopContext (agent_loop.baml).
 	// Same first-class tools as `bi run` so the interactive agent manages .bais too.
 	// The raw user line (not the injected context) joins history — fresh BAIS
@@ -614,7 +781,7 @@ async function repl(skills: Skill[]): Promise<void> {
 	}
 	// bi#30: session pointer — file/turn/persisted mutate via /new /resume
 	// /fork; turns append to the file as they land (memory authoritative).
-	const sess: ReplSessionState = { file: sessFile, turn: 0, persisted: 0 };
+	const sess: ReplSessionState = { file: sessFile, turn: 0, persisted: 0, tree: [], treeRoot: process.cwd(), attachments: [] };
 	try {
 		for (;;) {
 			let line: string;

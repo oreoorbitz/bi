@@ -95,7 +95,10 @@ function format_skills_for_prompt(skills: Skill[]) -> string {
 
 // Full registry (bi#31): pi's 23 builtins transcribed verbatim
 // (pi/packages/coding-agent/src/core/slash-commands.ts) plus bi's
-// /help. scope null = live; otherwise the issue that wires it.
+// /help, /attach, /editor. scope null = live; otherwise the issue that
+// wires it. DIVERGENCE: pi's /tree navigates the session branch tree;
+// bi's sessions branch via /fork files instead, so /tree is the file
+// browser (pi's tree-selector component, bi#32).
 function builtin_slash_commands() -> BuiltinSlashCommand[] {
     [
         BuiltinSlashCommand {
@@ -118,9 +121,9 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
         },
         BuiltinSlashCommand {
             name: "tree",
-            description: "Navigate session tree (switch branches)",
-            argument_hint: null,
-            scope: "bi#32",
+            description: "Browse a directory tree (numbers resolve in /attach)",
+            argument_hint: "[dir|n]",
+            scope: null,
         },
         BuiltinSlashCommand {
             name: "thinking",
@@ -186,6 +189,18 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
             name: "theme",
             description: "List themes, preview, or set the active theme",
             argument_hint: "[name|preview]",
+            scope: null,
+        },
+        BuiltinSlashCommand {
+            name: "attach",
+            description: "Stage files for the next turn (or list staged)",
+            argument_hint: "[n|path]",
+            scope: null,
+        },
+        BuiltinSlashCommand {
+            name: "editor",
+            description: "Compose the prompt in $EDITOR and send it",
+            argument_hint: "[seed text]",
             scope: null,
         },
         BuiltinSlashCommand {
@@ -332,11 +347,13 @@ test "slash dispatch finds builtins then skills" {
     assert.equal(lookup_slash("review", skills), "review");
     assert.equal(lookup_slash("/nope", skills), null);
     assert.equal(lookup_slash("/theme", skills), "theme");
-    assert.equal(builtin_slash_commands().length(), 25)
+    assert.equal(lookup_slash("/attach", skills), "attach");
+    assert.equal(lookup_slash("/editor", skills), "editor");
+    assert.equal(builtin_slash_commands().length(), 27)
 }
 
 test "registry is pi's 23 plus bi help" {
-    for (let want in ["help", "settings", "model", "tree", "thinking", "scoped-models", "export", "import", "share", "copy", "name", "session", "changelog", "hotkeys", "theme", "fork", "clone", "trust", "login", "logout", "new", "compact", "resume", "reload", "quit"]) {
+    for (let want in ["help", "settings", "model", "tree", "thinking", "scoped-models", "export", "import", "share", "copy", "name", "session", "changelog", "hotkeys", "theme", "attach", "editor", "fork", "clone", "trust", "login", "logout", "new", "compact", "resume", "reload", "quit"]) {
         let found = false;
         for (let b in builtin_slash_commands()) {
             if (b.name == want) {
@@ -372,7 +389,9 @@ test "scope marks live vs owning issue" {
             "share" => assert.equal(b.scope, "bi#30"),
             "name" => assert.equal(b.scope, "bi#30"),
             "import" => assert.equal(b.scope, "bi#30"),
-            "tree" => assert.equal(b.scope, "bi#32"),
+            "tree" => assert.is_true(b.scope is null),
+            "attach" => assert.is_true(b.scope is null),
+            "editor" => assert.is_true(b.scope is null),
             "copy" => assert.equal(b.scope, "bi#32"),
             "changelog" => assert.equal(b.scope, "bi#31"),
             _ => assert.is_true(false),
