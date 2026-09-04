@@ -1,6 +1,7 @@
 // bi/src/tui.ts — host differential TUI, mirrors pi/packages/tui differential rendering
 // BAML owns Component + diff_lines/visible_width/cursor_marker for baml test; host does TS rendering.
 // This is minimal: renders BAIS ready + prompt, diffs lines (pi does ANSI differential).
+import { render_select_frame_async } from "../baml_sdk/index.js";
 
 const CURSOR_MARKER = "\x1b_pi:c\x07";
 
@@ -40,6 +41,17 @@ export class HostTui {
 	static visibleWidth(line: string): number {
 		return line.replace(CURSOR_MARKER, "").length;
 	}
+}
+
+// Select-list frame (bi#68): the one host path for /model, /resume,
+// /tree listings. BAML owns rows + cursor + width shaping; the host
+// only splits the shaped text and diffs the frame through HostTui.
+// Picks stay numeric — the cursor index is display state until the
+// bi#69 raw-mode layer.
+export async function renderSelectList(text: string, cursor: number, width?: number): Promise<void> {
+	const w = width ?? process.stdout.columns ?? 80;
+	const rows = text.split("\n").filter((l) => l.length > 0);
+	new HostTui(w).render(await render_select_frame_async(rows, cursor, w));
 }
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

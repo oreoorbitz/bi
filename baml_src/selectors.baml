@@ -129,6 +129,26 @@ function pick_model(n: int) -> Model? {
     }
 }
 
+// 0-based cursor line for the select frame (bi#68): the same provider
+// walk as format_model_list — including its per-provider header lines —
+// so the highlight lands on the current backend's numbered row, not a
+// header. 0 when the id is unknown (the frame clamps anyway).
+// Display-only — picks stay numeric against pick_model.
+function model_list_cursor(current_id: string) -> int {
+    let i = 0;
+    let at = 0;
+    for (let p in ListProviders()) {
+        i = i + 1;
+        for (let m in ListModels(p.id)) {
+            if (m.id == current_id) {
+                at = i
+            }
+            i = i + 1
+        }
+    }
+    at
+}
+
 // Flat id list for host set transitions (disable-from-all needs the
 // full catalog to subtract from).
 function all_model_ids() -> string[] {
@@ -271,6 +291,23 @@ test "lists mark the current backend" {
     let levels = format_thinking_list("medium");
     assert.contains(levels, "* medium — Moderate reasoning (~8k tokens)");
     assert.contains(levels, "  high — Deep reasoning (~16k tokens)")
+}
+
+test "model cursor lands on the current backend's numbered row" {
+    // First model: one header line above it, number 1, pick 1.
+    let rows = format_model_list("claude-haiku-4-5", theme = null).split("\n");
+    let at = model_list_cursor("claude-haiku-4-5");
+    assert.contains(rows.at(at) ?? "", "1  * claude-haiku-4-5");
+    match (pick_model(1)) {
+        null => assert.is_true(false),
+        let m: Model => assert.equal(m.id, "claude-haiku-4-5"),
+    }
+    // Mid-catalog model: the highlighted line names it with its number.
+    let mid = format_model_list("nope", theme = null).split("\n");
+    let crow = model_list_cursor("grok-4.6");
+    assert.contains(mid.at(crow) ?? "", "grok-4.6");
+    assert.is_true((mid.at(crow) ?? "").starts_with("37  "));
+    assert.is_true(model_list_cursor("bogus-model") == 0)
 }
 
 test "numbered picks walk the catalog in list order" {

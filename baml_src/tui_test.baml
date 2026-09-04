@@ -88,6 +88,30 @@ testset "tui" {
         );
     }
 
+    test "select frame highlights cursor row, keeps numbers" {
+        let rows = ["1  grok-4.6", "2  claude-haiku-4-5", "3  muse-spark"];
+        let frame = render_select_frame(rows, 1, 80);
+        assert.equal(frame.length(), 3);
+        assert.equal(frame.at(0) ?? "", "  1  grok-4.6");
+        assert.equal(frame.at(1) ?? "", "> 2  claude-haiku-4-5");
+        assert.equal(frame.at(2) ?? "", "  3  muse-spark");
+        // Cursor is display-only: row text (and its number) is unchanged.
+        assert.contains(frame.at(1) ?? "", "2  claude-haiku-4-5");
+    }
+
+    test "select frame clamps cursor and caps width" {
+        let rows = ["1  abcdef", "2  gh"];
+        let hi = render_select_frame(rows, 99, 80);
+        assert.equal(hi.at(1) ?? "", "> 2  gh");
+        assert.equal(hi.at(0) ?? "", "  1  abcdef");
+        let lo = render_select_frame(rows, -5, 80);
+        assert.equal(lo.at(0) ?? "", "> 1  abcdef");
+        let narrow = render_select_frame(rows, 0, 5);
+        assert.equal(narrow.at(0) ?? "", "> 1  …");
+        assert.equal(narrow.at(1) ?? "", "  2  …");
+        assert.equal(render_select_frame([], 0, 80).length(), 0);
+    }
+
     test "FocusableTextComponent emits marker when focused" {
         let comp = FocusableTextComponent { text: "hi", focused: true };
         let lines = comp.render(80);

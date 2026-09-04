@@ -14,7 +14,7 @@ import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
 import { listCredentials } from "./auth.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, pick_model_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, parse_changelog_async, format_changelog_async, complete_slash_async, render_ready_frame_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, parse_changelog_async, format_changelog_async, complete_slash_async, render_ready_frame_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
 import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
 import { readClipboardImage, writeClipboardText, clipboardSupportsImage } from "./clipboard.js";
@@ -125,7 +125,7 @@ function bamlErrorMessage(e: unknown): string {
 	const raw = e instanceof Error ? e.message : String(e);
 	return raw.replace(/^baml error: (baml\.errors\.\w+: )?/, "").split("\n")[0];
 }
-import { HostTui, HostStatus } from "./tui.js";
+import { HostTui, HostStatus, renderSelectList } from "./tui.js";
 import { format_status, format_turn_summary } from "../baml_sdk/index.js";
 import { runBiLoop } from "./agent_loop.js";
 import { editInExternalEditor, editorCommand } from "./editor.js";
@@ -591,7 +591,10 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				sess.tree = rows;
 				sess.treeRoot = root;
 			}
-			console.log(await format_tree_async(rows));
+			// bi#68: tree lists through the shared select frame (cursor
+			// parks on the first row — picks stay numeric against
+			// sess.tree until the bi#69 raw-mode layer).
+			await renderSelectList(await format_tree_async(rows), 0);
 			if (capped) console.error("[bi] tree capped at 200 entries, depth 3 — narrow with /tree <dir>");
 			return history;
 		}
@@ -656,7 +659,14 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 		if (t.name === "model") {
 			const scoped = loadUserSettings().enabled_models ?? null;
 			if (!t.args) {
-				console.log(await format_model_list_async(backend?.model ?? "claude-haiku-4-5", { theme: await activeTheme(), enabled: scoped }));
+				// bi#68: model catalog lists through the shared select
+				// frame; the cursor highlights the live backend (same
+				// BAML walk as the numbers, so `/model <n>` still agrees).
+				const currentModel = backend?.model ?? "claude-haiku-4-5";
+				await renderSelectList(
+					await format_model_list_async(currentModel, { theme: await activeTheme(), enabled: scoped }),
+					await model_list_cursor_async(currentModel),
+				);
 				return history;
 			}
 			const numeric = /^\d+$/.test(t.args);
@@ -788,7 +798,12 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 		if (t.name === "resume") {
 			if (!t.args) {
 				const rows = await sessionResumeList();
-				console.log(await format_resume_list_async(rows, sess ? sessionIdFromFile(sess.file) : null));
+				// bi#68: resume lists through the shared select frame; the
+				// cursor highlights the live session (same array the
+				// numeric pick resolves against, so `/resume <n>` agrees).
+				const cur = sess ? sessionIdFromFile(sess.file) : null;
+				const at = cur ? rows.findIndex((r) => r.id === cur) : -1;
+				await renderSelectList(await format_resume_list_async(rows, cur), at < 0 ? 0 : at);
 				return history;
 			}
 			let resumeId = t.args;
