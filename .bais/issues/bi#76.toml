@@ -1,6 +1,6 @@
 id = "bi#76"
 title = "BAML hex escapes emit literal text — all styled output broken"
-status = "Doing"
+status = "Done"
 kind = "Bug"
 area = "tui"
 body = """
