@@ -14,7 +14,7 @@ import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
 import { listCredentials } from "./auth.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, parse_changelog_async, format_changelog_async, complete_slash_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, pick_model_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, parse_changelog_async, format_changelog_async, complete_slash_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
 import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
 import { readClipboardImage, writeClipboardText, clipboardSupportsImage } from "./clipboard.js";
@@ -659,9 +659,10 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				console.log(await format_model_list_async(backend?.model ?? "claude-haiku-4-5", { theme: await activeTheme(), enabled: scoped }));
 				return history;
 			}
-			const m = await resolve_model_ref_async(t.args);
+			const numeric = /^\d+$/.test(t.args);
+			const m = numeric ? await pick_model_async(Number(t.args)) : await resolve_model_ref_async(t.args);
 			if (!m) {
-				console.error(`unknown model "${t.args}" — bare /model lists the catalog (try provider/id)`);
+				console.error(numeric ? `no model #${t.args} — bare /model lists numbers` : `unknown model "${t.args}" — bare /model lists the catalog (try provider/id or a number)`);
 				return history;
 			}
 			// Disabled models refuse with their own fix; startup stays
@@ -790,9 +791,19 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				console.log(await format_resume_list_async(rows, sess ? sessionIdFromFile(sess.file) : null));
 				return history;
 			}
-			const loaded = await loadSessionTranscript(t.args);
+			let resumeId = t.args;
+			if (/^\d+$/.test(t.args)) {
+				const rows = await sessionResumeList();
+				const row = rows[Number(t.args) - 1];
+				if (!row) {
+					console.error(`no session #${t.args} — bare /resume lists numbers`);
+					return history;
+				}
+				resumeId = row.id;
+			}
+			const loaded = await loadSessionTranscript(resumeId);
 			if (!loaded) {
-				console.error(`unknown session "${t.args}" — bare /resume lists saved sessions`);
+				console.error(`unknown session "${t.args}" — bare /resume lists saved sessions (try an id or number)`);
 				return history;
 			}
 			if (sess) {
@@ -800,7 +811,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				sess.turn = loaded.history.filter((m) => m.role === "user").length;
 				sess.persisted = loaded.history.length;
 			}
-			console.error(`[bi] resumed ${t.args} (${loaded.history.length} messages)`);
+			console.error(`[bi] resumed ${resumeId} (${loaded.history.length} messages)`);
 			return loaded.history;
 		}
 		if (t.name === "fork") {

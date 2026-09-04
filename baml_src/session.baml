@@ -208,6 +208,7 @@ function format_resume_list(sessions: ResumeEntry[], current_id: string?) -> str
         "no saved sessions"
     } else {
         let out = "";
+        let n = 1;
         for (let s in sessions) {
             let cur = current_id ?? "";
             let mark = if (cur != "" && cur == s.id) {
@@ -224,7 +225,8 @@ function format_resume_list(sessions: ResumeEntry[], current_id: string?) -> str
                 null => "",
                 let l: string => ` — "${l}"`,
             };
-            out = `${out}  ${mark} ${s.id}${name} — ${tm} — ${s.cwd} — ${s.timestamp}\n`;
+            out = `${out}  ${mark} ${n} ${s.id}${name} — ${tm} — ${s.cwd} — ${s.timestamp}\n`;
+            n = n + 1
         }
         out
     }

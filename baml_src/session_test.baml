@@ -145,8 +145,8 @@ testset "session header + trust (bi namespace)" {
             ResumeEntry { id: "bbb", timestamp: "t2", cwd: "/y", turns: 3, label: null },
         ];
         let out = format_resume_list(sessions, "bbb");
-        assert.contains(out, "* bbb — 3 turns");
-        assert.contains(out, "aaa — \"First\" — 1 turn")
+        assert.contains(out, "* 2 bbb — 3 turns");
+        assert.contains(out, "1 aaa — \"First\" — 1 turn")
     }
 
     test "labels validate and shape the export" {

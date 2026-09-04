@@ -136,7 +136,7 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
         BuiltinSlashCommand {
             name: "model",
             description: "List models or switch the live backend",
-            argument_hint: "[provider/model]",
+            argument_hint: "[provider/model|n]",
             scope: null,
         },
         BuiltinSlashCommand {
@@ -292,7 +292,7 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
         BuiltinSlashCommand {
             name: "resume",
             description: "List sessions or resume one by id",
-            argument_hint: "[id]",
+            argument_hint: "[id|n]",
             scope: null,
         },
         BuiltinSlashCommand {

@@ -83,12 +83,16 @@ function is_model_enabled(enabled: string[]?, id: string) -> bool {
 }
 
 // Catalog-wide model list grouped by provider; current backend marked,
-// disabled rows flagged. Costs are per-1M-tokens input/output.
+// disabled rows flagged, every row numbered for `/model <n>` picks.
+// Numbers run across provider groups in catalog order (same order
+// pick_model walks), so a fresh listing and a pick always agree.
 function format_model_list(current_id: string, theme: string? = null, enabled: string[]? = null) -> string {
     let out = "";
+    let n = 0;
     for (let p in ListProviders()) {
         out = `${out}${style_segment(`${p.id}:`, "dim", theme)}\n`;
         for (let m in ListModels(p.id)) {
+            n = n + 1;
             let mark = if (is_model_enabled(enabled, m.id)) {
                 ""
             } else {
@@ -99,10 +103,30 @@ function format_model_list(current_id: string, theme: string? = null, enabled: s
             } else {
                 `  ${m.id} — ${m.context_window} ctx ${m.cost.input}/${m.cost.output} per 1M${mark}`
             };
-            out = `${out}${row}\n`;
+            out = `${out}${n}  ${row}\n`;
         }
     }
     out
+}
+
+// Numbered pick over the same walk: 1-based, null when out of range.
+// The host applies the enabled-guard and backend switch.
+function pick_model(n: int) -> Model? {
+    if (n < 1) {
+        null
+    } else {
+        let i = 0;
+        let found: Model? = null;
+        for (let p in ListProviders()) {
+            for (let m in ListModels(p.id)) {
+                i = i + 1;
+                if (i == n) {
+                    found = m
+                }
+            }
+        }
+        found
+    }
 }
 
 // Flat id list for host set transitions (disable-from-all needs the
@@ -247,6 +271,17 @@ test "lists mark the current backend" {
     let levels = format_thinking_list("medium");
     assert.contains(levels, "* medium — Moderate reasoning (~8k tokens)");
     assert.contains(levels, "  high — Deep reasoning (~16k tokens)")
+}
+
+test "numbered picks walk the catalog in list order" {
+    match (pick_model(1)) {
+        null => assert.is_true(false),
+        let m: Model => assert.equal(m.id, "claude-haiku-4-5"),
+    }
+    assert.is_true(pick_model(0) is null);
+    assert.is_true(pick_model(99999) is null);
+    // List row 1 and pick 1 agree on the same model.
+    assert.contains(format_model_list("nope"), "1  ")
 }
 
 test "scoped models narrow the list, null means all" {
