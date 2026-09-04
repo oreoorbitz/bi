@@ -107,3 +107,93 @@ function format_project_trust_prompt(cwd: string) -> string {
 function trust_prompt_contains_bi(prompt: string) -> bool {
     prompt.includes("bi") && prompt.includes(".bi")
 }
+
+// Transcript persistence (bi#30) — session files are JSONL: one header
+// line, then one history line per message. BAML owns the entry schema +
+// validation + all shaped text; the host owns JSON encode/decode + FS.
+// A resumed entry replays as {role, text}; provider/model/thinking ride
+// along as provenance for future cost attribution (bi#52).
+class HistoryEntry {
+    type: string, // always "history"
+    role: string, // "user" | "assistant"
+    text: string,
+    provider: string?,
+    model: string?,
+    thinking: string?,
+}
+
+function validate_history_entry(role: string, text: string) -> string[] {
+    let errors: string[] = [];
+    if (role != "user" && role != "assistant") {
+        errors.push(`role must be "user" or "assistant", got "${role}"`);
+    }
+    if (text.length() == 0) {
+        errors.push("text must be non-empty");
+    }
+    errors
+}
+
+// One BAML round-trip per resume: host parses JSONL into entries, BAML
+// keeps the structurally valid history lines (bad lines dropped, never
+// fatal — a corrupt line must not lose the whole session).
+function select_valid_history(entries: HistoryEntry[]) -> HistoryEntry[] {
+    let out: HistoryEntry[] = [];
+    for (let e in entries) {
+        if (e.type == "history" && validate_history_entry(e.role, e.text).length() == 0) {
+            out.push(e)
+        }
+    }
+    out
+}
+
+class ResumeEntry {
+    id: string,
+    timestamp: string,
+    cwd: string,
+    turns: int,
+}
+
+function format_resume_list(sessions: ResumeEntry[], current_id: string?) -> string {
+    if (sessions.length() == 0) {
+        "no saved sessions"
+    } else {
+        let out = "";
+        for (let s in sessions) {
+            let cur = current_id ?? "";
+            let mark = if (cur != "" && cur == s.id) {
+                "*"
+            } else {
+                " "
+            };
+            let tm = if (s.turns == 1) {
+                "1 turn"
+            } else {
+                `${s.turns} turns`
+            };
+            out = `${out}  ${mark} ${s.id} — ${tm} — ${s.cwd} — ${s.timestamp}\n`;
+        }
+        out
+    }
+}
+
+function format_session_info(
+    id: string,
+    file: string,
+    cwd: string,
+    parent_session: string?,
+    provider: string,
+    model: string,
+    thinking: string?,
+    turns: int,
+    messages: int,
+) -> string {
+    let parent = match (parent_session) {
+        null => "none",
+        let p: string => p,
+    };
+    let th = match (thinking) {
+        null => "default",
+        let t: string => t,
+    };
+    `session ${id}\n  file: ${file}\n  cwd: ${cwd}\n  forked from: ${parent}\n  backend: ${provider}/${model} · thinking ${th}\n  turns: ${turns} · messages: ${messages}`
+}

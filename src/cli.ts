@@ -13,10 +13,10 @@ import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, mo
 import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, type Skill } from "./skills.js";
 import { runResultToJsonLines, finalText } from "./events.js";
-import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow } from "./session.js";
+import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow, appendSessionEntries, loadSessionTranscript, sessionResumeList, sessionIdFromFile } from "./session.js";
 import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -116,7 +116,15 @@ export interface ReplBackend {
 	thinking: string | null;
 }
 
-async function handleSlash(line: string, skills: Skill[], history: any[], signal?: TurnSignal, backend?: ReplBackend): Promise<any[] | "quit" | "none"> {
+// bi#30: mutable REPL session pointer — /new /resume /fork switch files
+// (and reset persisted/turn) while history flows through the return value.
+export interface ReplSessionState {
+	file: string;
+	turn: number;
+	persisted: number;
+}
+
+async function handleSlash(line: string, skills: Skill[], history: any[], signal?: TurnSignal, backend?: ReplBackend, sess?: ReplSessionState): Promise<any[] | "quit" | "none"> {
 	// Decision (BAML-backed) lives in skills.ts; this keeps only effects.
 	const t = await resolveSlash(line, skills);
 	if (t.kind === "none") return "none";
@@ -202,6 +210,65 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			console.error(`[bi] thinking now ${t.args}`);
 			return history;
 		}
+		// bi#30: session commands. History flows through the return value;
+		// the sess pointer (file/turn/persisted) mutates in place.
+		if (t.name === "session") {
+			const file = sess?.file ?? "(no session file)";
+			const id = sess ? sessionIdFromFile(sess.file) : "(none)";
+			let parent: string | null = null;
+			if (sess) {
+				const loaded = await loadSessionTranscript(id);
+				parent = loaded?.header.parent_session ?? null;
+			}
+			console.log(
+				await format_session_info_async(id, file, process.cwd(), parent, backend?.provider ?? "anthropic", backend?.model ?? "claude-haiku-4-5", backend?.thinking ?? null, sess?.turn ?? 0, history.length),
+			);
+			return history;
+		}
+		if (t.name === "new") {
+			const f = createSessionFile({ cwd: process.cwd() });
+			if (sess) {
+				sess.file = f;
+				sess.turn = 0;
+				sess.persisted = 0;
+			}
+			console.error(`[bi] new session ${f}`);
+			return [];
+		}
+		if (t.name === "resume") {
+			if (!t.args) {
+				const rows = await sessionResumeList();
+				console.log(await format_resume_list_async(rows, sess ? sessionIdFromFile(sess.file) : null));
+				return history;
+			}
+			const loaded = await loadSessionTranscript(t.args);
+			if (!loaded) {
+				console.error(`unknown session "${t.args}" — bare /resume lists saved sessions`);
+				return history;
+			}
+			if (sess) {
+				sess.file = loaded.file;
+				sess.turn = loaded.history.filter((m) => m.role === "user").length;
+				sess.persisted = loaded.history.length;
+			}
+			console.error(`[bi] resumed ${t.args} (${loaded.history.length} messages)`);
+			return loaded.history;
+		}
+		if (t.name === "fork") {
+			if (!sess) return history;
+			const parentId = sessionIdFromFile(sess.file);
+			const f = createSessionFile({ cwd: process.cwd(), parentSession: parentId });
+			// The branch keeps the transcript: copy persisted + pending
+			// lines into the fork file so both files stand alone.
+			appendSessionEntries(
+				f,
+				history.map((m: any) => ({ role: String(m.role ?? "user"), text: String(m.text ?? ""), provider: backend?.provider ?? null, model: backend?.model ?? null, thinking: backend?.thinking ?? null })),
+			);
+			sess.file = f;
+			sess.persisted = history.length;
+			console.error(`[bi] forked ${parentId} → ${sessionIdFromFile(f)} (transcript kept, turn continues at ${sess.turn})`);
+			return history;
+		}
 		// bi#31: scoped but unwired — name the owning issue instead of
 		// failing silent or pretending the command ran.
 		if (t.scope) {
@@ -218,8 +285,8 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 // opts.aborted resolves when the user hits Ctrl-C mid-turn: the turn is
 // abandoned (flagged via opts.signal), the spinner stops now, and the late
 // VM result is discarded on arrival — transcript and prompt survive.
-async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = [], opts: { signal?: TurnSignal; aborted?: Promise<void> } = {}, backend: ReplBackend = { provider: "anthropic", model: "claude-haiku-4-5", thinking: null }): Promise<any[] | "quit"> {
-	const slash = await handleSlash(q, skills, history, opts.signal, backend);
+async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = [], opts: { signal?: TurnSignal; aborted?: Promise<void> } = {}, backend: ReplBackend = { provider: "anthropic", model: "claude-haiku-4-5", thinking: null }, sess?: ReplSessionState): Promise<any[] | "quit"> {
+	const slash = await handleSlash(q, skills, history, opts.signal, backend, sess);
 	if (slash === "quit") return "quit";
 	if (slash !== "none") return slash;
 	const skillsSection = skills.length ? `\n\n${await formatSkills(skills)}` : "";
@@ -359,17 +426,19 @@ async function repl(skills: Skill[]): Promise<void> {
 	console.error(`[bi] new session ${sessFile}`);
 	const reader = new ReplReader();
 	let history: any[] = [];
-	let turn = 0;
 	// bi#28: live backend — starts anthropic-pinned exactly as before
 	// (thinking null sends no config, preserving wire behavior).
 	const backend: ReplBackend = { provider: "anthropic", model: "claude-haiku-4-5", thinking: null };
+	// bi#30: session pointer — file/turn/persisted mutate via /new /resume
+	// /fork; turns append to the file as they land (memory authoritative).
+	const sess: ReplSessionState = { file: sessFile, turn: 0, persisted: 0 };
 	try {
 		for (;;) {
 			let line: string;
 			try {
-				line = await reader.askMultiline(`bi[${turn}]> `);
+				line = await reader.askMultiline(`bi[${sess.turn}]> `);
 			} catch {
-				console.error("\n[bi] EOF — session kept at " + sessFile);
+				console.error("\n[bi] EOF — session kept at " + sess.file);
 				return;
 			}
 			if (line === "\x03" || !line.trim()) {
@@ -383,18 +452,27 @@ async function repl(skills: Skill[]): Promise<void> {
 			let fireAbort: () => void = () => {};
 			const aborted = new Promise<void>((res) => { fireAbort = res; });
 			reader.onMidTurnInterrupt = () => fireAbort();
-			const out = await runOnePrompt(line.trim(), skills, history, { signal, aborted }, backend);
+			const out = await runOnePrompt(line.trim(), skills, history, { signal, aborted }, backend, sess);
 			reader.onMidTurnInterrupt = null;
 			if (out === "quit") {
-				console.error(`[bi] session kept at ${sessFile} (${history.length} messages)`);
+				console.error(`[bi] session kept at ${sess.file} (${history.length} messages)`);
 				return;
 			}
 			// Slash/empty lines return the same history — only real turns advance.
+			// /new returns [] on purpose: history resets with no turn counted.
 			if (out !== history) {
 				history = out;
-				turn += 1;
-				// bi#28: footer readout after every turn (BAML-shaped).
-				console.error(await format_repl_footer_async(backend.provider, backend.model, backend.thinking ?? "default", turn, history.length));
+				if (out.length > 0) {
+					sess.turn += 1;
+					// bi#30: persist only the not-yet-written tail.
+					appendSessionEntries(
+						sess.file,
+						out.slice(sess.persisted).map((m: any) => ({ role: String(m.role ?? "user"), text: String(m.text ?? ""), provider: backend.provider, model: backend.model, thinking: backend.thinking })),
+					);
+					sess.persisted = out.length;
+					// bi#28: footer readout after every turn (BAML-shaped).
+					console.error(await format_repl_footer_async(backend.provider, backend.model, backend.thinking ?? "default", sess.turn, history.length));
+				}
 			}
 		}
 	} finally {

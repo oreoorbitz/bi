@@ -168,7 +168,7 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
             name: "session",
             description: "Show session info and stats",
             argument_hint: null,
-            scope: "bi#30",
+            scope: null,
         },
         BuiltinSlashCommand {
             name: "changelog",
@@ -184,9 +184,9 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
         },
         BuiltinSlashCommand {
             name: "fork",
-            description: "Create a new fork from a previous user message",
+            description: "Branch the transcript into a new session file",
             argument_hint: null,
-            scope: "bi#30",
+            scope: null,
         },
         BuiltinSlashCommand {
             name: "clone",
@@ -216,7 +216,7 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
             name: "new",
             description: "Start a new session",
             argument_hint: null,
-            scope: "bi#30",
+            scope: null,
         },
         BuiltinSlashCommand {
             name: "compact",
@@ -226,9 +226,9 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
         },
         BuiltinSlashCommand {
             name: "resume",
-            description: "Resume a different session",
-            argument_hint: null,
-            scope: "bi#30",
+            description: "List sessions or resume one by id",
+            argument_hint: "[id]",
+            scope: null,
         },
         BuiltinSlashCommand {
             name: "reload",
@@ -344,6 +344,10 @@ test "scope marks live vs owning issue" {
     for (let b in builtin_slash_commands()) {
         match (b.name) {
             "help" => assert.is_true(b.scope is null),
+            "session" => assert.is_true(b.scope is null),
+            "new" => assert.is_true(b.scope is null),
+            "resume" => assert.is_true(b.scope is null),
+            "fork" => assert.is_true(b.scope is null),
             "compact" => assert.is_true(b.scope is null),
             "reload" => assert.is_true(b.scope is null),
             "login" => assert.is_true(b.scope is null),
@@ -355,10 +359,6 @@ test "scope marks live vs owning issue" {
             "scoped-models" => assert.equal(b.scope, "bi#28"),
             "settings" => assert.equal(b.scope, "bi#29"),
             "trust" => assert.equal(b.scope, "bi#29"),
-            "session" => assert.equal(b.scope, "bi#30"),
-            "resume" => assert.equal(b.scope, "bi#30"),
-            "new" => assert.equal(b.scope, "bi#30"),
-            "fork" => assert.equal(b.scope, "bi#30"),
             "clone" => assert.equal(b.scope, "bi#30"),
             "export" => assert.equal(b.scope, "bi#30"),
             "share" => assert.equal(b.scope, "bi#30"),

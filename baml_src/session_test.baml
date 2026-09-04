@@ -113,4 +113,48 @@ testset "session header + trust (bi namespace)" {
         assert.equal(app_name(), "bi");
         assert.equal(config_dir_name(), ".bi");
     }
+
+    test "history entry validation accepts user/assistant, rejects junk" {
+        assert.equal(validate_history_entry("user", "hi").length(), 0);
+        assert.equal(validate_history_entry("assistant", "hello").length(), 0);
+        assert.equal(validate_history_entry("system", "hi").length(), 1);
+        assert.equal(validate_history_entry("user", "").length(), 1);
+        assert.equal(validate_history_entry("", "").length(), 2)
+    }
+
+    test "select_valid_history keeps good lines, drops the rest" {
+        let entries = [
+            HistoryEntry { type: "history", role: "user", text: "hi", provider: null, model: null, thinking: null },
+            HistoryEntry { type: "session", role: "user", text: "hi", provider: null, model: null, thinking: null },
+            HistoryEntry { type: "history", role: "tool", text: "x", provider: null, model: null, thinking: null },
+            HistoryEntry { type: "history", role: "assistant", text: "", provider: null, model: null, thinking: null },
+            HistoryEntry { type: "history", role: "assistant", text: "ok", provider: "xai", model: "grok-4.6", thinking: "high" },
+        ];
+        let kept = select_valid_history(entries);
+        assert.equal(kept.length(), 2);
+        assert.equal(kept[0].text, "hi");
+        assert.equal(kept[1].model, "grok-4.6")
+    }
+
+    test "resume list marks current and counts turns" {
+        assert.equal(format_resume_list([], null), "no saved sessions");
+        let sessions = [
+            ResumeEntry { id: "aaa", timestamp: "t1", cwd: "/x", turns: 1 },
+            ResumeEntry { id: "bbb", timestamp: "t2", cwd: "/y", turns: 3 },
+        ];
+        let out = format_resume_list(sessions, "bbb");
+        assert.contains(out, "* bbb — 3 turns");
+        assert.contains(out, "  aaa — 1 turn")
+    }
+
+    test "session info names backend and lineage" {
+        let info = format_session_info("abc123ef", "/s/abc123ef.jsonl", "/work", null, "meta", "muse-spark-1.3", "high", 2, 5);
+        assert.contains(info, "session abc123ef");
+        assert.contains(info, "meta/muse-spark-1.3 · thinking high");
+        assert.contains(info, "forked from: none");
+        assert.contains(info, "turns: 2 · messages: 5");
+        let forked = format_session_info("def456ab", "/s/def456ab.jsonl", "/work", "abc123ef", "meta", "muse-spark-1.3", null, 0, 0);
+        assert.contains(forked, "forked from: abc123ef");
+        assert.contains(forked, "thinking default")
+    }
 }
