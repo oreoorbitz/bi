@@ -1,10 +1,10 @@
 // bi/src/notify.ts — host-owned hub SSE subscriber (bi#44).
 //
 // Standing split: the host owns sockets/threads/timers; BAML owns
-// notification *policy*. There is no BAML spec shaping notification text
-// today, so the host also shapes the prompt-facing one-liners here
-// ("peer released X", "lease expires in N", "oversight flagged Y") —
-// deliberately plain string templates, no new .baml functions.
+// notification *policy* (baml_src/notify.baml shapes the prompt-facing
+// one-liners). The host only marshals validated events into plain
+// string fields for the SDK shaper — no template literal here carries
+// policy meaning.
 //
 // Pattern is "push wakes, poll confirms": the background subscriber holds
 // GET /pub/stream open and appends shaped lines to a pending-notifications
@@ -21,6 +21,7 @@
 
 import { get as httpGet, type ClientRequest, type IncomingMessage } from "node:http";
 import { get as httpsGet } from "node:https";
+import { shape_notification } from "../baml_sdk/index.js";
 
 export interface HubEvent {
 	seq: number;
@@ -86,33 +87,51 @@ function bodyField(body: unknown, key: string): unknown {
 	return (body as Record<string, unknown>)[key];
 }
 
+// Non-empty string field of a JSON body, else null. Policy-adjacent but
+// purely structural: the decision table (which keys, which templates)
+// lives in notify.baml.
+function strField(body: unknown, key: string): string | null {
+	const v = bodyField(body, key);
+	return typeof v === "string" && v !== "" ? v : null;
+}
+
 // Shape a validated hub event into one prompt-context line, or null when
-// the event is never prompt-worthy (Heartbeat liveness).
+// the event is never prompt-worthy (Heartbeat liveness). bi#63: the host
+// only marshals — extracts plain string fields from the JSON body and
+// calls the BAML decision table. No template literal here may carry
+// policy meaning; byte-identity with the old TS templates is pinned by
+// scripts/notify.mjs and baml test.
 export function shapeNotificationText(ev: HubEvent): string | null {
-	if (ev.type === "Heartbeat") return null;
-	const entityOf = (fallbackKeys: string[]): string | null => {
-		if (ev.entity) return ev.entity;
-		for (const k of fallbackKeys) {
-			const v = bodyField(ev.body, k);
-			if (typeof v === "string" && v !== "") return v;
-		}
-		return null;
-	};
-	if (ev.type === "LeaseRelease") {
-		const task = entityOf(["lease_ref", "task"]) ?? "?";
-		return `peer released ${task}`;
-	}
-	if (ev.type === "LeaseExpiring" || bodyField(ev.body, "expires_in") !== undefined || bodyField(ev.body, "expires_lc") !== undefined || bodyField(ev.body, "expires_in_lc") !== undefined) {
-		const task = entityOf(["lease_ref", "task"]) ?? "?";
-		const n = bodyField(ev.body, "expires_in") ?? bodyField(ev.body, "expires_in_lc") ?? bodyField(ev.body, "expires_lc");
-		return `lease on ${task} expires in ${String(n)}`;
-	}
-	if (ev.type === "OversightFlag" || ev.type === "Oversight" || ev.type === "ConflictFlag") {
-		const target = entityOf(["flag", "subject", "task"]) ?? "?";
-		const reason = bodyField(ev.body, "reason");
-		return typeof reason === "string" && reason !== "" ? `oversight flagged ${target} (${reason})` : `oversight flagged ${target}`;
-	}
-	return `hub ${ev.type}${ev.entity ? ` on ${ev.entity}` : ""}`;
+	const hasExpiry =
+		bodyField(ev.body, "expires_in") !== undefined ||
+		bodyField(ev.body, "expires_lc") !== undefined ||
+		bodyField(ev.body, "expires_in_lc") !== undefined;
+	const rawExpiry = bodyField(ev.body, "expires_in") ?? bodyField(ev.body, "expires_in_lc") ?? bodyField(ev.body, "expires_lc");
+	// Mirrors the old `String(n)`: strings pass through, numbers render
+	// plainly, anything else JSON-shapes (nullish reads as "undefined"
+	// because ?? already skipped it, exactly as before).
+	const expiresText =
+		rawExpiry === undefined || rawExpiry === null
+			? "undefined"
+			: typeof rawExpiry === "string"
+				? rawExpiry
+				: typeof rawExpiry === "number" || typeof rawExpiry === "boolean"
+					? String(rawExpiry)
+					: (JSON.stringify(rawExpiry) ?? "undefined");
+	// "" reads as absent everywhere (first_present already skipped it;
+	// the hub-fallback arm must too, or "" gains a trailing " on ").
+	const entity = ev.entity !== "" ? ev.entity : null;
+	return shape_notification(
+		ev.type,
+		entity,
+		strField(ev.body, "lease_ref"),
+		strField(ev.body, "task"),
+		strField(ev.body, "flag"),
+		strField(ev.body, "subject"),
+		hasExpiry,
+		expiresText,
+		strField(ev.body, "reason"),
+	);
 }
 
 // Pending-notifications queue drained by the turn loop between turns.
