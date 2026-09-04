@@ -11,6 +11,7 @@ import { SendTurn_async } from "../baml_sdk/index.js";
 import { toToolSpecs, type ToolSpec } from "./conversation.js";
 import { callWithRetry } from "./retry.js";
 import type { NotificationDrain } from "./notify.js";
+import type { LeaseDrain } from "./keeper.js";
 
 export type ToolHandler = (name: string, args: Record<string, unknown>) => Promise<string>;
 export type { ToolSpec } from "./conversation.js";
@@ -37,6 +38,10 @@ export interface AgentOptions {
 	// the queue in the background; the loop drains it between turns as
 	// prompt context. Host-issued HTTP only — the LLM never polls.
 	notify?: NotificationDrain;
+	// bi#43: host-owned lease-keeper. The keeper (keeper.ts) renews in
+	// the background; the loop only observes. A lost lease stops the
+	// run with a named `lease_lost` failure — the LLM never renews.
+	keeper?: LeaseDrain;
 	azureResource?: string | null;
 	azureDeployment?: string | null;
 	azureApiVersion?: string | null;
@@ -125,6 +130,16 @@ export async function runAgent(
 	};
 
 	for (let turn = 0; turn < maxTurns; turn += 1) {
+		// bi#43: a revoked/expired lease stops the run with a named
+		// error — checked before any LLM call, every turn.
+		const leaseLost = options.keeper?.leaseError() ?? null;
+		if (leaseLost) {
+			return {
+				messages: history,
+				turns,
+				failure: new TurnFailure({ kind: "lease_lost", message: leaseLost.message, retry_safe: false }),
+			};
+		}
 		// bi#44: drain pending hub notifications between turns — queued
 		// lines become prompt context for this turn's LLM call.
 		const notices = options.notify?.drainContext() ?? null;
