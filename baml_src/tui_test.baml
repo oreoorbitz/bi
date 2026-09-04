@@ -8,8 +8,10 @@ testset "tui" {
 
     test "cursor_marker" {
         let m = cursor_marker();
-        assert.is_true(m.length() > 0);
         assert.is_true(m.includes("_pi:c"));
+        // ESC(1) + "_pi:c"(5) + BEL(1) = 7. Literal backslash text
+        // would measure 12 (bi#76 regression).
+        assert.equal(m.length(), 7);
     }
 
     test "visible_width ignores marker" {
@@ -22,7 +24,10 @@ testset "tui" {
     test "ready frame caps width and keeps rows" {
         let rows = [
             ReadyRow { id: "bi#01", title: "Short" },
-            ReadyRow { id: "bi#02", title: "A much longer title that will not fit in twelve columns" },
+            ReadyRow {
+                id: "bi#02",
+                title: "A much longer title that will not fit in twelve columns",
+            },
         ];
         let frame = render_ready_frame(rows, 12);
         assert.equal(frame.length(), 3);

@@ -1,0 +1,23 @@
+id = "bi#76"
+title = "BAML \\xHH escapes emit literal text — all styled output broken"
+status = "Open"
+kind = "Bug"
+area = "tui"
+body = """
+Found smoking the bi#67 pinned footer: the frame painted literal
+`\\x1b[2m...\\x1b[0m` text instead of dimming. Root cause: BAML 0.17.0
+has no `\\xHH` string escape — `"\\x1b".length()` is 4, not 1 — so
+every theme code in theme.baml and the tui.baml cursor marker emits
+backslash text. Existing tests encoded the bug (both sides literal,
+so they passed). `\\u001b` DOES decode (length 1, probed live).
+Fix: replace `\\x1b` with `\\u001b` (and `\\x07` with `\\u0007`) in
+theme.baml + tui.baml, update the assert literals, and add length
+regression tests that distinguish real ESC from literal text.
+Acceptance: styled footer renders dimmed on a TTY (no backslash
+text); cursor marker strips in HostTui.
+"""
+
+[[edge]]
+from = "bi#76"
+to = "bi#26"
+kind = "DependsOn"

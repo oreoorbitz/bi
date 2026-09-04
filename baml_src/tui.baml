@@ -14,8 +14,11 @@ function tui_state_new(width: int, height: int) -> TuiState {
     TuiState { width: width, height: height, focused: false, version: 0 }
 }
 
+// Raw 0x1B/0x07 bytes (bi#76): BAML has no hex/unicode escape, so the
+// marker below is bytes, not text. Must stay byte-equal to the host
+// CURSOR_MARKER or HostTui never strips it (pinned by length test).
 function cursor_marker() -> string {
-    "\x1b_pi:c\x07"
+    "_pi:c"
 }
 
 function visible_width(line: string) -> int {
