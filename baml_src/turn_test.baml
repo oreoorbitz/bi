@@ -307,12 +307,12 @@ testset "turn plumbing" {
     // xAI exercises the openai-responses compat arm (third constructor
     // path), so it gets both invoke and invoke_stream coverage.
     test "xai invoke reaches the wire and classifies transport failure" {
-        let result = SendTurn("xai", "grok-4", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        let result = SendTurn("xai", "grok-4.6", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
         assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
     }
 
     test "xai invoke_stream reaches the wire and classifies transport failure" {
-        let result = StreamTurn("xai", "grok-4", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        let result = StreamTurn("xai", "grok-4.6", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
         assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
     }
 

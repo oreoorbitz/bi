@@ -347,23 +347,52 @@ function ListModels(provider: string) -> Model[] {
     }
 }
 
+// xAI Grok (https://docs.x.ai/developers/models, https://docs.x.ai/developers/pricing):
+// Responses API over https://api.x.ai/v1. Costs below are the base tier
+// (<200k prompt tokens); every text model doubles input/output/cached
+// past 200k prompt tokens. Dated 4.20 snapshots omitted — the three
+// mainline versions plus the Grok Build coding model cover the lineup.
 function _xai_models() -> Model[] {
     [
         Model {
-            id: "grok-4",
-            name: "Grok 4",
+            id: "grok-4.6",
+            name: "Grok 4.6",
             api: "openai-responses",
             provider: "xai",
             base_url: "https://api.x.ai/v1",
             reasoning: true,
-            input: ["text"],
-            context_window: 256000,
+            input: ["text", "image"],
+            context_window: 500000,
             max_tokens: 8192,
-            cost: ModelCost { input: 3.0, output: 15.0, cache_read: null, cache_write: null },
+            cost: ModelCost { input: 2.0, output: 6.0, cache_read: 0.50, cache_write: null },
         },
         Model {
-            id: "grok-code-fast-1",
-            name: "Grok Code Fast 1",
+            id: "grok-4.5",
+            name: "Grok 4.5",
+            api: "openai-responses",
+            provider: "xai",
+            base_url: "https://api.x.ai/v1",
+            reasoning: true,
+            input: ["text", "image"],
+            context_window: 500000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 2.0, output: 6.0, cache_read: 0.30, cache_write: null },
+        },
+        Model {
+            id: "grok-4.3",
+            name: "Grok 4.3",
+            api: "openai-responses",
+            provider: "xai",
+            base_url: "https://api.x.ai/v1",
+            reasoning: true,
+            input: ["text", "image"],
+            context_window: 1000000,
+            max_tokens: 8192,
+            cost: ModelCost { input: 1.25, output: 2.50, cache_read: 0.20, cache_write: null },
+        },
+        Model {
+            id: "grok-build-0.1",
+            name: "Grok Build 0.1",
             api: "openai-responses",
             provider: "xai",
             base_url: "https://api.x.ai/v1",
@@ -371,7 +400,7 @@ function _xai_models() -> Model[] {
             input: ["text"],
             context_window: 256000,
             max_tokens: 8192,
-            cost: ModelCost { input: 0.2, output: 1.5, cache_read: null, cache_write: null },
+            cost: ModelCost { input: 1.0, output: 2.0, cache_read: 0.20, cache_write: null },
         },
     ]
 }

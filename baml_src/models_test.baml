@@ -11,8 +11,8 @@ testset "model catalog" {
         assert.equal(ListModels("openai").length(), 2)
     }
 
-    test "ListAllModels returns 50" {
-        assert.equal(ListAllModels().length(), 50)
+    test "ListAllModels returns 52" {
+        assert.equal(ListAllModels().length(), 52)
     }
 
     test "ListModels azure returns advisory deployments" {
@@ -42,7 +42,7 @@ testset "model catalog" {
         assert.equal(ListModels("baseten").length(), 2);
         assert.equal(ListModels("mistral").length(), 2);
         assert.equal(ListModels("fireworks").length(), 2);
-        assert.equal(ListModels("xai").length(), 2);
+        assert.equal(ListModels("xai").length(), 4);
         assert.equal(ListModels("minimax").length(), 2);
         assert.equal(ListModels("kimi-coding").length(), 2);
         assert.equal(ListModels("openrouter").length(), 2);
@@ -60,6 +60,22 @@ testset "model catalog" {
                 assert.equal(model.context_window, 1048576);
                 assert.equal(model.cost.input, 1.25);
                 assert.equal(model.cost.output, 4.25)
+            },
+            _ => assert.is_true(false),
+        }
+    }
+
+    test "GetModel grok-4.6 is xai reasoning with base-tier pricing" {
+        let m = GetModel("grok-4.6");
+        assert.not_null(m);
+        match (m) {
+            let model: Model => {
+                assert.equal(model.provider, "xai");
+                assert.equal(model.api, "openai-responses");
+                assert.is_true(model.reasoning);
+                assert.equal(model.context_window, 500000);
+                assert.equal(model.cost.input, 2.0);
+                assert.equal(model.cost.output, 6.0)
             },
             _ => assert.is_true(false),
         }

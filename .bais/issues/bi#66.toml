@@ -1,0 +1,7 @@
+id = "bi#66"
+title = "Grok catalog refresh (grok-4.6/4.5/4.3/build-0.1, true pricing)"
+status = "Open"
+kind = "Feat"
+area = "providers"
+body = """
+Seeded via `bi bais new` for bi#66."""
