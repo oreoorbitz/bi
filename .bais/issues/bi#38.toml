@@ -1,0 +1,14 @@
+id = "bi#38"
+title = "Content-hash event ids"
+status = "Open"
+kind = "Feat"
+area = "bais/events"
+body = """
+Replace dev-style `hub:<type>:<lc>` event ids with content hashes.
+Small change, large trust payoff: ids become self-verifying and sync
+dedup becomes structural instead of positional. Touches hub + store
+id generation; envelope shape is BAML-owned (ns_event/envelope.baml)
+so update it there first, then the host. Acceptance: all existing
+tests green with hash ids; duplicate delivery of the same event is a
+no-op by id equality; sync-test peers dedup without lc comparison.
+"""

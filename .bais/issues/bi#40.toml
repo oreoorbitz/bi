@@ -1,0 +1,26 @@
+id = "bi#40"
+title = "Two-agent drill: two Muse CLI sessions, one hub, one backlog"
+status = "Open"
+kind = "Feat"
+area = "bais/multi-agent"
+body = """
+Until observed end-to-end, multi-agent support is a claim, not a
+capability (lease-race.mjs only simulates in-process). Drill: two live
+Muse CLI sessions against one hub and one backlog containing a task
+both will race for. Expected: one 200, one 409, loser picks other
+work, `oversight` shows the conflict, `sample` reviews the Done work.
+Depends on bi#36 (drills green) and bi#39 (dogfood harness running).
+Acceptance: observed transcript of the race + conflict + review loop;
+any deviation from the expected 200/409/conflict/sample sequence is
+filed as a bug with the transcript attached.
+"""
+
+[[edge]]
+from = "bi#40"
+to = "bi#36"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#40"
+to = "bi#39"
+kind = "DependsOn"

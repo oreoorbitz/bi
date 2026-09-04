@@ -1,0 +1,25 @@
+id = "bi#39"
+title = "Dogfood hub leases with store-vs-scan cross-check"
+status = "Open"
+kind = "Feat"
+area = "bais/dogfood"
+body = """
+Run our own roadmaps (bi#26-33, BAGL list) through hub leases for real
+work, files as safety net. Build scripts/cross-check.mjs: every
+ready/graph answer compared between store.db and the directory scan,
+mismatches logged loud. A week of zero divergence under daily use is
+worth more than any synthetic test. Depends on bi#34 (history must
+survive ingest before dogfooding writes) and bi#36 (fault drills
+green). Acceptance: cross-check script wired into daily flow; log of
+divergence-free days; any divergence filed as P0 with repro.
+"""
+
+[[edge]]
+from = "bi#39"
+to = "bi#34"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#39"
+to = "bi#36"
+kind = "DependsOn"

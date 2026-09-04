@@ -1,0 +1,35 @@
+id = "bi#41"
+title = "P0: SQLite silent content flips serve altered projections as complete"
+status = "Open"
+kind = "Bug"
+area = "bais/store"
+body = """
+Found by scripts/fault-drills.mjs drill (a), 2026-09-04: sampled
+single-bit flips in store.db data pages (e.g. offset 3372 bits 0/5)
+serve ALTERED task projections with completeness still "complete"
+and hasStore still true. SQLite has no per-page checksums, so
+PRAGMA quick_check (added to hasStore) catches structural damage and
+0-byte files only — not content flips.
+Fix ladder, host owns storage, BAML owns verification policy:
+1. DONE — hasStore() verifies (quick_check + nonzero size), structural
+   damage falls back to the directory scan instead of serving lies.
+2. Structural fix — content verification on open: fingerprint the
+   projection against the hash-chained event log (re-reduce + compare,
+   or per-row hashes). Needs bi#38 content-hash ids first so the chain
+   is self-verifying.
+Interim: scripts/cross-check.mjs (bi#39) in the daily loop catches
+drift after the fact.
+Acceptance: fault-drills.mjs fully green AND wired into
+`npm test --prefix bais` (currently withheld to keep the suite green:
+only reducer-determinism + cross-check are wired until this lands).
+"""
+
+[[edge]]
+from = "bi#41"
+to = "bi#38"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#41"
+to = "bi#39"
+kind = "Related"

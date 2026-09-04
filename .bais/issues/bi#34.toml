@@ -1,0 +1,20 @@
+id = "bi#34"
+title = "Hub history survives ingest (merge-on-ingest or loud refusal)"
+status = "Open"
+kind = "Feat"
+area = "bais/store"
+body = """
+`bais ingest` rebuilds store.db from TOML and DROPS hub/sync-appended
+events — the single biggest reason the hub is not durable truth.
+Fix: either merge-on-ingest (replay hub events over the TOML seed) or a
+loud refusal when store.db holds events the TOML does not. BAML owns the
+merge/replay policy (ns_event/reduce.baml); host owns storage.
+Acceptance (offline, scripts/ingest-durability.mjs, non-zero exit on
+failure): append 10 events through the hub, run `ingest`, assert all 10
+survive byte-identical; same guarantee through snapshot export/import.
+"""
+
+[[edge]]
+from = "bi#34"
+to = "bi#35"
+kind = "Related"

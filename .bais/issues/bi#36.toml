@@ -1,0 +1,21 @@
+id = "bi#36"
+title = "Hub fault-injection drills"
+status = "Open"
+kind = "Feat"
+area = "bais/hub"
+body = """
+Existing tests cover honest paths (lease-race, sync-test, mcp-test).
+Attack the rest: kill -9 the hub mid-write then restart (write-ahead or
+it did not happen); corrupt store.db and confirm reads fall back to the
+directory scan instead of serving lies; prune, sync a new peer, confirm
+convergence; deliver every event twice and confirm idempotence.
+BAML owns admission/verification predicates; host owns kill/corrupt/
+restart execution. Acceptance: one script per drill next to
+lease-race.mjs, each exiting non-zero on failure, all wired into
+`npm test --prefix bais`.
+
+[[edge]]
+from = "bi#36"
+to = "bi#35"
+kind = "DependsOn"
+"""

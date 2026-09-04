@@ -1,0 +1,21 @@
+id = "bi#37"
+title = "Adversarial peer rejection, then signature-required mode"
+status = "Open"
+kind = "Feat"
+area = "bais/sync"
+body = """
+sync-test covers honest replication. Now: tampered event bodies,
+replayed events, forked chains, a peer with a revoked grant,
+clock-skewed timestamps. Each MUST be rejected with a named reason
+visible in `oversight`. Prove the detectors fire FIRST, then flip the
+default to signature-required mode (coordinator events signed, no more
+sig=null). Depends on content-hash ids (bi#38) so rejection and dedup
+are structural. BAML owns verify predicates (ns_event/verify.baml);
+host owns transport. Acceptance: adversarial script green offline;
+requireSigs on by default with zero honest-peer regressions.
+"""
+
+[[edge]]
+from = "bi#37"
+to = "bi#38"
+kind = "DependsOn"

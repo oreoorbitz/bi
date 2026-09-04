@@ -1,0 +1,16 @@
+id = "bi#35"
+title = "Reducer determinism property tests"
+status = "Open"
+kind = "Feat"
+area = "bais/reducer"
+body = """
+Same log in, same projection out — always. Without this, store.db can
+never be treated as a deletable cache and no recovery story holds.
+Property tests (scripts/reducer-determinism.mjs, offline): commuting
+event reorderings converge to identical tables; ingest-from-TOML and
+replay-from-log produce identical projections. BAML owns reduction
+(ns_event/reduce.baml, pure); host owns the harness. Any divergence
+is P0.
+Acceptance: new script wired into `npm test --prefix bais`, green;
+a seeded fuzz round (fixed seed, checked in) over interleavings.
+"""
