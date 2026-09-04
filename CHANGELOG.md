@@ -30,3 +30,7 @@ pricing, stored-key chain with missing-key `bi login` hints.
 
 UI foundation (bi#27/bi#33): markdown shaping, tool status lines,
 TTY-gated theme system.
+
+Transcript diffs (bi#71): edit/write tool results render BAML-shaped
+unified diffs inline (pure LCS in render.baml, baml-tested, host/BAML
+parity probed); anything not diffable keeps today's lines unchanged.

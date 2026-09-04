@@ -10,7 +10,7 @@ import { runAgent, runSingleImageTurn } from "./agent.js";
 import { HttpKeeperHub, LeaseKeeper } from "./keeper.js";
 import { HubSubscriber } from "./notify.js";
 import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, moveBaisIssue, checkBaisIssues, graphBaisIssues } from "./bais.js";
-import { listTools, handleTool } from "./tools.js";
+import { listTools, handleTool, emitToolDiff } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
 import { listCredentials } from "./auth.js";
@@ -1086,6 +1086,9 @@ async function runToolWithStatus(name: string, args: Record<string, unknown>): P
 	try {
 		const out = await handleTool(name, args);
 		console.log(await format_tool_done_async(name, out, false, { theme }));
+		// bi#71: edit/write results render the BAML-shaped unified diff
+		// inline; anything not diffable adds no lines (output unchanged).
+		await emitToolDiff(name, out);
 		return out;
 	} catch (e) {
 		console.log(await format_tool_done_async(name, e instanceof Error ? e.message : String(e), true, { theme }));
