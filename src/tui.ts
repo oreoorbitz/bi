@@ -24,14 +24,6 @@ export class HostTui {
 	}
 }
 
-export function renderReadyScreen(ready: { issue: { id: string; title: string } }[], width = 80): string[] {
-	// host renders directly; BAML TextComponent + FocusableTextComponent stay as baml test doubles
-	const header = "bi — ready BAIS";
-	const lines = [header.slice(0, width)];
-	for (const f of ready) lines.push(`${f.issue.id}  ${f.issue.title}`.slice(0, width));
-	return lines;
-}
-
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 // Live turn status on stderr. While a turn runs there is no active readline

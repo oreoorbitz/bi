@@ -14,7 +14,7 @@ import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
 import { listCredentials } from "./auth.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, pick_model_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, parse_changelog_async, format_changelog_async, complete_slash_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, pick_model_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, parse_changelog_async, format_changelog_async, complete_slash_async, render_ready_frame_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
 import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
 import { readClipboardImage, writeClipboardText, clipboardSupportsImage } from "./clipboard.js";
@@ -125,7 +125,7 @@ function bamlErrorMessage(e: unknown): string {
 	const raw = e instanceof Error ? e.message : String(e);
 	return raw.replace(/^baml error: (baml\.errors\.\w+: )?/, "").split("\n")[0];
 }
-import { HostTui, HostStatus, renderReadyScreen } from "./tui.js";
+import { HostTui, HostStatus } from "./tui.js";
 import { format_status, format_turn_summary } from "../baml_sdk/index.js";
 import { runBiLoop } from "./agent_loop.js";
 import { editInExternalEditor, editorCommand } from "./editor.js";
@@ -1414,13 +1414,19 @@ async function main(): Promise<void> {
 	if (!cmd) {
 		await warnBaisFailures();
 		const ready = await readyBaisIssues();
-		// HostTui differential — BAML owns Component/diff_lines, host renders (pi TUI spec)
+		// Ready frame renders in BAML (tui.baml render_ready_frame) —
+		// first production frame from the component model. HostTui
+		// only diffs + writes lines.
 		const tui = new HostTui();
+		tui.render(
+			await render_ready_frame_async(
+				ready.map((f) => ({ id: f.issue.id, title: f.issue.title })),
+				process.stdout.columns ?? 80,
+			),
+		);
 		if (ready.length === 0) {
-			tui.render(renderReadyScreen([], process.stdout.columns ?? 80));
 			console.log("(no ready BAIS issues — `bi bais list` to see all)");
 		} else {
-			tui.render(renderReadyScreen(ready, process.stdout.columns ?? 80));
 			for (const f of ready) console.log(`${f.issue.id}\t${f.issue.status}\t${f.issue.kind}\t${f.issue.title}`);
 		}
 		// session hint — bi native .bi (not .pi), validated via BAML SessionHeader

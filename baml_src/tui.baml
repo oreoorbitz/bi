@@ -112,6 +112,22 @@ function diff_lines(old: string[], new_lines: string[]) -> string[] {
     out
 }
 
+// Ready frame: the startup block (header + ready BAIS rows), width-capped.
+// First production frame from this file — renderReadyScreen's host-side
+// version is deleted with this change, not kept in parallel.
+class ReadyRow {
+    id: string,
+    title: string,
+}
+
+function render_ready_frame(rows: ReadyRow[], width: int) -> string[] {
+    let out = [truncate_chars("bi — ready BAIS", width)];
+    for (let r in rows) {
+        out.push(truncate_chars(`${r.id}  ${r.title}`, width))
+    }
+    out
+}
+
 interface Component {
     function render(self, width: int) -> string[] throws never
     function handle_input(self, data: string) -> void throws never

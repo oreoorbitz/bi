@@ -19,6 +19,21 @@ testset "tui" {
         assert.equal(visible_width("hello"), 5);
     }
 
+    test "ready frame caps width and keeps rows" {
+        let rows = [
+            ReadyRow { id: "bi#01", title: "Short" },
+            ReadyRow { id: "bi#02", title: "A much longer title that will not fit in twelve columns" },
+        ];
+        let frame = render_ready_frame(rows, 12);
+        assert.equal(frame.length(), 3);
+        assert.is_true((frame.at(0) ?? "").length() <= 13);
+        assert.equal(frame.at(1) ?? "", "bi#01  Short");
+        assert.is_true((frame.at(2) ?? "").starts_with("bi#02"));
+        let wide = render_ready_frame(rows, 80);
+        assert.equal(wide.at(0) ?? "", "bi — ready BAIS");
+        assert.equal(render_ready_frame([], 80).length(), 1)
+    }
+
     test "diff_lines" {
         let a = diff_lines(["a", "b", "c"], ["a", "x", "c"]);
         assert.equal(a, ["1"]);
