@@ -1,0 +1,15 @@
+id = "bi#26"
+title = "Coding-agent UI parity (epic)"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Pi `packages/coding-agent` interactive UI is ~17k lines (interactive-mode
+6545 + ~40 components ~10k + session-manager 1716 + theme 1336). Bi has a
+line-based readline REPL, spinner/summary status, 6 slashes, session
+files, print/json modes. This epic tracks closing the gap, child issues
+bi#27..bi#33. BAML owns text shaping/policy (message format, keybinding
+schema, theme tokens); host owns terminals, widgets, and event loops.
+Acceptance per child issue; epic closes when a side-by-side smoke of
+`bi` vs `pi` covers message rendering, selectors, sessions, and slashes.
+"""

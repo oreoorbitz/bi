@@ -1,0 +1,21 @@
+id = "bi#33"
+title = "Theme system"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Port pi `theme` (1336) + `theme-selector` + `theme-controller`. Bi has
+no theming. BAML owns theme tokens (palette/roles as data); host owns
+ANSI application. Acceptance: `/theme` lists, previews, and persists
+themes; all bi#27/bi#28 rendering honors the active theme.
+"""
+
+[[edge]]
+from = "bi#33"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#33"
+to = "bi#27"
+kind = "DependsOn"

@@ -1,0 +1,21 @@
+id = "bi#27"
+title = "Message and tool rendering (markdown, highlight, diff, images)"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Port pi `assistant-message` (197) / `user-message` + `markdown-transform`
++ `syntax-highlight` + `visual-truncate`; `tool-execution` (388) +
+`bash-execution` (220) + `diff` (147) renderers; `branch-summary` /
+`compaction-summary` / `skill-invocation` messages; `mermaid`; image
+display (`show-images-selector`, clipboard paste). Bi prints raw text
+today. BAML owns message-format shaping; host owns ANSI/markdown
+rendering. Acceptance: side-by-side transcript of a tool-heavy turn
+renders code blocks, diffs, and tool status readably; offline BAML tests
+for format arms.
+"""
+
+[[edge]]
+from = "bi#27"
+to = "bi#26"
+kind = "DependsOn"

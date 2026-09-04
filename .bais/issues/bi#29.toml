@@ -1,0 +1,24 @@
+id = "bi#29"
+title = "Settings selectors: settings, config, trust, oauth, extensions"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Port pi `settings-selector` (929) + `settings-submenu` (258) +
+`config-selector` (942) + `trust-selector` (134) + `oauth-selector`
+(214) + `extension-selector`/`extension-editor`/`extension-input` +
+`scoped-models-selector` (403) + `show-images-selector` +
+`user-message-selector` (155). Bi has `bi login` for the function but
+no TUI for any of these. Depends on bi#28 widget patterns. Acceptance:
+each selector opens, edits, and persists through the live REPL.
+"""
+
+[[edge]]
+from = "bi#29"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#29"
+to = "bi#28"
+kind = "DependsOn"

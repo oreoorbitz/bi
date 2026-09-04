@@ -1,0 +1,19 @@
+id = "bi#30"
+title = "Session UI: selector, resume/fork/clone, share, export, startup"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Port pi `session-selector` (1031) + `session-selector-search` (194)
+against `session-manager` (1716) semantics: resume/fork/clone, named
+sessions; `session-share` (210); HTML export (`session-export`,
+`export-html`); startup UI (`startup-ui`, `first-time-setup` (145),
+`session-picker`, `initial-message`). Bi `session.ts` is 66 lines with
+no resume/fork. Acceptance: `/resume` lists and restores a prior
+session; `/fork` branches it; `bi` first-run shows setup.
+"""
+
+[[edge]]
+from = "bi#30"
+to = "bi#26"
+kind = "DependsOn"

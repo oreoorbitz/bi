@@ -1,0 +1,30 @@
+id = "bi#31"
+title = "Missing slash commands (17)"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Bi has 6 builtin slashes (help/skills/compact/reload/quit/login); pi
+has 23. Port the missing 17: model, thinking, settings, session,
+resume, new, fork, clone, export, share, copy, tree, trust,
+scoped-models, name, import, changelog, hotkeys, logout. Selector-backed
+slashes depend on bi#28/bi#29/bi#30/bi#32; pure ones (copy, export,
+name, changelog, hotkeys, logout) can land first. BAML owns the slash
+registry (`builtin_slash_commands`); host owns dispatch. Acceptance:
+`/help` lists all 23; each executes or prints its not-yet-wired scope.
+"""
+
+[[edge]]
+from = "bi#31"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#31"
+to = "bi#28"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#31"
+to = "bi#30"
+kind = "DependsOn"

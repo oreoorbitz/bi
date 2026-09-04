@@ -1,0 +1,19 @@
+id = "bi#28"
+title = "Core selectors: model, thinking, footer/status"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Port pi `model-selector` (423) + `thinking-selector` (146) +
+`footer` (245, model/context-usage readout) + `status-indicator` (114)
++ `countdown-timer` + `bordered-loader`/`dynamic-border`. Highest
+similarity-per-effort after message rendering: model/thinking switching
+is core REPL workflow. BAML owns selector option shaping; host owns the
+interactive widget loop. Acceptance: `/model` and `/thinking` change the
+live REPL backend; footer shows model + context usage every turn.
+"""
+
+[[edge]]
+from = "bi#28"
+to = "bi#26"
+kind = "DependsOn"

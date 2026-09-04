@@ -1,0 +1,19 @@
+id = "bi#32"
+title = "Input chrome: tree selector, keybindings, external editor, clipboard"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Port pi `tree-selector` (1427, file browser — largest component) +
+`keybindings` (396, user-customizable hotkeys) + `external-editor`
+(46, $EDITOR support) + clipboard-image paste (`clipboard*.ts`,
+`tool-result-images`, `image-resize*`) + `custom-editor`/`custom-entry`
++ `daxnuts` (164) + `armin` (382). Largest, least central — last.
+Acceptance: `/tree` browses and attaches files; custom hotkeys persist;
+pasted images reach the turn as image parts.
+"""
+
+[[edge]]
+from = "bi#32"
+to = "bi#26"
+kind = "DependsOn"
