@@ -1,0 +1,25 @@
+id = "bi#57"
+title = "Red-check practice: revert-hunk verification for safety nets"
+status = "Open"
+kind = "Feat"
+area = "bits/process"
+body = """
+Findings-file #12, applied: "it compiles/passes" is not verification.
+For every safety net (fault-drills, hasStore fallback, fencing
+rejections, budget caps), the authoring agent must red-check —
+revert one load-bearing hunk, confirm the suite fails FOR THE RIGHT
+REASON, restore, re-run green. Twice-burned precedent: a "passing"
+test can be vacuous and a fix incomplete, both invisible to green.
+Work: write the red-check protocol into AGENTS.md (one paragraph +
+the exact command shape); retrofit red-checks onto the existing
+safety nets (fault-drills a/b/c, hasStore quick_check fallback,
+lease fencing refuse) as committed probe steps, not folklore.
+Acceptance: each safety net has a recorded red-check (hunk, expected
+failure reason, observed output); a deliberately weakened net
+(mutation) is caught by its own suite in the demonstration run.
+"""
+
+[[edge]]
+from = "bi#57"
+to = "bi#36"
+kind = "Related"

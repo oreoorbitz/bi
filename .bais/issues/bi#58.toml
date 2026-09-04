@@ -1,0 +1,26 @@
+id = "bi#58"
+title = "Vacuous-assertion sweep over all suites"
+status = "Open"
+kind = "Feat"
+area = "bits/process"
+body = """
+Findings-file #5, applied: assertions that cannot fail hide real
+bugs (`>= 1` on a possibly-missing key passes when the key is
+absent). Our probes favor exact equality, but nobody has swept for
+the weak ones — and a 14/14 or "all green" that cannot go red is
+camouflage, not coverage.
+Work: sweep every scripts/*.mjs + baml test block for assertions
+that cannot fail (truthy checks on always-present values, membership
+where equality belongs, exit-code checks that mask stderr, timing
+bounds that never bind). Strengthen each to the equality form or
+file why it is inherently boolean. Equality beats membership.
+Acceptance: sweep report listing every assertion touched
+(strengthened or justified); one deliberately injected projection
+bug per suite confirmed caught post-sweep that the pre-sweep suite
+missed (or a written statement of why none exists).
+"""
+
+[[edge]]
+from = "bi#58"
+to = "bi#57"
+kind = "Related"

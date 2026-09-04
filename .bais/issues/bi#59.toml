@@ -1,0 +1,32 @@
+id = "bi#59"
+title = "Fresh-context reviewer role for load-bearing merges"
+status = "Open"
+kind = "Feat"
+area = "bits/process"
+body = """
+Findings-file #11, applied: the merger is blind to its own residue
+after a merge session (my bi#38 line carried a wrong-direction
+package.json edit I caught only by re-reading). Every load-bearing
+merge gets a fresh-context reviewer — an agent with no stake in the
+implementation, dispatched from a clean worktree, told to red-check
+one named hunk empirically. Self-review is not review, and
+merger-review is barely review.
+Work: define the reviewer brief template (clean worktree, named
+load-bearing questions, revert-hunk red-check per bi#57, report
+format, /tmp-confirmed handoff per bi#56); use it on the next two
+load-bearing merges (bi#41 fix, bi#42 clocks) as the pilot.
+Acceptance: template committed (AGENTS.md or BITS); two pilot
+reviews filed as BAIS issues with evidence; at least one finding
+across the pilots (or a written statement of the hunks checked and
+why they held).
+"""
+
+[[edge]]
+from = "bi#59"
+to = "bi#57"
+kind = "Related"
+
+[[edge]]
+from = "bi#59"
+to = "bi#56"
+kind = "Related"

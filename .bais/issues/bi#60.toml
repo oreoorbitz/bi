@@ -1,0 +1,32 @@
+id = "bi#60"
+title = "Injected-violation proof for every preventive gate"
+status = "Open"
+kind = "Feat"
+area = "bits/process"
+body = """
+Findings-file #13, applied: a preventive gate with no demonstrated
+catch is a claim, not a control. When adding any gate (strict TOML
+rejection, hasStore fallback, fencing refuse, budget cap, sig
+requirement), ship an injected violation proving marginal value:
+(a) the new gate catches it, (b) every pre-existing check misses it.
+If existing checks already catch it, the gate is redundant — say so
+and don't ship it. The injection sweep doubles as documentation of
+the exact gap ("these four tells slipped past every existing rule").
+Work: retrofit injection proofs onto the current gates (quick_check
+fallback, fencing, caps, strict-TOML unknowns) as committed fixture
+steps in their suites; make "injection proof" a checklist item in
+the gate-authoring path (bi#55's SPEC rule is the natural home).
+Acceptance: each listed gate names its injected violations + which
+pre-existing checks miss them; one proposed-but-redundant gate
+documented as rejected (or a statement that none was found).
+"""
+
+[[edge]]
+from = "bi#60"
+to = "bi#55"
+kind = "Related"
+
+[[edge]]
+from = "bi#60"
+to = "bi#57"
+kind = "Related"
