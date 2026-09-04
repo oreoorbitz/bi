@@ -28,5 +28,10 @@ Providers: Meta Muse Spark via `api.meta.ai` (bi#65), Grok catalog
 refresh from x.ai docs (bi#66), GLM/Flash from z.ai docs with true
 pricing, stored-key chain with missing-key `bi login` hints.
 
+Pinned footer (bi#67): the REPL model/context readout pins to the
+bottom row via a scroll region on TTY, repainted differentially on turn
+end through the BAML footer frame; pipes keep the plain printed line
+byte-identical.
+
 UI foundation (bi#27/bi#33): markdown shaping, tool status lines,
 TTY-gated theme system.

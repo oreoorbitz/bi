@@ -42,6 +42,78 @@ export class HostTui {
 	}
 }
 
+// Pinned bottom-row footer (bi#67). BAML owns the frame line
+// (render_footer_frame, width-capped to one row); the host owns the
+// scroll region + repaint. DECSTBM reserves the last row, so turn output
+// scrolls above the footer instead of pushing it away.
+//
+// Readline coexistence: repaints happen only between turns (no active
+// question pending), save the cursor, address the footer row absolutely,
+// and restore — readline's in-progress line is never touched. Row N is
+// only ever addressed by HostFooter (region scrolling cannot reach it),
+// which is what makes the differential skip sound. Pipes and degenerate
+// screens fall back to a plain printed line, byte-identical to the
+// pre-footer console.error readout.
+export class HostFooter {
+	private installedRows = 0;
+	private lastLine: string | null = null;
+	constructor(
+		private dims: () => { rows: number; cols: number } = () => ({
+			rows: process.stdout.rows ?? 0,
+			cols: process.stdout.columns ?? 80,
+		}),
+		private tty: () => boolean = () => !!process.stdout.isTTY && !!process.stderr.isTTY,
+		private write: (s: string) => void = (s) => process.stderr.write(s),
+	) {}
+	// Paints the BAML-shaped frame row; fallback is the plain printed
+	// footer for pipes (byte-identical to the old readout). Differential:
+	// an unchanged line on an unchanged screen writes zero bytes. A
+	// resize reinstalls the region and repaints even when the text matches.
+	show(frame: string, fallback: string): void {
+		const { rows } = this.dims();
+		if (!this.tty() || rows < 2) {
+			this.reset();
+			this.write(fallback + "\n");
+			return;
+		}
+		if (this.installedRows !== rows) this.install(rows, frame);
+		else if (this.lastLine !== frame) this.paint(rows, frame);
+	}
+	// Tears down the region and erases the footer row; silent when the
+	// region was never installed (pipes stay escape-free).
+	dispose(): void {
+		this.reset();
+	}
+	private install(rows: number, frame: string): void {
+		// DECSTBM homes the cursor, so save first; paint the footer row,
+		// then restore — the transcript cursor never moves.
+		this.write("\x1b[s");
+		this.write(`\x1b[1;${rows - 1}r`);
+		this.paintBody(rows, frame);
+		this.write("\x1b[u");
+		this.installedRows = rows;
+		this.lastLine = frame;
+	}
+	private paint(rows: number, frame: string): void {
+		this.write("\x1b[s");
+		this.paintBody(rows, frame);
+		this.write("\x1b[u");
+		this.lastLine = frame;
+	}
+	private paintBody(rows: number, frame: string): void {
+		this.write(`\x1b[${rows};1H\x1b[2K${frame}`);
+	}
+	private reset(): void {
+		if (this.installedRows === 0) return;
+		this.write("\x1b[s");
+		this.write("\x1b[r");
+		this.write(`\x1b[${this.installedRows};1H\x1b[2K`);
+		this.write("\x1b[u");
+		this.installedRows = 0;
+		this.lastLine = null;
+	}
+}
+
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 // Live turn status on stderr. While a turn runs there is no active readline
