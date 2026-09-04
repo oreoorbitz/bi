@@ -1,0 +1,28 @@
+id = "bi#61"
+title = "BAIS playbook in prompt context (agents must not infer the protocol)"
+status = "Open"
+kind = "Feat"
+area = "bi/agent"
+body = """
+`bi run` injects [BAIS ready] as bare `- id title` lines (cli.ts:160)
+plus 8 bais_* tools — no playbook. The LLM must infer: claim before
+work, fencing echo on writes, keeper renews (don't hand-renew),
+notifications arrive via queue (don't poll), move announces unblocks,
+verify checks trust. Inferred protocol is violated protocol.
+Work: short deterministic playbook injected with the ready list —
+claim -> work (keeper holds) -> handoff/submit with fencing echo ->
+move -> verify when it smells. Procedure as plain text; message
+shapes as BAML types (bi#53 Handoff/Progress/Verdict plug in here).
+Update the playbook in the same commit as any protocol change that
+invalidates it (lease clocks bi#42, sig mode bi#37) — stale playbook
+is worse than none, so the checklist item is explicit.
+Acceptance: stub-agent probe — an LLM-less scripted run following
+ONLY the playbook text completes claim/work/submit/move against a
+stub hub with zero off-script calls; playbook text asserts its own
+version against hub capabilities and warns on mismatch.
+"""
+
+[[edge]]
+from = "bi#61"
+to = "bi#53"
+kind = "Related"

@@ -1,0 +1,34 @@
+id = "bi#62"
+title = "Wire keeper+subscriber into bi run + commit stub-hub gates"
+status = "Open"
+kind = "Bug"
+area = "bi/agent"
+body = """
+bi#43/44 shipped as options on runAgent that NO CLI path constructs
+(cli.ts has zero references) — the keeper never keeps, the
+subscriber never subscribes, in any real `bi run`. Found by grep,
+not by a gate: bi has no test script and the 13/13 probes live only
+in /tmp. Dead-on-arrival features are the failure gates exist to
+catch. Jumps the queue.
+Work: (1) wire subscriber + keeper into `bi run` claim flow
+(construct both, drain between turns per bi#44, lease_lost stops per
+bi#43); (2) commit the stub-hub probes as bi/scripts/ (notifications
+drain, keeper renews across ttls with zero LLM calls, lease_lost
+stops loop, fenced admit / stale refuse) wired into a new `npm test
+--prefix bi`, offline seconds; (3) conformance on readyBaisIssues
+output shape (ids + titles today; reasons + urgency when bi#48/51
+host halves land) so context regressions fail loudly.
+Acceptance: `bi run` against stub hub holds a lease across renewals
+with no LLM-issued poll or renew; npm test green; deleting the
+wiring (red-check per bi#57) fails the suite for the named reason.
+"""
+
+[[edge]]
+from = "bi#62"
+to = "bi#43"
+kind = "Related"
+
+[[edge]]
+from = "bi#62"
+to = "bi#44"
+kind = "Related"
