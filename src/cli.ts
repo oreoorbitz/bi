@@ -13,7 +13,7 @@ import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, mo
 import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, resolve_model_ref_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, type Skill } from "./skills.js";
 import { runResultToJsonLines, finalText } from "./events.js";
 import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow, appendSessionEntries, loadSessionTranscript, sessionResumeList, sessionIdFromFile } from "./session.js";
@@ -40,6 +40,30 @@ function writeHistoryFile(file: string, oldestFirst: string[]): void {
 		mkdirSync(dirname(file), { recursive: true });
 		writeFileSync(file, oldestFirst.slice(-200).join("\n") + "\n");
 	} catch {}
+}
+
+// bi#33: active theme (~/.bi/theme.json, next to history). BAML owns the
+// palettes; the host owns WHEN styling applies — TTY stdout only, with
+// NO_COLOR respected. Pipes, tests, and json mode resolve null, which
+// renders byte-identical plain text.
+function themeFile(): string {
+	return join(dirname(getBiSessionsDir()), "theme.json");
+}
+
+async function readActiveTheme(): Promise<string> {
+	try {
+		if (!existsSync(themeFile())) return "default";
+		const raw = JSON.parse(readFileSync(themeFile(), "utf8"));
+		const name = typeof raw?.name === "string" ? raw.name : "default";
+		return (await get_theme_async(name)) ? name : "default";
+	} catch {
+		return "default";
+	}
+}
+
+async function activeTheme(): Promise<string | null> {
+	if (!process.stdout.isTTY || process.env.NO_COLOR != null) return null;
+	return readActiveTheme();
 }
 import { HostTui, HostStatus, renderReadyScreen } from "./tui.js";
 import { format_status, format_turn_summary } from "../baml_sdk/index.js";
@@ -173,12 +197,39 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			console.log(await hotkeys_text_async());
 			return history;
 		}
+		// bi#33: bare /theme lists (current marked), `preview` samples
+		// every role in each palette, a name persists the choice.
+		if (t.name === "theme") {
+			if (!t.args || t.args === "list") {
+				console.log(await format_theme_list_async(await readActiveTheme()));
+				return history;
+			}
+			if (t.args === "preview") {
+				for (const name of ["default", "light", "none"]) {
+					console.log(`${name}:\n${await theme_preview_async(name)}`);
+				}
+				return history;
+			}
+			if (!(await get_theme_async(t.args))) {
+				console.error(`unknown theme "${t.args}" — /theme lists default/light/none`);
+				return history;
+			}
+			try {
+				mkdirSync(dirname(themeFile()), { recursive: true });
+				writeFileSync(themeFile(), JSON.stringify({ name: t.args }) + "\n");
+			} catch (e) {
+				console.error(`[bi] theme persist failed (${e instanceof Error ? e.message : e})`);
+				return history;
+			}
+			console.error(`[bi] theme now ${t.args}`);
+			return history;
+		}
 		// bi#28: bare /model lists the catalog (current marked), with an
 		// argument it switches the live backend — provider follows the
 		// resolved model record, so `xai/grok-4.6` moves both at once.
 		if (t.name === "model") {
 			if (!t.args) {
-				console.log(await format_model_list_async(backend?.model ?? "claude-haiku-4-5"));
+				console.log(await format_model_list_async(backend?.model ?? "claude-haiku-4-5", { theme: await activeTheme() }));
 				return history;
 			}
 			const m = await resolve_model_ref_async(t.args);
@@ -199,7 +250,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 		// ignore the config, and non-reasoning models are guarded out.
 		if (t.name === "thinking") {
 			if (!t.args) {
-				console.log(await format_thinking_list_async(backend?.thinking ?? "off"));
+				console.log(await format_thinking_list_async(backend?.thinking ?? "off", { theme: await activeTheme() }));
 				return history;
 			}
 			if (!is_valid_thinking_level(t.args)) {
@@ -285,13 +336,14 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 // a char count). Same wrapper for REPL and `bi run`; throw semantics
 // unchanged (runAgent has no handler try/catch today).
 async function runToolWithStatus(name: string, args: Record<string, unknown>): Promise<string> {
-	console.log(await format_tool_start_async(name, JSON.stringify(args)));
+	const theme = await activeTheme();
+	console.log(await format_tool_start_async(name, JSON.stringify(args), { theme }));
 	try {
 		const out = await handleTool(name, args);
-		console.log(await format_tool_done_async(name, out, false));
+		console.log(await format_tool_done_async(name, out, false, { theme }));
 		return out;
 	} catch (e) {
-		console.log(await format_tool_done_async(name, e instanceof Error ? e.message : String(e), true));
+		console.log(await format_tool_done_async(name, e instanceof Error ? e.message : String(e), true, { theme }));
 		throw e;
 	}
 }
@@ -360,9 +412,10 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	}
 	status.stop({ failed: false, detail: "", turns: Math.max(assistantCount, 1), messages: result.messages.length });
 	// bi#27: assistant text renders through the BAML markdown shaper.
+	const theme = await activeTheme();
 	for (const m of result.messages) {
 		if ((m as any).role !== "assistant") continue;
-		console.log(await render_markdown_text_async((m as any).text ?? JSON.stringify((m as any).content)));
+		console.log(await render_markdown_text_async((m as any).text ?? JSON.stringify((m as any).content), { theme }));
 	}
 	return result.messages;
 }
@@ -491,7 +544,7 @@ async function repl(skills: Skill[]): Promise<void> {
 					);
 					sess.persisted = out.length;
 					// bi#28: footer readout after every turn (BAML-shaped).
-					console.error(await format_repl_footer_async(backend.provider, backend.model, backend.thinking ?? "default", sess.turn, history.length));
+					console.error(await format_repl_footer_async(backend.provider, backend.model, backend.thinking ?? "default", sess.turn, history.length, { theme: await activeTheme() }));
 				}
 			}
 		}
@@ -795,20 +848,22 @@ async function main(): Promise<void> {
 			if (guidance) console.error(guidance);
 			process.exit(1);
 		}
+		// bi#33: one theme resolution for the whole result dump.
+		const runTheme = await activeTheme();
 		if (hasFlag(args, "--print") || hasFlag(args, "-p")) {
 			const t = finalText(result);
 			// bi#27: human print path renders markdown; json mode above stays raw.
-			if (t) console.log(await render_markdown_text_async(t));
+			if (t) console.log(await render_markdown_text_async(t, { theme: runTheme }));
 			return;
 		}
 		// bi#27: history display shapes text blocks and tool calls alike.
 		for (const msg of result.messages) {
 			if (msg.role === "assistant" && "text" in msg) {
-				console.log(await render_markdown_text_async(msg.text));
+				console.log(await render_markdown_text_async(msg.text, { theme: runTheme }));
 			} else if (msg.role === "assistant" && "content" in msg) {
 				for (const b of (msg as any).content) {
-					if (b.type === "text") console.log(await render_markdown_text_async(b.text));
-					else if (b.type === "toolUse") console.log(await format_tool_start_async(b.name, JSON.stringify(b.args)));
+					if (b.type === "text") console.log(await render_markdown_text_async(b.text, { theme: runTheme }));
+					else if (b.type === "toolUse") console.log(await format_tool_start_async(b.name, JSON.stringify(b.args), { theme: runTheme }));
 				}
 			}
 		}

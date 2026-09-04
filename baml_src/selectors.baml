@@ -52,32 +52,32 @@ function thinking_config_for_level(level: string) -> anthropic.ThinkingConfig? {
     }
 }
 
-function format_thinking_list(current: string) -> string {
+function format_thinking_list(current: string, theme: string? = null) -> string {
     let out = "";
     for (let level in thinking_levels()) {
-        let mark = if (level == current) {
-            "*"
+        let row = if (level == current) {
+            style_segment(`* ${level} — ${thinking_level_description(level)}`, "accent", theme)
         } else {
-            " "
+            `  ${level} — ${thinking_level_description(level)}`
         };
-        out = `${out}${mark} ${level} — ${thinking_level_description(level)}\n`;
+        out = `${out}${row}\n`;
     }
     out
 }
 
 // Catalog-wide model list grouped by provider; current backend marked.
 // Costs are per-1M-tokens input/output like the catalog rows.
-function format_model_list(current_id: string) -> string {
+function format_model_list(current_id: string, theme: string? = null) -> string {
     let out = "";
     for (let p in ListProviders()) {
-        out = `${out}${p.id}:\n`;
+        out = `${out}${style_segment(`${p.id}:`, "dim", theme)}\n`;
         for (let m in ListModels(p.id)) {
-            let mark = if (m.id == current_id) {
-                "*"
+            let row = if (m.id == current_id) {
+                style_segment(`* ${m.id} — ${m.context_window} ctx ${m.cost.input}/${m.cost.output} per 1M`, "accent", theme)
             } else {
-                " "
+                `  ${m.id} — ${m.context_window} ctx ${m.cost.input}/${m.cost.output} per 1M`
             };
-            out = `${out}  ${mark} ${m.id} — ${m.context_window} ctx ${m.cost.input}/${m.cost.output} per 1M\n`;
+            out = `${out}${row}\n`;
         }
     }
     out
@@ -121,6 +121,7 @@ function format_repl_footer(
     thinking: string,
     turns: int,
     messages: int,
+    theme: string? = null,
 ) -> string {
     let tm = if (turns == 1) {
         "1 turn"
@@ -132,7 +133,7 @@ function format_repl_footer(
     } else {
         `${messages} messages`
     };
-    `${provider}/${model} · thinking ${thinking} · ${tm} · ${mm}`
+    style_segment(`${provider}/${model} · thinking ${thinking} · ${tm} · ${mm}`, "dim", theme)
 }
 
 test "thinking levels are pi's seven in order" {
@@ -194,6 +195,16 @@ test "lists mark the current backend" {
     let levels = format_thinking_list("medium");
     assert.contains(levels, "* medium — Moderate reasoning (~8k tokens)");
     assert.contains(levels, "  high — Deep reasoning (~16k tokens)")
+}
+
+test "themed lists style current rows only" {
+    let models = format_model_list("grok-4.6", theme = "default");
+    assert.contains(models, "grok-4.6");
+    assert.is_true(models.length() > format_model_list("grok-4.6", theme = null).length());
+    assert.contains(format_model_list("grok-4.6", theme = null), "* grok-4.6");
+    let footer = format_repl_footer("xai", "grok-4.6", "high", 2, 5, theme = "default");
+    assert.contains(footer, "xai/grok-4.6");
+    assert.is_true(footer.length() > format_repl_footer("xai", "grok-4.6", "high", 2, 5, theme = null).length())
 }
 
 test "footer names backend and counters" {

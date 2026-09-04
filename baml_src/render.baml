@@ -99,14 +99,14 @@ function count_hashes(line: string) -> int {
 
 // One prose line: headings lose their markers, rules become ···,
 // everything else goes through inline spans.
-function render_prose_line(line: string) -> string {
+function render_prose_line(line: string, theme: string? = null) -> string {
     let trimmed = line.trim();
     if (trimmed == "---" || trimmed == "***" || trimmed == "___" || trimmed == "- - -") {
-        "···"
+        style_segment("···", "dim", theme)
     } else {
         let hashes = count_hashes(line);
         if (hashes >= 1 && hashes <= 6 && hashes < line.length() && line.slice(hashes, hashes + 1) == " ") {
-            render_inline(line.slice(hashes + 1, line.length()))
+            style_segment(render_inline(line.slice(hashes + 1, line.length())), "accent", theme)
         } else {
             render_inline(line)
         }
@@ -115,7 +115,7 @@ function render_prose_line(line: string) -> string {
 
 // Full message: code fences pass through with ··· delimiters (lang kept
 // on the opener), prose lines render. Trailing-newline shape preserved.
-function render_markdown_text(text: string) -> string {
+function render_markdown_text(text: string, theme: string? = null) -> string {
     let lines = text.split("\n");
     let out = "";
     let in_fence = false;
@@ -124,14 +124,14 @@ function render_markdown_text(text: string) -> string {
             in_fence = !in_fence;
             let lang = line.slice(3, line.length()).trim();
             if (lang.length() > 0 && in_fence) {
-                `··· ${lang}`
+                style_segment(`··· ${lang}`, "dim", theme)
             } else {
-                "···"
+                style_segment("···", "dim", theme)
             }
         } else if (in_fence) {
             line
         } else {
-            render_prose_line(line)
+            render_prose_line(line, theme = theme)
         };
         out = `${out}${rendered}\n`;
     }
@@ -161,15 +161,15 @@ function first_line(text: string) -> string {
 // start names the call with truncated args, done names the outcome.
 // Failures show the first output line (errors need visibility);
 // successes show only a char count (the body already went to the model).
-function format_tool_start(name: string, args_json: string) -> string {
-    `◌ ${name} — ${truncate_chars(args_json, 100)}`
+function format_tool_start(name: string, args_json: string, theme: string? = null) -> string {
+    style_segment(`◌ ${name} — ${truncate_chars(args_json, 100)}`, "busy", theme)
 }
 
-function format_tool_done(name: string, output: string, failed: bool) -> string {
+function format_tool_done(name: string, output: string, failed: bool, theme: string? = null) -> string {
     if (failed) {
-        `✗ ${name} — ${truncate_chars(first_line(output), 120)}`
+        style_segment(`✗ ${name} — ${truncate_chars(first_line(output), 120)}`, "bad", theme)
     } else {
-        `✓ ${name} · ${output.length()} chars`
+        style_segment(`✓ ${name} · ${output.length()} chars`, "good", theme)
     }
 }
 
@@ -195,6 +195,16 @@ test "inline spans strip pair markers and expand links" {
     assert.equal(render_inline("look ![cat](c.png)"), "look [image: cat]");
     assert.equal(render_inline("unmatched [bracket"), "unmatched [bracket");
     assert.equal(render_inline("loose ** mark"), "loose  mark")
+}
+
+test "themed segments wrap, plain stays byte-clean" {
+    assert.equal(render_prose_line("## Hi", theme = null), "Hi");
+    assert.contains(render_prose_line("## Hi", theme = "default"), "Hi");
+    assert.is_true(render_prose_line("## Hi", theme = "default").length() > "Hi".length());
+    assert.equal(format_tool_start("bash", "{}", theme = "none"), "◌ bash — {}");
+    assert.equal(format_tool_done("bash", "ok", false, theme = null), "✓ bash · 2 chars");
+    assert.is_true(format_tool_done("bash", "ok", false, theme = "default").length() > "✓ bash · 2 chars".length());
+    assert.is_true(!render_markdown_text("# T\n```py\nx\n```", theme = "default").includes("```"))
 }
 
 test "tool status lines name call and outcome" {

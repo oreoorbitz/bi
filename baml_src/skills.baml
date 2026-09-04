@@ -183,6 +183,12 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
             scope: null,
         },
         BuiltinSlashCommand {
+            name: "theme",
+            description: "List themes, preview, or set the active theme",
+            argument_hint: "[name|preview]",
+            scope: null,
+        },
+        BuiltinSlashCommand {
             name: "fork",
             description: "Branch the transcript into a new session file",
             argument_hint: null,
@@ -325,11 +331,12 @@ test "slash dispatch finds builtins then skills" {
     assert.equal(lookup_slash("/review", skills), "review");
     assert.equal(lookup_slash("review", skills), "review");
     assert.equal(lookup_slash("/nope", skills), null);
-    assert.equal(builtin_slash_commands().length(), 24)
+    assert.equal(lookup_slash("/theme", skills), "theme");
+    assert.equal(builtin_slash_commands().length(), 25)
 }
 
 test "registry is pi's 23 plus bi help" {
-    for (let want in ["help", "settings", "model", "tree", "thinking", "scoped-models", "export", "import", "share", "copy", "name", "session", "changelog", "hotkeys", "fork", "clone", "trust", "login", "logout", "new", "compact", "resume", "reload", "quit"]) {
+    for (let want in ["help", "settings", "model", "tree", "thinking", "scoped-models", "export", "import", "share", "copy", "name", "session", "changelog", "hotkeys", "theme", "fork", "clone", "trust", "login", "logout", "new", "compact", "resume", "reload", "quit"]) {
         let found = false;
         for (let b in builtin_slash_commands()) {
             if (b.name == want) {
@@ -353,6 +360,7 @@ test "scope marks live vs owning issue" {
             "login" => assert.is_true(b.scope is null),
             "logout" => assert.is_true(b.scope is null),
             "hotkeys" => assert.is_true(b.scope is null),
+            "theme" => assert.is_true(b.scope is null),
             "quit" => assert.is_true(b.scope is null),
             "model" => assert.is_true(b.scope is null),
             "thinking" => assert.is_true(b.scope is null),
