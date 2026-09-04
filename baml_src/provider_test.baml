@@ -174,19 +174,19 @@ testset "provider registry" {
     test "MissingKeyMessage names the var for known providers" {
         assert.equal(
             MissingKeyMessage("groq"),
-            "groq needs an API key: pass --api-key, or set GROQ_API_KEY",
+            "groq needs an API key: pass --api-key, set GROQ_API_KEY, or run `bi login groq`",
         );
         assert.equal(
             MissingKeyMessage("openai_responses"),
-            "openai_responses needs an API key: pass --api-key, or set OPENAI_API_KEY",
+            "openai_responses needs an API key: pass --api-key, set OPENAI_API_KEY, or run `bi login openai_responses`",
         );
         assert.equal(
             MissingKeyMessage("huggingface"),
-            "huggingface needs an API key: pass --api-key, or set HF_TOKEN",
+            "huggingface needs an API key: pass --api-key, set HF_TOKEN, or run `bi login huggingface`",
         );
         assert.equal(
             MissingKeyMessage("azure-openai-responses"),
-            "azure-openai-responses needs an API key: pass --api-key, or set AZURE_OPENAI_API_KEY",
+            "azure-openai-responses needs an API key: pass --api-key, set AZURE_OPENAI_API_KEY, or run `bi login azure-openai-responses`",
         )
     }
 
