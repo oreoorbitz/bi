@@ -13,7 +13,7 @@ import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, mo
 import { listTools, handleTool } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, type Skill } from "./skills.js";
 import { runResultToJsonLines, finalText } from "./events.js";
 import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow } from "./session.js";
@@ -142,6 +142,24 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			} catch (e) {
 				console.error(e instanceof Error ? e.message : e);
 			}
+			return history;
+		}
+		if (t.name === "logout") {
+			try {
+				await runLogout(["logout", ...t.args.split(/\s+/).filter((s) => s.length > 0)]);
+			} catch (e) {
+				console.error(e instanceof Error ? e.message : e);
+			}
+			return history;
+		}
+		if (t.name === "hotkeys") {
+			console.log(await hotkeys_text_async());
+			return history;
+		}
+		// bi#31: scoped but unwired — name the owning issue instead of
+		// failing silent or pretending the command ran.
+		if (t.scope) {
+			console.error(`/${t.name} isn't wired yet — tracked in ${t.scope}`);
 			return history;
 		}
 		return history;

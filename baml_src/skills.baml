@@ -20,6 +20,11 @@ class BuiltinSlashCommand {
     name: string,
     description: string,
     argument_hint: string?,
+    // Wiring policy (bi#31): null = live in the REPL today; otherwise the
+    // owning issue that will wire it (bi#28 selectors, bi#29 settings,
+    // bi#30 sessions, bi#32 input chrome). The host prints the scope
+    // instead of failing silent or claiming the command works.
+    scope: string?,
 }
 
 // pi's Agent Skills name rules exactly: <=64 chars, lowercase a-z/0-9/hyphens,
@@ -88,30 +93,162 @@ function format_skills_for_prompt(skills: Skill[]) -> string {
     }
 }
 
+// Full registry (bi#31): pi's 23 builtins transcribed verbatim
+// (pi/packages/coding-agent/src/core/slash-commands.ts) plus bi's
+// /help. scope null = live; otherwise the issue that wires it.
 function builtin_slash_commands() -> BuiltinSlashCommand[] {
     [
         BuiltinSlashCommand {
             name: "help",
             description: "List slash commands and skills",
             argument_hint: null,
+            scope: null,
         },
         BuiltinSlashCommand {
-            name: "compact",
-            description: "Compact the session context now",
+            name: "settings",
+            description: "Open settings menu",
             argument_hint: null,
+            scope: "bi#29",
         },
         BuiltinSlashCommand {
-            name: "reload",
-            description: "Rescan skill directories",
+            name: "model",
+            description: "Select model (opens selector UI)",
+            argument_hint: "<provider/model>",
+            scope: "bi#28",
+        },
+        BuiltinSlashCommand {
+            name: "tree",
+            description: "Navigate session tree (switch branches)",
             argument_hint: null,
+            scope: "bi#32",
+        },
+        BuiltinSlashCommand {
+            name: "thinking",
+            description: "Set thinking level",
+            argument_hint: "<level>",
+            scope: "bi#28",
+        },
+        BuiltinSlashCommand {
+            name: "scoped-models",
+            description: "Enable/disable models for Ctrl+P cycling",
+            argument_hint: null,
+            scope: "bi#28",
+        },
+        BuiltinSlashCommand {
+            name: "export",
+            description: "Export session (HTML default, or specify path: .html/.jsonl)",
+            argument_hint: null,
+            scope: "bi#30",
+        },
+        BuiltinSlashCommand {
+            name: "import",
+            description: "Import and resume a session from a JSONL file",
+            argument_hint: null,
+            scope: "bi#30",
+        },
+        BuiltinSlashCommand {
+            name: "share",
+            description: "Share session as a secret GitHub gist",
+            argument_hint: null,
+            scope: "bi#30",
+        },
+        BuiltinSlashCommand {
+            name: "copy",
+            description: "Copy last agent message to clipboard",
+            argument_hint: null,
+            scope: "bi#32",
+        },
+        BuiltinSlashCommand {
+            name: "name",
+            description: "Set session display name",
+            argument_hint: null,
+            scope: "bi#30",
+        },
+        BuiltinSlashCommand {
+            name: "session",
+            description: "Show session info and stats",
+            argument_hint: null,
+            scope: "bi#30",
+        },
+        BuiltinSlashCommand {
+            name: "changelog",
+            description: "Show changelog entries",
+            argument_hint: null,
+            scope: "bi#31",
+        },
+        BuiltinSlashCommand {
+            name: "hotkeys",
+            description: "Show all keyboard shortcuts",
+            argument_hint: null,
+            scope: null,
+        },
+        BuiltinSlashCommand {
+            name: "fork",
+            description: "Create a new fork from a previous user message",
+            argument_hint: null,
+            scope: "bi#30",
+        },
+        BuiltinSlashCommand {
+            name: "clone",
+            description: "Duplicate the current session at the current position",
+            argument_hint: null,
+            scope: "bi#30",
+        },
+        BuiltinSlashCommand {
+            name: "trust",
+            description: "Save project trust decision for future sessions",
+            argument_hint: null,
+            scope: "bi#29",
         },
         BuiltinSlashCommand {
             name: "login",
-            description: "Store a provider API key in ~/.bi/auth.json",
-            argument_hint: "[provider]",
+            description: "Configure provider authentication",
+            argument_hint: "<provider>",
+            scope: null,
         },
-        BuiltinSlashCommand { name: "quit", description: "Quit bi", argument_hint: null },
+        BuiltinSlashCommand {
+            name: "logout",
+            description: "Remove provider authentication",
+            argument_hint: null,
+            scope: null,
+        },
+        BuiltinSlashCommand {
+            name: "new",
+            description: "Start a new session",
+            argument_hint: null,
+            scope: "bi#30",
+        },
+        BuiltinSlashCommand {
+            name: "compact",
+            description: "Manually compact the session context",
+            argument_hint: null,
+            scope: null,
+        },
+        BuiltinSlashCommand {
+            name: "resume",
+            description: "Resume a different session",
+            argument_hint: null,
+            scope: "bi#30",
+        },
+        BuiltinSlashCommand {
+            name: "reload",
+            description: "Reload keybindings, extensions, skills, prompts, themes, and context files",
+            argument_hint: null,
+            scope: null,
+        },
+        BuiltinSlashCommand {
+            name: "quit",
+            description: "Quit bi",
+            argument_hint: null,
+            scope: null,
+        },
     ]
+}
+
+// /hotkeys body: what bi's line-based readline REPL actually supports
+// (not pi's widget keybindings — those land with bi#32). Host prints.
+function hotkeys_text() -> string {
+    "/              Slash commands (this list: /help)\n↑ / ↓         Browse input history\nEnter          Send message\n\\ (trailing)   Continue input onto the next line\nCtrl-C          Abort the running turn (transcript survives)\nCtrl-D          Quit (when input is empty)"
 }
 
 // Dispatch lookup: builtins first, then skill names ("/<name>"). Returns the
@@ -188,5 +325,56 @@ test "slash dispatch finds builtins then skills" {
     assert.equal(lookup_slash("/review", skills), "review");
     assert.equal(lookup_slash("review", skills), "review");
     assert.equal(lookup_slash("/nope", skills), null);
-    assert.equal(builtin_slash_commands().length(), 5)
+    assert.equal(builtin_slash_commands().length(), 24)
+}
+
+test "registry is pi's 23 plus bi help" {
+    for (let want in ["help", "settings", "model", "tree", "thinking", "scoped-models", "export", "import", "share", "copy", "name", "session", "changelog", "hotkeys", "fork", "clone", "trust", "login", "logout", "new", "compact", "resume", "reload", "quit"]) {
+        let found = false;
+        for (let b in builtin_slash_commands()) {
+            if (b.name == want) {
+                found = true
+            }
+        }
+        assert.is_true(found)
+    }
+}
+
+test "scope marks live vs owning issue" {
+    for (let b in builtin_slash_commands()) {
+        match (b.name) {
+            "help" => assert.is_true(b.scope is null),
+            "compact" => assert.is_true(b.scope is null),
+            "reload" => assert.is_true(b.scope is null),
+            "login" => assert.is_true(b.scope is null),
+            "logout" => assert.is_true(b.scope is null),
+            "hotkeys" => assert.is_true(b.scope is null),
+            "quit" => assert.is_true(b.scope is null),
+            "model" => assert.equal(b.scope, "bi#28"),
+            "thinking" => assert.equal(b.scope, "bi#28"),
+            "scoped-models" => assert.equal(b.scope, "bi#28"),
+            "settings" => assert.equal(b.scope, "bi#29"),
+            "trust" => assert.equal(b.scope, "bi#29"),
+            "session" => assert.equal(b.scope, "bi#30"),
+            "resume" => assert.equal(b.scope, "bi#30"),
+            "new" => assert.equal(b.scope, "bi#30"),
+            "fork" => assert.equal(b.scope, "bi#30"),
+            "clone" => assert.equal(b.scope, "bi#30"),
+            "export" => assert.equal(b.scope, "bi#30"),
+            "share" => assert.equal(b.scope, "bi#30"),
+            "name" => assert.equal(b.scope, "bi#30"),
+            "import" => assert.equal(b.scope, "bi#30"),
+            "tree" => assert.equal(b.scope, "bi#32"),
+            "copy" => assert.equal(b.scope, "bi#32"),
+            "changelog" => assert.equal(b.scope, "bi#31"),
+            _ => assert.is_true(false),
+        }
+    }
+}
+
+test "hotkeys text describes bi REPL keys" {
+    let t = hotkeys_text();
+    assert.contains(t, "/help");
+    assert.contains(t, "Ctrl-C");
+    assert.contains(t, "Ctrl-D")
 }

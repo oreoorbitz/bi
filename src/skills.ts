@@ -122,7 +122,7 @@ export function skillBody(skill: Skill): string {
 export type SlashTarget =
 	| { kind: "none" }
 	| { kind: "unknown"; word: string }
-	| { kind: "builtin"; name: string; args: string }
+	| { kind: "builtin"; name: string; args: string; scope: string | null }
 	| { kind: "skill"; skill: Skill; args: string };
 
 // Pure split of a raw input line into slash word + trailing args.
@@ -142,7 +142,8 @@ export async function resolveSlash(line: string, skills: Skill[]): Promise<Slash
 	const hit = await lookup_slash_async(p.word, skills as any);
 	if (!hit) return { kind: "unknown", word: p.word };
 	const builtins = await builtin_slash_commands_async();
-	if (builtins.some((b) => b.name === hit)) return { kind: "builtin", name: hit, args: p.args };
+	const record = builtins.find((b) => b.name === hit);
+	if (record) return { kind: "builtin", name: hit, args: p.args, scope: record.scope ?? null };
 	const skill = skills.find((s) => s.name === hit);
 	return skill ? { kind: "skill", skill, args: p.args } : { kind: "unknown", word: p.word };
 }
