@@ -372,6 +372,28 @@ function format_changelog(entries: ChangelogEntry[], show_all: bool) -> string {
     }
 }
 
+// Tab completion for the line REPL: first-word slash prefix only. The
+// host supplies candidate names (builtins + loaded skills); BAML owns
+// the match so every client completes identically.
+function complete_slash(line: string, names: string[]) -> string[] {
+    if (!line.starts_with("/")) {
+        []
+    } else {
+        let word = line.slice(1, line.length());
+        if (word.index_of(" ") != null || word.index_of("\t") != null) {
+            []
+        } else {
+            let out: string[] = [];
+            for (let n in names) {
+                if (n.starts_with(word)) {
+                    out.push(`/${n}`)
+                }
+            }
+            out
+        }
+    }
+}
+
 // Dispatch lookup: builtins first, then skill names ("/<name>"). Returns the
 // slash name without "/" when registered, null when unknown.
 function lookup_slash(word: string, skills: Skill[]) -> string? {
@@ -550,6 +572,18 @@ test "changelog parses headers, latest-first" {
     assert.contains(all, "## 0.1.0");
     assert.equal(format_changelog([], false), "(no changelog entries)");
     assert.equal(parse_changelog("# Empty\n").length(), 0)
+}
+
+test "slash completion matches the first word only" {
+    let names = ["model", "paste", "paste-clear"];
+    let one = complete_slash("/mo", names);
+    assert.equal(one.length(), 1);
+    assert.equal(one.at(0) ?? "", "/model");
+    assert.equal(complete_slash("/", names).length(), 3);
+    assert.equal(complete_slash("/zzz", names).length(), 0);
+    assert.equal(complete_slash("hello", names).length(), 0);
+    assert.equal(complete_slash("/model x", names).length(), 0);
+    assert.equal(complete_slash("", names).length(), 0)
 }
 
 test "hotkeys text describes bi REPL keys" {
