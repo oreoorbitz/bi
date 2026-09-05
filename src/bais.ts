@@ -57,36 +57,65 @@ function resolveIssuesDir(from: string = process.cwd()): string | null {
 // Resolve bais's TS wrapper once and memoise it. Hidden behind eval so tsc's
 // rootDir check does not follow it — bais/baml_sdk lives outside this project.
 // Resolution must work from src (dev, ts-node) and dist/src (compiled).
+function baisDistCandidates(file: string): string[] {
+	return [
+		// compiled: bi/dist/src/bais.js -> orion-learn-baml/bais/dist/src/<file>
+		join(resolve(process.cwd(), "../bais"), "dist", "src", file),
+		join(resolve(process.cwd(), "../../bais"), "dist", "src", file),
+		// dev: bi/src/bais.ts -> ../bais/src/<file>
+		resolve(join(resolve(process.cwd(), "bais"), "dist", "src", file)),
+		resolve(join(resolve(process.cwd(), "..", "bais"), "dist", "src", file)),
+	];
+}
+
+async function loadBaisDistModule(file: string, probe: (m: any) => boolean, label: string): Promise<any> {
+	const { pathToFileURL } = await import("node:url");
+	const candidates = baisDistCandidates(file);
+	for (const p of candidates) {
+		if (!existsSync(p)) continue;
+		try {
+			const mod = await (Function("u", "return import(u)") as any)(pathToFileURL(p).href);
+			if (probe(mod)) return mod;
+		} catch {}
+	}
+	// last resort: relative spec hidden from tsc (may work in some layouts)
+	try {
+		const mod = await (Function("s", "return import(s)") as any)(`../../../bais/dist/src/${file}`);
+		if (probe(mod)) return mod;
+	} catch {}
+	throw new Error(`${label} not found — tried ${candidates.join(", ")}`);
+}
+
 let baisTomlModule: Promise<any> | null = null;
 function loadBaisTomlModule(): Promise<any> {
 	if (baisTomlModule) return baisTomlModule;
 	baisTomlModule = (async () => {
-		const { pathToFileURL } = await import("node:url");
-		const candidates = [
-			// compiled: bi/dist/src/bais.js -> orion-learn-baml/bais/dist/src/toml.js
-			join(resolve(process.cwd(), "../bais"), "dist", "src", "toml.js"),
-			join(resolve(process.cwd(), "../bais"), "src", "toml.ts"),
-			join(resolve(process.cwd(), "../../bais"), "dist", "src", "toml.js"),
-			// dev: bi/src/bais.ts -> ../bais/src/toml.ts
-			resolve(join(resolve(process.cwd(), "bais"), "dist", "src", "toml.js")),
-			resolve(join(resolve(process.cwd(), "..", "bais"), "dist", "src", "toml.js")),
-		];
-		for (const p of candidates) {
-			if (!existsSync(p)) continue;
-			try {
-				const mod = await (Function("u", "return import(u)") as any)(pathToFileURL(p).href);
-				if (mod?.parseBaisFile) return mod;
-			} catch {}
-		}
-		// last resort: relative spec hidden from tsc (may work in some layouts)
 		try {
-			const mod = await (Function("s", "return import(s)") as any)("../../../bais/dist/src/toml.js");
-			if (mod?.parseBaisFile) return mod;
-		} catch {}
-		baisTomlModule = null; // let a later call retry once bais is built
-		throw new Error(`BAIS parser not found — tried ${candidates.join(", ")}`);
+			return await loadBaisDistModule("toml.js", (m) => !!m?.parseBaisFile, "BAIS parser");
+		} catch (e) {
+			baisTomlModule = null; // let a later call retry once bais is built
+			throw e;
+		}
 	})();
 	return baisTomlModule;
+}
+
+// bi#84 follow-through: bi consumes the bais close-evidence gate instead
+// of reimplementing it — same file:// dist interop as the TOML parser.
+// checkBaisIssues already requires a built bais dist (parsing goes through
+// it), so delegation adds no new requirement.
+let baisGraphModule: Promise<any> | null = null;
+function loadBaisGraphModule(): Promise<any> {
+	if (baisGraphModule) return baisGraphModule;
+	baisGraphModule = (async () => {
+		try {
+			return await loadBaisDistModule("graph.js", (m) => typeof m?.closeEvidenceIn === "function", "BAIS graph module (closeEvidenceIn)");
+		} catch (e) {
+			baisGraphModule = null;
+			throw e;
+		}
+	})();
+	return baisGraphModule;
 }
 
 // Validate a raw .toml string through bais's BAML parser (the ground truth).
@@ -456,16 +485,33 @@ export function cyclicIssueIds(all: BaisFile[]): string[] {
 // Same traversal as loadBaisIssues, named for the CLI's ok/bad reporting, plus
 // the graph-level passes that per-file validation cannot do (dangling refs,
 // cycles). Shape matches `bais check --json` plus the bais SPEC §4.3 contract.
+// Close-evidence (bi#83) is delegated to bais's gate, not mirrored: bi#84
+// direction is consume-don't-reimplement, and a second implementation is a
+// second place for the rule to rot.
+export type BaisEvidenceProblem = {
+	id: string;
+	reason: "missing-close-evidence" | "unresolvable-drill" | "unresolvable-verdict";
+	ref: string | null;
+	kind: "drill" | "verdict" | null;
+	status: "Missing" | "External";
+};
 export async function checkBaisIssues(
 	dir?: string,
-): Promise<{ ok: BaisFile[]; bad: BaisLoadFailure[]; dangling: BaisDanglingRef[]; cycles: string[] }> {
+): Promise<{ ok: BaisFile[]; bad: BaisLoadFailure[]; dangling: BaisDanglingRef[]; cycles: string[]; evidence: BaisEvidenceProblem[] }> {
 	const issuesDir = issuesDirOrDefault(dir);
 	const { issues, failures } = await loadBaisIssues(issuesDir);
+	const gmod = await loadBaisGraphModule();
+	const evidence = gmod.closeEvidenceIn(
+		issues.map((f) => ({ id: f.issue.id, status: f.issue.status, body: f.issue.body })),
+		baisProjectName(issuesDir),
+		gmod.knownDrillNames(gmod.scriptsDirFor(issuesDir)),
+	) as BaisEvidenceProblem[];
 	return {
 		ok: issues,
 		bad: failures,
 		dangling: danglingRefsIn(issues, baisProjectName(issuesDir)),
 		cycles: cyclicIssueIds(issues),
+		evidence,
 	};
 }
 

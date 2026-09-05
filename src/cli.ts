@@ -2044,10 +2044,18 @@ async function main(): Promise<void> {
 				// Nothing in a dependency cycle can ever become ready — and
 				// ready_issues reports that as silence. cycles is the diagnosis.
 				if (cycles.length) console.log(`cycle\t${cycles.join(", ")}`);
+				// Close-evidence (bi#83, delegated to bais's gate): Done with
+				// no (or unresolvable) Evidence: refs refuses loudly here too,
+				// so `bi bais check` and `bais check` cannot disagree.
+				for (const p of evidence) {
+					if (p.reason === "missing-close-evidence") console.log(`evidence\t${p.id}\tmissing-close-evidence\tDone with no Evidence: refs`);
+					else console.log(`evidence\t${p.id}\t${p.reason}\t${p.ref} does not resolve`);
+				}
 			}
 			// Applies to both output modes — --json previously always exited 0,
-			// which made it useless as a CI gate. External alone never fails.
-			if (bad.length || missing.length || cycles.length) process.exit(1);
+			// which made it useless as a CI gate. External alone never fails
+			// (dangling or verdict).
+			if (bad.length || missing.length || cycles.length || fatalEvidence.length) process.exit(1);
 			return;
 		}
 		if (sub === "graph") {
