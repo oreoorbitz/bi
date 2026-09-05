@@ -1,0 +1,17 @@
+id = "bi#121"
+title = "Persist selected model + cache routine configs"
+status = "Open"
+kind = "Feat"
+area = "cli/bi"
+body = """
+Problem: `/model xai/grok-4.6` switches the live backend only (cli.ts applyModelRef sets backend.provider/model, never saves) — the choice evaporates at quit and the next launch falls back to settings.json default_model or the builtin. Same amnesia class for other per-session choices the user already made once.
+
+Scope (persist in ~/.bi/settings.json via saveUserSettings, startup stays permissive so a bad stored value never bricks the REPL — same principle as resolve_backend ignoring a bad enabled_models list):
+- /model switch persists default_provider + default_model (stale ids re-resolve or fall back with a notice, never a brick).
+- Thinking level (/thinking) persists default_thinking alongside.
+- Audit the rest of ~/.bi for the same gap: theme.json and trust.json already persist; check auth selection, scoped/enabled models, and the resume pointer — persist whatever the user re-picks every session, skip secrets (auth tokens stay in auth.json as today).
+- /settings shows the cached values so the file stays hand-editable and repairable.
+
+Out of scope: syncing settings across machines, per-directory overrides.
+
+Acceptance: pick a model, quit, relaunch, backend is that model with no flags; corrupt the cached id by hand, REPL still starts (falls back + warns)."""

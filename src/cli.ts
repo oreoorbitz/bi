@@ -12,7 +12,8 @@ import { HubSubscriber } from "./notify.js";
 import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, moveBaisIssue, checkBaisIssues, graphBaisIssues, scanBaisHeaders, scannedBlockers, loadStagedIssues, parseClaimDuration, renewBaisClaim, reapBaisClaims } from "./bais.js";
 import { listTools, handleTool, emitToolDiff, setTrustReader } from "./tools.js";
 import { listImageModels } from "./image.js";
-import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
+import { runAuthStatus, runLogin, runLogout, runOAuthLogin } from "./auth_cli.js";
+import { getOAuthFlow } from "./oauth.js";
 import { listCredentials } from "./auth.js";
 import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, render_footer_frame_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, trust_options_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, format_issue_row_async, format_issue_context_async, render_ready_frame_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
@@ -209,9 +210,7 @@ function bamlErrorMessage(e: unknown): string {
 }
 import { HostTui, HostStatus, HostFooter, renderSelectList, termWidth } from "./tui.js";
 import { ActionLog, safeJson } from "./actionlog.js";
-import { canRawPick, pickFromList } from "./pick.js";
-import { screenAvailable, screenPickList, stripTerminalResponses } from "./screen.js";
-import { editAvailable, screenAskEdit, type SlashPool } from "./edit.js";
+import { promptAvailable, askEdit, pickList, type SlashPool } from "./prompt.js";
 import { screenModelAvailable, screenPickModel } from "./screen-model.js";
 import { format_status, format_turn_summary, format_turn_error } from "../baml_sdk/index.js";
 import { runBiLoop } from "./agent_loop.js";
@@ -329,7 +328,7 @@ function askOneLine(prompt: string): Promise<string> {
 		const rl = createInterface({ input: process.stdin, output: process.stderr });
 		rl.question(prompt, (a) => {
 			rl.close();
-			resolve(stripTerminalResponses(a));
+			resolve(a);
 		});
 	});
 }
@@ -351,8 +350,8 @@ async function ensureTrust(interactive: boolean): Promise<TrustDecision> {
 	// Pipes and BI_SCREEN=0 keep the one-line reader byte-identical.
 	const opts = await trust_options_async();
 	let parsed: string | null;
-	if (screenAvailable()) {
-		const at = await screenPickList(
+	if (promptAvailable()) {
+		const at = await pickList(
 			"Trust this project?",
 			opts.map((o) => ({ label: o.label, description: o.description })),
 			1,
@@ -434,8 +433,8 @@ async function buildTree(root: string, maxDepth = 3, cap = 200): Promise<{ rows:
 	return { rows, capped };
 }
 
-// raw carries the REPL's line-input suspend/resume for raw-mode picks
-// (bi#69); null off-REPL or on pipes (numeric fallback, byte-identical).
+// raw carries the REPL's line-input suspend/resume for pi-tui modals;
+// null off-REPL or on pipes (numeric fallback, byte-identical).
 async function handleSlash(line: string, skills: Skill[], history: any[], signal?: TurnSignal, backend?: ReplBackend, sess?: ReplSessionState, raw?: { suspend(): void; resume(): void } | null): Promise<any[] | "quit" | "none"> {
 	// Decision (BAML-backed) lives in skills.ts; this keeps only effects.
 	const t = await resolveSlash(line, skills);
@@ -486,18 +485,40 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			// bi#29: pi's oauth-selector as a status board. Rows are
 			// secret-free (winning chain link + stored kind + env var);
 			// BAML shapes every line, unconfigured rows name their fix.
+			// bi#102: bare /oauth lists with live status; `/oauth <n|id>`
+			// selects a row and starts its flow (OAuth where a flow is
+			// registered, API-key login otherwise). Numbers address the
+			// displayed board order 1:1.
+			const arg = t.args.trim();
 			try {
 				const providers = await ListProviders_async();
+				if (arg) {
+					let id: string | undefined;
+					if (/^\d+$/.test(arg)) {
+						const p = providers[Number(arg) - 1] as any;
+						id = p ? String(p.id ?? p) : undefined;
+					} else {
+						const p = providers.find((q: any) => String(q.id ?? q) === arg) as any;
+						id = p ? String(p.id ?? p) : undefined;
+					}
+					if (!id) {
+						console.error(`unknown provider "${arg}" — bare /oauth lists numbers and ids`);
+						return history;
+					}
+					if (getOAuthFlow(id)) await runOAuthLogin(id);
+					else await runLogin(["login", id]);
+					return history;
+				}
 				const stored = await listCredentials();
 				const rows = [];
 				for (const p of providers) {
 					const env = await ProviderAuthEnv_async(p.id);
 					const s = stored.find((c) => c.provider_id === p.id);
-					if (s) rows.push(new OAuthRow({ provider_id: p.id, source: "stored", cred_type: s.type, auth_env: env }));
-					else if (env && process.env[env]) rows.push(new OAuthRow({ provider_id: p.id, source: "env", cred_type: null, auth_env: env }));
-					else rows.push(new OAuthRow({ provider_id: p.id, source: "none", cred_type: null, auth_env: env }));
+					if (s) rows.push(new OAuthRow({ provider_id: p.id, source: "stored", cred_type: s.type, auth_env: env, expires: s.expires ?? null }));
+					else if (env && process.env[env]) rows.push(new OAuthRow({ provider_id: p.id, source: "env", cred_type: null, auth_env: env, expires: null }));
+					else rows.push(new OAuthRow({ provider_id: p.id, source: "none", cred_type: null, auth_env: env, expires: null }));
 				}
-				await printBlock(await format_oauth_status_async(rows));
+				await printBlock(await format_oauth_status_async(rows, Date.now()));
 			} catch (e) {
 				console.error(`[bi] oauth status failed (${e instanceof Error ? e.message : e})`);
 			}
@@ -721,18 +742,15 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			// pipes keep today's path byte-identical.
 			const treeText = await format_tree_async(rows);
 			const treeTheme = await activeTheme();
-			if (sess && rows.length > 0 && raw && (screenAvailable() || canRawPick())) {
+			if (sess && rows.length > 0 && raw && promptAvailable()) {
 				// Same 1:1 split as renderSelectList, so the picked index
-				// addresses sess.tree directly. Screen first (slice 2),
-				// host picker with BI_SCREEN=0, static list on pipes.
+				// addresses sess.tree directly. Static list on pipes and
+				// BI_SCREEN=0.
 				const disp = treeText.split("\n").filter((l) => l.length > 0);
-				const screen = screenAvailable();
 				raw.suspend();
 				let at: number | null;
 				try {
-					at = screen
-						? await screenPickList("Browse (Enter opens, Esc keeps)", disp.map((label) => ({ label })), 0)
-						: await pickFromList(disp, 0);
+					at = await pickList("Browse (Enter opens, Esc keeps)", disp.map((label) => ({ label })), 0);
 				} finally {
 					raw.resume();
 				}
@@ -854,17 +872,21 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 						return history;
 					}
 				}
-				// bi#69: TTY picks by arrows (Enter switches, Esc keeps the
-				// list with numbers still working); pipes keep today's
-				// path byte-identical.
-				if (raw && canRawPick()) {
+				// TTY picks by arrows (Enter switches, Esc keeps the list
+				// with numbers still working); pipes keep today's path
+				// byte-identical.
+				if (raw && promptAvailable()) {
 					// Same split as renderSelectList, so the picked index
 					// addresses the displayed rows 1:1 (headers included).
 					const rows = text.split("\n").filter((l) => l.length > 0);
 					raw.suspend();
 					let at: number | null;
 					try {
-						at = await pickFromList(rows, cursor);
+						at = await pickList(
+							"Pick model (↑↓ navigate · Enter switches · Esc keeps)",
+							rows.map((label) => ({ label })),
+							cursor,
+						);
 					} finally {
 						raw.resume();
 					}
@@ -910,23 +932,19 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			};
 			if (!verb) {
 				const cur = stored.enabled_models ?? null;
-				// bi#69: TTY toggles by arrows (Enter flips the row, Esc
-				// keeps the summary); pipes keep today's summary
-				// byte-identical. Screen first (slice 2).
-				if (raw && (screenAvailable() || canRawPick())) {
+				// TTY toggles by arrows (Enter flips the row, Esc keeps the
+				// summary); pipes keep today's summary byte-identical.
+				if (raw && promptAvailable()) {
 					const ids = await all_model_ids_async();
 					if (ids.length === 0) {
 						await printBlock(await format_scoped_models_async(cur));
 						return history;
 					}
 					const rows = ids.map((id) => `${cur === null || cur.includes(id) ? "[x]" : "[ ]"} ${id}`);
-					const screen = screenAvailable();
 					raw.suspend();
 					let at: number | null;
 					try {
-						at = screen
-							? await screenPickList("Toggle models (Enter flips, Esc keeps)", rows.map((label) => ({ label })), 0)
-							: await pickFromList(rows, 0);
+						at = await pickList("Toggle models (Enter flips, Esc keeps)", rows.map((label) => ({ label })), 0);
 					} finally {
 						raw.resume();
 					}
@@ -1070,17 +1088,14 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 					);
 				}
 				const theme = await activeTheme();
-				// bi#69: TTY picks by arrows (Enter stages, Esc keeps the
-				// list with numbers still working); pipes keep today's
-				// path byte-identical. Screen first (slice 2).
-				if (raw && (screenAvailable() || canRawPick())) {
-					const screen = screenAvailable();
+				// TTY picks by arrows (Enter stages, Esc keeps the list with
+				// numbers still working); pipes keep today's path
+				// byte-identical.
+				if (raw && promptAvailable()) {
 					raw.suspend();
 					let at: number | null;
 					try {
-						at = screen
-							? await screenPickList("Stage issue (Enter stages, Esc keeps)", rows.map((label) => ({ label })), 0)
-							: await pickFromList(rows, 0);
+						at = await pickList("Stage issue (Enter stages, Esc keeps)", rows.map((label) => ({ label })), 0);
 					} finally {
 						raw.resume();
 					}
@@ -1235,20 +1250,17 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				const at = cur ? list.findIndex((r) => r.id === cur) : -1;
 				const theme = await activeTheme();
 				const text = await format_resume_list_async(list, cur);
-				// bi#69: TTY picks by arrows (Enter resumes, Esc keeps the
-				// list with numbers still working); pipes keep today's
-				// path byte-identical. Screen first (slice 2).
-				if (raw && (screenAvailable() || canRawPick()) && list.length > 0) {
+				// TTY picks by arrows (Enter resumes, Esc keeps the list with
+				// numbers still working); pipes keep today's path
+				// byte-identical.
+				if (raw && promptAvailable() && list.length > 0) {
 					// Same split as renderSelectList, so the picked index
 					// addresses the displayed rows 1:1.
 					const disp = text.split("\n").filter((l) => l.length > 0);
-					const screen = screenAvailable();
 					raw.suspend();
 					let pick: number | null;
 					try {
-						pick = screen
-							? await screenPickList("Resume session (Enter resumes, Esc keeps)", disp.map((label) => ({ label })), at < 0 ? 0 : at)
-							: await pickFromList(disp, at < 0 ? 0 : at);
+						pick = await pickList("Resume session (Enter resumes, Esc keeps)", disp.map((label) => ({ label })), at < 0 ? 0 : at);
 					} finally {
 						raw.resume();
 					}
@@ -1271,10 +1283,41 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 					return history;
 				}
 				resumeId = row.id;
+			} else {
+				// bi#100: non-numeric args filter id/label/cwd
+				// (case-insensitive). An exact id still resumes directly;
+				// one match resumes it; several render the filtered frame
+				// for an id pick; zero matches read empty, never error.
+				const rows = await sessionResumeList();
+				const exact = rows.find((r) => r.id === t.args);
+				if (exact) {
+					resumeId = exact.id;
+				} else {
+					const q = t.args.toLowerCase();
+					const filtered = rows.filter(
+						(r) =>
+							r.id.toLowerCase().includes(q) ||
+							(r.label ?? "").toLowerCase().includes(q) ||
+							r.cwd.toLowerCase().includes(q),
+					);
+					if (filtered.length === 0) {
+						console.error(`no sessions match "${t.args}" — bare /resume lists saved sessions`);
+						return history;
+					}
+					if (filtered.length === 1) {
+						resumeId = filtered[0].id;
+					} else {
+						const cur = sess ? sessionIdFromFile(sess.file) : null;
+						const theme = await activeTheme();
+						await renderSelectList(await format_resume_list_async(filtered, cur), 0, undefined, theme);
+						console.error(`${filtered.length} match "${t.args}" — /resume <id> resumes (numbers above are display-only)`);
+						return history;
+					}
+				}
 			}
 			const loaded = await loadSessionTranscript(resumeId);
 			if (!loaded) {
-				console.error(`unknown session "${t.args}" — bare /resume lists saved sessions (try an id or number)`);
+				console.error(`unknown session "${resumeId}" — bare /resume lists saved sessions (try an id or number)`);
 				return history;
 			}
 			if (sess) {
@@ -1469,17 +1512,26 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			// bi#29: pi's config-selector as an $EDITOR edit with BAML
 			// revalidate. Temp-file edit, atomic apply: bad JSON or a
 			// failed validation leaves settings.json untouched.
+			// bi#103: bare /config previews the live config (BAML-shaped)
+			// with its file path; the edit moves to `/config edit`. Bi
+			// keeps one settings file — no named profiles to switch
+			// (deliberate divergence from pi's config-selector).
 			const arg = t.args.trim();
 			if (arg === "path") {
 				console.log(settingsFile());
 				return history;
 			}
-			if (arg) {
-				console.error("usage: /config [path]");
+			if (!arg) {
+				console.log(await format_settings_list_async(bamlSettings(loadUserSettings())));
+				console.error(`[bi] ${settingsFile()} — /config edit to change, /config path for the path`);
+				return history;
+			}
+			if (arg !== "edit") {
+				console.error("usage: /config [edit|path]");
 				return history;
 			}
 			if (!process.stdin.isTTY) {
-				console.error("/config needs an interactive terminal ($EDITOR edit)");
+				console.error("/config edit needs an interactive terminal ($EDITOR edit)");
 				return history;
 			}
 			const res = await editInExternalEditor(editorCommand(), JSON.stringify(loadUserSettings(), null, 2) + "\n");
@@ -1772,66 +1824,75 @@ class ReplReader {
 	private submitted: string[] = [];
 	private pending: { resolve: (v: string) => void; reject: (e: Error) => void } | null = null;
 	onMidTurnInterrupt: (() => void) | null = null;
+	private completerFn: ((line: string, cb: (err: unknown, res: [string[], string]) => void) => void) | null = null;
 	setCompleter(fn: (line: string, cb: (err: unknown, res: [string[], string]) => void) => void): void {
 		// Assigned post-construction: readline reads .completer fresh
 		// on every Tab, so late wiring (after skill loads) just works.
-		(this.r as any).completer = fn;
+		// Stored too so a suspend/resume rebuild keeps completing.
+		this.completerFn = fn;
+		try { (this.r as any).completer = fn; } catch {}
 	}
-	// bi#69: suspend line editing while a raw-mode component (pick)
-	// owns stdin; resume restores it. stdin stays PAUSED here on purpose:
-	// resuming before the pick's own listener attaches would flow bytes
-	// into readline's paused-ignoring handler and lose them. The pick
-	// attaches first, then resumes, so early keys queue instead of drop.
+	// Suspend line editing while a pi-tui modal owns stdin; resume
+	// restores it. This must CLOSE the interface, not pause it: pause()
+	// only pauses the shared stdin stream, and pi-tui's Terminal.start()
+	// resumes that same stream for its own reading — the resume re-feeds
+	// readline's still-attached 'data' listener, so kitty/DA replies get
+	// parsed as keypresses and echoed to stdout ("7u", "64;…;52c" junk
+	// below the footer). Close detaches the listener entirely; resume
+	// rebuilds it with history/completer/handlers intact. stdin stays
+	// paused between the modal's stop and the rebuild (same no-lose
+	// ordering as before: the modal attaches first, we re-attach after).
 	suspendLineInput(): void {
-		try { this.r.pause(); } catch {}
+		if (!this.r) return;
+		try { this.r.close(); } catch {}
+		this.r = null;
 	}
 	resumeLineInput(): void {
-		try { this.r.resume(); } catch {}
-		// TEMP bi#69 diagnosis: one-shot spy logs the next stdin chunk.
-		if (process.env.BI_PICK_DEBUG) {
-			const spy = (chunk: Buffer) => {
-				try { process.stdin.removeListener("data", spy); } catch {}
-				process.stderr.write(`[pick-debug] post-resume bytes=${JSON.stringify(chunk.toString("utf8"))}\n`);
-			};
-			try { process.stdin.on("data", spy); } catch {}
-		}
+		if (!this.r) this.r = this.buildInterface();
+		else try { this.r.resume(); } catch {}
 	}
-	constructor() {
-		this.historyFile = historyFile();
-		const lines = readHistoryFile(this.historyFile);
-		this.r = createInterface({ input: process.stdin, output: process.stdout, historySize: 200 });
+	private buildInterface(): any {
+		const r = createInterface({ input: process.stdin, output: process.stdout, historySize: 200 });
 		// File is oldest-first; unshifting in file order leaves the newest
 		// at the head, which is where Up starts (verified live: a fresh
-		// process recalls the file's last line first).
-		for (const l of lines) (this.r as any).history.unshift(l);
+		// process recalls the file's last line first). In-session
+		// submissions are newer than the file, so they unshift after it.
+		for (const l of readHistoryFile(this.historyFile)) (r as any).history.unshift(l);
+		for (const s of this.submitted) (r as any).history.unshift(s);
+		if (this.completerFn) (r as any).completer = this.completerFn;
 		// Ctrl-C with no question pending means mid-turn: the REPL arms
 		// onMidTurnInterrupt per turn to abandon it (bi#16). At the prompt
 		// the pending question resolves "\x03" and the loop re-prompts.
-		this.r.on("SIGINT", () => {
+		r.on("SIGINT", () => {
 			if (this.pending) this.pending.resolve("\x03");
 			else this.onMidTurnInterrupt?.();
 		});
-		this.r.on("close", () => this.pending?.reject(new Error("EOF")));
+		// Suspend closes with no question pending, so this only fires on
+		// real EOF (Ctrl-D / piped input ends), same as before.
+		r.on("close", () => this.pending?.reject(new Error("EOF")));
+		return r;
+	}
+	constructor() {
+		this.historyFile = historyFile();
+		this.r = this.buildInterface();
 	}
 	editPool: SlashPool | null = null;
 	setEditPool(pool: SlashPool): void {
 		this.editPool = pool;
 	}
-	// Slice 3: TTY prompts go through the pi-tui editor modal (Enter
-	// submits, Ctrl-J newline, Up recalls, Tab completes); readline
-	// stays paused underneath (bi#69 pattern) and remains the pipe
-	// fallback. History merges file + this session's submissions.
+	// TTY prompts go through the pi-tui editor modal (Enter submits,
+	// Ctrl-J newline, Up recalls, Tab completes); readline stays paused
+	// underneath and remains the pipe fallback. History merges file +
+	// this session's submissions.
 	async askWithEditor(promptText: string): Promise<string> {
 		if (!this.editPool) throw new Error("askWithEditor: no pool");
 		this.suspendLineInput();
 		this.pending = null;
 		try {
-			const text = stripTerminalResponses(
-				await screenAskEdit(
-					promptText,
-					[...readHistoryFile(this.historyFile), ...this.submitted],
-					this.editPool,
-				),
+			const text = await askEdit(
+				promptText,
+				[...readHistoryFile(this.historyFile), ...this.submitted],
+				this.editPool,
 			);
 			if (text !== "\x03" && text.trim().length > 0) this.submitted.push(text);
 			return text;
@@ -1840,14 +1901,13 @@ class ReplReader {
 		}
 	}
 	ask(prompt: string): Promise<string> {
-		if (editAvailable() && this.editPool) return this.askWithEditor(prompt);
+		if (promptAvailable() && this.editPool) return this.askWithEditor(prompt);
 		return new Promise<string>((resolve, reject) => {
 			this.pending = { resolve, reject };
 			this.r.question(prompt, (a: string) => {
 				this.pending = null;
-				const text = stripTerminalResponses(a);
-				if (text.trim().length > 0) this.submitted.push(text);
-				resolve(text);
+				if (a.trim().length > 0) this.submitted.push(a);
+				resolve(a);
 			});
 		});
 	}
@@ -1855,7 +1915,7 @@ class ReplReader {
 	// so multi-line prompts survive the line editor. The TTY editor is
 	// natively multiline (Ctrl-J), so one modal serves the whole turn.
 	async askMultiline(prompt: string): Promise<string> {
-		if (editAvailable() && this.editPool) return this.askWithEditor(prompt);
+		if (promptAvailable() && this.editPool) return this.askWithEditor(prompt);
 		const parts: string[] = [];
 		let p = prompt;
 		for (;;) {
