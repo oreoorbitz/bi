@@ -1,0 +1,35 @@
+id = "bi#83"
+title = "Verdicts as types: machine-checkable evidence on issue close"
+status = "Done"
+kind = "Feat"
+area = "bits/process"
+body = """
+Findings-file #6, applied: verification as roles needs "verified"
+to be machine-checkable — verdicts as types, not prose. Today an
+issue moves Open→Done on prose claim; the evidence bi#57 (red-check
+log), bi#59 (reviewer verdict), bi#60 (injected-violation proof)
+demand lives in chat history, unenforceable and unauditable.
+
+Close-evidence: moving an issue to Done requires named evidence
+refs recorded on the issue itself — the red-check drill line, the
+reviewer verdict, the gate proof — and `bais check` (or `ready`)
+verifies the refs resolve to real artifacts (drill names that ran,
+verdicts from the reviewer role). Prose-only closes refuse loudly.
+Acceptance: a close with no evidence refs is rejected by tooling;
+a close citing a non-existent drill fails for the right reason;
+bi#57/59/60 outputs become the canonical close artifacts, and the
+hygiene pass ("statuses move only on evidence") runs as a check,
+not a session.
+
+Evidence: verdict(bi#57) # neuter-parseCloseEvidence red-check by parent: valid ref failed missing-close-evidence, restored green
+"""
+
+[[edge]]
+from = "bi#83"
+to = "bi#57"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#83"
+to = "bi#59"
+kind = "DependsOn"

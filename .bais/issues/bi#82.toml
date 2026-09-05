@@ -1,0 +1,24 @@
+id = "bi#82"
+title = "Drill wall-clock injection: deterministic time for skew/budget tests"
+status = "Done"
+kind = "Feat"
+area = "bits/process"
+body = """
+Drills mix fixed timestamps (`2026-09-04T00:00:00Z`) with live
+`new Date()` / `Date.now()` (mkForeign defaults, the clock-skew
+gate's future bound, budget/lease expiries). Every wall-clock read
+is a rot vector: skew boundaries drift as the calendar advances, a
+suite run at an odd hour behaves differently, and a slow CI runner
+can flake a timing edge nobody can reproduce.
+
+Thread an injectable clock through the drill surface: scripts take
+a `--now` (or env) fixing Date.now for both fixtures and gates, so
+a skew test pins "now" explicitly and asserts the boundary from
+both sides (+59min admits, +61min rejects at a 1h bound).
+Acceptance: fault-drills + lease-race + sync-test accept the flag;
+a run with `--now 2030-01-01` goes green identically to a live run
+(red-check: the same flag with a tampered boundary fails for the
+right reason); no `Date.now()` remains in drill assertion paths.
+
+Evidence: verdict(bi#57) # fault-drills live + --now 2030-01-01 green, ±59/61min boundary pair observed by parent
+"""

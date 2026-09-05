@@ -1,0 +1,26 @@
+id = "bi#81"
+title = "BITS tiers: tiered suite with time/token budgets and loud skips"
+status = "Done"
+kind = "Feat"
+area = "bits/process"
+body = """
+Findings-file #8, applied: the test harness must budget itself
+(BITS tiers), so it can't become the burn it polices. Precedent:
+full `npm test` (10 scripts, live HTTP hubs, real ports) takes
+minutes and grows silently — a red run costs a full re-run to
+diagnose, and key-gated tests (bi#77) have no standard skip: they
+either fail offline or never run at all.
+
+Tiers: T0 = BAML unit + `baml test`, offline, seconds. T1 = offline
+integration scripts (drills, sync-test, lease-race), minutes, no
+sockets beyond loopback binds. T2 = live-key / external loopback,
+never in default gates. Each tier gets a time budget enforced by
+the runner (over-budget = fail, not drift), and T2 skips LOUDLY
+when offline — a named skip line per test, never a silent pass.
+Acceptance: tier manifest checked in per project; `npm test` runs
+T0+T1 and prints a per-tier budget report; a deliberately
+over-budget fixture fails for the right reason (red-check); an
+offline T2 run prints skips, exits zero, and asserts nothing.
+
+Evidence: verdict(bi#57) # tiers selftest + test-t2 observed green by parent; gate-fires/boundary assertions hold
+"""

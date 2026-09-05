@@ -1,0 +1,25 @@
+id = "bi#84"
+title = "Consumer contract tests for the bais surfaces bi/bagl import"
+status = "Done"
+kind = "Feat"
+area = "bits/process"
+body = """
+bi/bagl consume bais through generated dist (`file://` interop
+until Phase-B workspace deps). A bais change — a reordered
+oversight query, a new table, a reshaped AppendResult — breaks
+consumers silently: bais gates stay green while `bi` misreads.
+cross-check.mjs pins issue dirs, not the API surface.
+
+Contract test, owned by bais gates, pinning every surface
+consumers import: `storeOversight` shape (incl. rejected_events
+columns/order), `appendForeignEvents` result shape, `ensureSchema`
+table set, `ingestIssues` return. Any additive change updates the
+contract file explicitly; any breaking change fails here before it
+fails in bi. Acceptance: a new test (e.g.
+`scripts/contract-test.mjs`) asserting exact shapes against dist,
+wired into `npm test`; a trial breaking change (renamed field)
+fails for the right reason; bi/bagl each name the contract version
+they were last verified against.
+
+Evidence: verdict(bi#60) # reason->reason_code red-check by worker (exact got-vs-want FAIL, exit 1); green re-confirmed by parent, 35 checks
+"""
