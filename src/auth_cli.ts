@@ -19,6 +19,7 @@ import { listCredentials, modifyCredential, readCredential } from "./auth.js";
 import { getOAuthFlow, resolveFlowLogin, type OAuthInteraction } from "./oauth.js";
 import { listProviders, providerExists } from "./provider.js";
 import { createInterface } from "node:readline";
+import { screenAvailable, screenAskText } from "./screen.js";
 
 export class AuthCliError extends Error {}
 
@@ -121,12 +122,22 @@ export async function runOAuthLogin(provider: string): Promise<void> {
 		},
 		prompt: (message, _placeholder, signal) =>
 			new Promise((resolve, reject) => {
-				const rl = createInterface({ input: process.stdin, output: process.stdout });
 				if (signal?.aborted) {
-					rl.close();
 					reject(new Error("Login cancelled"));
 					return;
 				}
+				// Slice 6: TTY gets the pi-tui text modal; Esc cancels
+				// the login (same rejection as abort). Mid-modal abort
+				// does not close the widget — Esc is the cancel path.
+				// Pipes keep the line reader byte-identical.
+				if (screenAvailable()) {
+					screenAskText(message).then((value) => {
+						if (value === null) reject(new Error("Login cancelled"));
+						else resolve(value.trim());
+					}, reject);
+					return;
+				}
+				const rl = createInterface({ input: process.stdin, output: process.stdout });
 				const onAbort = () => {
 					rl.close();
 					reject(new Error("Login cancelled"));

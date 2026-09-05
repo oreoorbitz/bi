@@ -14,7 +14,7 @@ import { listTools, handleTool, emitToolDiff, setTrustReader } from "./tools.js"
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
 import { listCredentials } from "./auth.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, render_footer_frame_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, render_markdown_text_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, format_issue_row_async, format_issue_context_async, render_ready_frame_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, render_footer_frame_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, trust_options_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, format_issue_row_async, format_issue_context_async, render_ready_frame_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
 import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
 import { readClipboardImage, writeClipboardText, clipboardSupportsImage } from "./clipboard.js";
@@ -216,6 +216,7 @@ import { format_status, format_turn_summary, format_turn_error } from "../baml_s
 import { runBiLoop } from "./agent_loop.js";
 import { editInExternalEditor, editorCommand } from "./editor.js";
 import { footerCwd, gitBranch } from "./footer_info.js";
+import { printMarkdownText } from "./markdown.js";
 
 function printHelp(): void {
 	// BAML is spec: format_help() is bi-renamed pi help (APP_NAME bi, .bi)
@@ -342,7 +343,26 @@ async function ensureTrust(interactive: boolean): Promise<TrustDecision> {
 		return "deny";
 	}
 	console.error(await format_project_trust_prompt_async(process.cwd()));
-	const parsed = await parse_trust_answer_async((await askOneLine("Trust this project? [y]es / [n]o / [s]ession-only: ")).trim());
+	// Slice 6: TTY gets the pi-tui trust selector (BAML rows, safe
+	// middle preselected); Esc cancels to deny (fail closed, bi#55).
+	// Pipes and BI_SCREEN=0 keep the one-line reader byte-identical.
+	const opts = await trust_options_async();
+	let parsed: string | null;
+	if (screenAvailable()) {
+		const at = await screenPickList(
+			"Trust this project?",
+			opts.map((o) => ({ label: o.label, description: o.description })),
+			1,
+		);
+		if (at === null) {
+			console.error(`[bi] trust cancelled — project denied (${process.cwd()} stays untrusted; /trust to decide)`);
+			effectiveTrust = "deny";
+			return "deny";
+		}
+		parsed = opts[at].decision;
+	} else {
+		parsed = await parse_trust_answer_async((await askOneLine("Trust this project? [y]es / [n]o / [s]ession-only: ")).trim());
+	}
 	if (parsed === "allow" || parsed === "deny") {
 		try {
 			setStoredTrust(process.cwd(), parsed);
@@ -1671,7 +1691,7 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 		const out = [...withUser, { role: "assistant", text: img.text, clientId: `${backend.provider}/${backend.model}` }];
 		status.stop({ failed: false, detail: "", turns: 1, messages: out.length, theme: turnTheme });
 		const theme = await activeTheme();
-		console.log(await render_markdown_text_async(img.text, { theme }));
+		await printMarkdownText(img.text, theme);
 		alog?.record("turn.end", "ok");
 		await stderrRule(turnTheme);
 		return out;
@@ -1724,7 +1744,7 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	const theme = await activeTheme();
 	for (const m of result.messages) {
 		if ((m as any).role !== "assistant") continue;
-		console.log(await render_markdown_text_async((m as any).text ?? JSON.stringify((m as any).content), { theme }));
+		await printMarkdownText((m as any).text ?? JSON.stringify((m as any).content), theme);
 	}
 	alog?.record("turn.end", "ok");
 	await stderrRule(turnTheme);
@@ -2281,16 +2301,16 @@ async function main(): Promise<void> {
 		if (hasFlag(args, "--print") || hasFlag(args, "-p")) {
 			const t = finalText(result);
 			// bi#27: human print path renders markdown; json mode above stays raw.
-			if (t) console.log(await render_markdown_text_async(t, { theme: runTheme }));
+			if (t) await printMarkdownText(t, runTheme);
 			return;
 		}
 		// bi#27: history display shapes text blocks and tool calls alike.
 		for (const msg of result.messages) {
 			if (msg.role === "assistant" && "text" in msg) {
-				console.log(await render_markdown_text_async(msg.text, { theme: runTheme }));
+				await printMarkdownText(msg.text, runTheme);
 			} else if (msg.role === "assistant" && "content" in msg) {
 				for (const b of (msg as any).content) {
-					if (b.type === "text") console.log(await render_markdown_text_async(b.text, { theme: runTheme }));
+					if (b.type === "text") await printMarkdownText(b.text, runTheme);
 					else if (b.type === "toolUse") console.log(await format_tool_start_async(b.name, JSON.stringify(b.args), { theme: runTheme }));
 				}
 			}

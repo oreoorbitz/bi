@@ -6,6 +6,7 @@
 // BI_SCREEN=0 opts out globally; pipes never qualify.
 import {
 	Container,
+	Input,
 	KeybindingsManager,
 	ProcessTerminal,
 	SelectList,
@@ -49,6 +50,31 @@ export function screenAvailable(): boolean {
 // styling. Indices are unaffected — callers map positionally.
 function clean(s: string): string {
 	return s.replace(/\x1b\[[0-9;]*[A-Za-z]|\x1b\]8;;[^\x07]*\x07/g, "");
+}
+
+// Text prompt through the same modal host (slice 6: login code/URL
+// entry). Null means cancelled (Esc): callers fall back to their
+// line reader or abort, same as the legacy path.
+export async function screenAskText(title: string, initial = ""): Promise<string | null> {
+	if (!screenAvailable()) return null;
+	setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
+	const ui: TUI = new TuiMainScreen(new ProcessTerminal(), false, dirname(getBiSessionsDir()));
+	const root = new Container();
+	root.addChild(new Text(title));
+	const input = new Input();
+	if (initial) input.setValue(initial);
+	root.addChild(input);
+	ui.addChild(root);
+	ui.setFocus(input);
+	ui.start();
+	try {
+		return await new Promise<string | null>((resolve) => {
+			input.onSubmit = (value) => resolve(value);
+			input.onEscape = () => resolve(null);
+		});
+	} finally {
+		ui.stop();
+	}
 }
 
 export async function screenPickList(title: string, rows: ScreenRow[], initial = 0): Promise<number | null> {

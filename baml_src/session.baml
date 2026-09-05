@@ -150,6 +150,36 @@ function parse_trust_answer(word: string) -> string? {
     }
 }
 
+class TrustOption {
+    label: string,
+    description: string,
+    decision: string,
+}
+
+// Trust selector rows (slice 6): the TTY modal lists these, the host
+// maps the picked `decision` (never the position) onto the same
+// allow/session/deny that parse_trust_answer returns. Order: Yes,
+// Session only, No; the host preselects the safe middle.
+function trust_options() -> TrustOption[] {
+    [
+        TrustOption {
+            label: "Yes",
+            description: "always trust, persist the decision",
+            decision: "allow",
+        },
+        TrustOption {
+            label: "Session only",
+            description: "trust until this session ends",
+            decision: "session",
+        },
+        TrustOption {
+            label: "No",
+            description: "stay untrusted, persist deny",
+            decision: "deny",
+        },
+    ]
+}
+
 function format_trust_status(cwd: string, decision: string?) -> string {
     match (decision) {
         null => `trust ${cwd}: undecided — /trust allow|deny|session to decide`,

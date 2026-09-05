@@ -254,4 +254,12 @@ testset "session header + trust (bi namespace)" {
         assert.equal(format_trust_status("/work", "allow"), "trust /work: allow");
         assert.equal(format_trust_status("/work", "session"), "trust /work: session")
     }
+
+    test "trust options cover the three decisions in order" {
+        let opts = trust_options();
+        assert.equal(opts.map((o) -> { o.decision }), ["allow", "session", "deny"]);
+        assert.is_true(opts.every((o) -> { o.label.length() > 0 && o.description.length() > 0 }));
+        // The modal's decisions are exactly the parser's vocabulary.
+        assert.is_true(opts.every((o) -> { parse_trust_answer(o.decision) == o.decision }))
+    }
 }
