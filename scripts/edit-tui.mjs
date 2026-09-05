@@ -26,6 +26,34 @@ const pool = {
 };
 const provider = makeSlashProvider(pool);
 
+// Hotkeys across encodings (BiEditor): raw bytes and kitty CSI u must
+// both fire; releases (`:3`) must never fire. Direct handleInput needs
+// no TTY. Live kitty proof rides /tmp/fake_term.py (kitty Esc/Ctrl-C/
+// Ctrl-D fire, release does not). Red-check: raw compares reinstate
+// trip the kitty cases (2 FAIL observed); live pre-fix kitty Ctrl-D
+// hung (TIMEOUT) vs post-fix ERROR:EOF.
+{
+	const { BiEditor } = await import(join(ROOT, "..", "dist", "src", "edit.js"));
+	const fire = (bytes) => {
+		const ed = new BiEditor({}, { borderColor: (s) => s, selectList: {} });
+		const out = [];
+		ed.onEscape = () => out.push("esc");
+		ed.onCtrlD = () => out.push("ctrld");
+		ed.onSubmit = (t) => out.push(`submit:${t}`);
+		ed.handleInput(bytes);
+		return out.join(",");
+	};
+	check(fire("\x1b") === "esc", "raw Esc cancels");
+	check(fire("\x1b[27u") === "esc", "kitty Esc cancels");
+	check(fire("\x03") === "esc", "raw Ctrl-C cancels");
+	check(fire("\x1b[99;5u") === "esc", "kitty Ctrl-C cancels");
+	check(fire("\x04") === "ctrld", "raw Ctrl-D quits on empty");
+	check(fire("\x1b[100;5u") === "ctrld", "kitty Ctrl-D quits on empty");
+	check(fire("\x1b[100;5:3u") === "", "release never fires");
+	check(fire("\x1b[A") === "", "arrows are not hotkeys");
+	check(fire("a") === "", "text is not a hotkey");
+}
+
 // 1 — first word.
 {
 	const s = await provider.getSuggestions(["/mo"], 0, 3, { signal: AbortSignal.abort() });

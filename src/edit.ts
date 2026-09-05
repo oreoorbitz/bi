@@ -14,6 +14,8 @@ import {
 	Text,
 	TuiMainScreen,
 	TUI_KEYBINDINGS,
+	isKeyRelease,
+	matchesKey,
 	setKeybindings,
 	type AutocompleteItem,
 	type AutocompleteProvider,
@@ -48,13 +50,22 @@ export class BiEditor extends Editor {
 	onEscape?: () => void;
 	onCtrlD?: () => void;
 	handleInput(data: string): void {
+		// Encoding-aware: kitty terminals send CSI u sequences (Esc as
+		// `CSI 27 u`, Ctrl-D as `CSI 100;5 u`) instead of raw bytes, and
+		// releases (`:3`) must never fire. matchesKey covers every
+		// encoding pi-tui parses; raw compares would silently drop
+		// kitty hotkeys.
+		if (isKeyRelease(data)) {
+			super.handleInput(data);
+			return;
+		}
 		// Raw-mode Ctrl-C arrives as data: cancel like Esc (readline's
 		// SIGINT-at-prompt resolves "\x03", same outcome one layer down).
-		if ((data === "\x1b" || data === "\x03") && !this.isShowingAutocomplete()) {
+		if ((matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) && !this.isShowingAutocomplete()) {
 			this.onEscape?.();
 			return;
 		}
-		if (data === "\x04" && this.getText().length === 0) {
+		if (matchesKey(data, "ctrl+d") && this.getText().length === 0) {
 			this.onCtrlD?.();
 			return;
 		}
