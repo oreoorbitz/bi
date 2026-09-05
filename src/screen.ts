@@ -52,6 +52,59 @@ function clean(s: string): string {
 	return s.replace(/\x1b\[[0-9;]*[A-Za-z]|\x1b\]8;;[^\x07]*\x07/g, "");
 }
 
+// Terminal responses a real emulator sends to pi-tui's per-modal kitty
+// query (`CSI > flags u CSI ? u CSI c`): kitty flags (`CSI ? 7 u`),
+// device attributes (`CSI ? 64;1;2 c`), cursor reports (`CSI r;c R`),
+// OSC replies. Replies arriving AFTER ui.stop() would otherwise be
+// eaten by readline as typed garbage ("7u64;1;2…" in the prompt).
+// Only `?`/`>`-intermediate and CPR shapes are discarded — user keys
+// (arrows, F-keys, enhanced `CSI n;m u` presses, bare Esc) never match
+// and are preserved via unshift.
+const RESPONSE_ONE =
+	/(?:\x1b\[[?][0-9;]*u|\x1b\[[?>][0-9;]*c|\x1b\[[0-9]+;[0-9]+R|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\))/g;
+
+function readBuffered(): string {
+	let out = "";
+	try {
+		for (;;) {
+			const chunk = (process.stdin as any).read();
+			if (chunk == null) break;
+			out += String(chunk);
+		}
+	} catch {}
+	return out;
+}
+
+// Discard late negotiation replies after a modal closes, preserving
+// real input. stdin is paused here (ui.stop leaves it so); one grace
+// wait (~2x a bad SSH RTT) catches stragglers, then anything unmatched
+// goes back. A fixed window can't catch every terminal ever —
+// stripTerminalResponses at submit covers the value in residual cases.
+// Submit-time insurance for replies that outran the drain: strip
+// complete terminal-response shapes from a submitted line. User keys
+// never match (see RESPONSE_ONE); a pasted terminal dump could
+// theoretically lose a DA-shaped run — meaningless bytes anyway.
+export function stripTerminalResponses(line: string): string {
+	return line.replace(RESPONSE_ONE, "");
+}
+
+export async function drainTerminalResponses(graceMs = 150): Promise<void> {
+	try {
+		process.stdin.pause();
+	} catch {}
+	let buf = readBuffered();
+	await new Promise((r) => setTimeout(r, graceMs));
+	buf += readBuffered();
+	// Complete matches only — a trailing partial (e.g. bare Esc, the
+	// most likely user byte here) is preserved, never eaten.
+	buf = buf.replace(RESPONSE_ONE, "");
+	if (buf) {
+		try {
+			(process.stdin as any).unshift(buf);
+		} catch {}
+	}
+}
+
 // Text prompt through the same modal host (slice 6: login code/URL
 // entry). Null means cancelled (Esc): callers fall back to their
 // line reader or abort, same as the legacy path.
@@ -74,6 +127,7 @@ export async function screenAskText(title: string, initial = ""): Promise<string
 		});
 	} finally {
 		ui.stop();
+		await drainTerminalResponses();
 	}
 }
 
@@ -106,5 +160,6 @@ export async function screenPickList(title: string, rows: ScreenRow[], initial =
 		});
 	} finally {
 		ui.stop();
+		await drainTerminalResponses();
 	}
 }

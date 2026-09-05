@@ -24,6 +24,7 @@ import {
 import { complete_arg, complete_slash } from "../baml_sdk/index.js";
 import { dirname } from "node:path";
 import { getBiSessionsDir } from "./session.js";
+import { drainTerminalResponses } from "./screen.js";
 
 const plainSelectList = {
 	selectedPrefix: (s: string) => s,
@@ -152,5 +153,6 @@ export async function screenAskEdit(prompt: string, history: string[], pool: Sla
 		});
 	} finally {
 		ui.stop();
+		await drainTerminalResponses();
 	}
 }

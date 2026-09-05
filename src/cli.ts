@@ -210,7 +210,7 @@ function bamlErrorMessage(e: unknown): string {
 import { HostTui, HostStatus, HostFooter, renderSelectList, termWidth } from "./tui.js";
 import { ActionLog, safeJson } from "./actionlog.js";
 import { canRawPick, pickFromList } from "./pick.js";
-import { screenAvailable, screenPickList } from "./screen.js";
+import { screenAvailable, screenPickList, stripTerminalResponses } from "./screen.js";
 import { editAvailable, screenAskEdit, type SlashPool } from "./edit.js";
 import { screenModelAvailable, screenPickModel } from "./screen-model.js";
 import { format_status, format_turn_summary, format_turn_error } from "../baml_sdk/index.js";
@@ -329,7 +329,7 @@ function askOneLine(prompt: string): Promise<string> {
 		const rl = createInterface({ input: process.stdin, output: process.stderr });
 		rl.question(prompt, (a) => {
 			rl.close();
-			resolve(a);
+			resolve(stripTerminalResponses(a));
 		});
 	});
 }
@@ -1826,10 +1826,12 @@ class ReplReader {
 		this.suspendLineInput();
 		this.pending = null;
 		try {
-			const text = await screenAskEdit(
-				promptText,
-				[...readHistoryFile(this.historyFile), ...this.submitted],
-				this.editPool,
+			const text = stripTerminalResponses(
+				await screenAskEdit(
+					promptText,
+					[...readHistoryFile(this.historyFile), ...this.submitted],
+					this.editPool,
+				),
 			);
 			if (text !== "\x03" && text.trim().length > 0) this.submitted.push(text);
 			return text;
@@ -1843,8 +1845,9 @@ class ReplReader {
 			this.pending = { resolve, reject };
 			this.r.question(prompt, (a: string) => {
 				this.pending = null;
-				if (a.trim().length > 0) this.submitted.push(a);
-				resolve(a);
+				const text = stripTerminalResponses(a);
+				if (text.trim().length > 0) this.submitted.push(text);
+				resolve(text);
 			});
 		});
 	}
