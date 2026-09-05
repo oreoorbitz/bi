@@ -79,6 +79,23 @@ async function activeTheme(): Promise<string | null> {
 	return readActiveTheme();
 }
 
+// Shared theme persist (bi#101 submenu + /theme verb): validates the
+// name, writes theme.json, reports. True on success.
+async function saveTheme(name: string): Promise<boolean> {
+	if (!(await get_theme_async(name))) {
+		console.error(`unknown theme "${name}" — /theme lists default/light/none`);
+		return false;
+	}
+	try {
+		mkdirSync(dirname(themeFile()), { recursive: true });
+		writeFileSync(themeFile(), JSON.stringify({ name }) + "\n");
+	} catch (e) {
+		console.error(`[bi] theme persist failed (${e instanceof Error ? e.message : e})`);
+		return false;
+	}
+	return true;
+}
+
 // Block chrome: a BAML-shaped faint rule closes each REPL output block
 // (turn on stderr, slash listings on stdout) so the next prompt never
 // crowds the last line. Width follows the stream being written.
@@ -575,17 +592,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				await printBlock(previews.join("\n"));
 				return history;
 			}
-			if (!(await get_theme_async(t.args))) {
-				console.error(`unknown theme "${t.args}" — /theme lists default/light/none`);
-				return history;
-			}
-			try {
-				mkdirSync(dirname(themeFile()), { recursive: true });
-				writeFileSync(themeFile(), JSON.stringify({ name: t.args }) + "\n");
-			} catch (e) {
-				console.error(`[bi] theme persist failed (${e instanceof Error ? e.message : e})`);
-				return history;
-			}
+			if (!(await saveTheme(t.args))) return history;
 			console.error(`[bi] theme now ${t.args}`);
 			return history;
 		}
@@ -840,7 +847,16 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 					backend.provider = m.provider;
 					backend.model = m.id;
 				}
-				console.error(`[bi] backend now ${m.provider}/${m.id}`);
+				// bi#121: the switch persists — next launch resolves it
+				// from settings.json (startup stays permissive: a stale
+				// id falls back to builtins with a warning, never a brick).
+				try {
+					saveUserSettings({ ...loadUserSettings(), default_provider: m.provider, default_model: m.id });
+				} catch (e) {
+					console.error(`[bi] settings persist failed (${e instanceof Error ? e.message : e})`);
+					return history;
+				}
+				console.error(`[bi] backend now ${m.provider}/${m.id} (saved)`);
 				return history;
 			};
 			if (!t.args) {
@@ -1019,7 +1035,15 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				return history;
 			}
 			if (backend) backend.thinking = t.args;
-			console.error(`[bi] thinking now ${t.args}`);
+			// bi#121: same persist rule as /model (startup resolves
+			// default_thinking; invalid levels can't reach here).
+			try {
+				saveUserSettings({ ...loadUserSettings(), default_thinking: t.args });
+			} catch (e) {
+				console.error(`[bi] settings persist failed (${e instanceof Error ? e.message : e})`);
+				return history;
+			}
+			console.error(`[bi] thinking now ${t.args} (saved)`);
 			return history;
 		}
 		// bi#30: session commands. History flows through the return value;
@@ -1459,6 +1483,85 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			const parts = t.args ? t.args.split(/\s+/) : [];
 			const stored = loadUserSettings();
 			if (parts.length === 0) {
+				// bi#101: TTY opens sections; pipes keep the printed list.
+				// Every section aborts atomically on Esc (nothing written
+				// until its final validated commit); verbs below keep
+				// working as shortcuts into the same stores.
+				if (raw && promptAvailable()) {
+					const modal = async <T>(fn: () => Promise<T>): Promise<T> => {
+						raw.suspend();
+						try {
+							return await fn();
+						} finally {
+							raw.resume();
+						}
+					};
+					const sections = ["Backend: provider / model / thinking", "Theme", "Show all settings"];
+					const at = await modal(() => pickList("Settings (Enter opens, Esc lists)", sections.map((label) => ({ label })), 0));
+					if (at === null || at === 2) {
+						console.log(await format_settings_list_async(bamlSettings(stored)));
+						return history;
+					}
+					if (at === 1) {
+						const names = ["default", "light", "none"];
+						const cur = await readActiveTheme();
+						const picked = await modal(() => pickList("Theme (Enter sets, Esc keeps)", names.map((label) => ({ label })), Math.max(0, names.indexOf(cur))));
+						if (picked === null) return history;
+						if (!(await saveTheme(names[picked]!))) return history;
+						console.error(`[bi] theme now ${names[picked]}`);
+						return history;
+					}
+					// Stepped backend flow: provider → model → thinking.
+					// All three picks resolve first; the merged settings
+					// validate before the single save + live apply.
+					const providers = (await ListProviders_async()).map((p: any) => String(p.id ?? p));
+					const curP = backend?.provider ?? "anthropic";
+					const pAt = await modal(() =>
+						pickList("Settings → provider (Esc aborts, nothing saved)", providers.map((label) => ({ label })), Math.max(0, providers.indexOf(curP))),
+					);
+					if (pAt === null) return history;
+					const provider = providers[pAt]!;
+					const models = (await listModels(provider)).map((m: any) => String(m.id ?? m));
+					if (models.length === 0) {
+						console.error(`[bi] provider "${provider}" lists no models — settings unchanged`);
+						return history;
+					}
+					const curM = backend?.model ?? "claude-haiku-4-5";
+					const mAt = await modal(() =>
+						pickList(`Settings → model @ ${provider} (Esc aborts, nothing saved)`, models.map((label) => ({ label })), Math.max(0, models.indexOf(curM))),
+					);
+					if (mAt === null) return history;
+					const m = await resolve_model_ref_async(models[mAt]!);
+					if (!m) {
+						console.error(`[bi] model "${models[mAt]}" no longer resolves — settings unchanged`);
+						return history;
+					}
+					const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+					const curT = backend?.thinking ?? "off";
+					const tAt = await modal(() =>
+						pickList("Settings → thinking (Esc aborts, nothing saved)", levels.map((label) => ({ label })), Math.max(0, levels.indexOf(curT))),
+					);
+					if (tAt === null) return history;
+					const merged = { ...stored, default_provider: m.provider, default_model: m.id, default_thinking: levels[tAt]! };
+					const errors = await validate_settings_async(bamlSettings(merged as UserSettings));
+					if (errors.length) {
+						for (const e of errors) console.error(e);
+						return history;
+					}
+					try {
+						saveUserSettings(merged);
+					} catch (e) {
+						console.error(`[bi] settings persist failed (${e instanceof Error ? e.message : e})`);
+						return history;
+					}
+					if (backend) {
+						backend.provider = m.provider;
+						backend.model = m.id;
+						backend.thinking = levels[tAt]!;
+					}
+					console.error(`[bi] backend now ${m.provider}/${m.id} + thinking ${levels[tAt]} (saved)`);
+					return history;
+				}
 				console.log(await format_settings_list_async(bamlSettings(stored)));
 				return history;
 			}
@@ -1950,9 +2053,35 @@ class ReplReader {
 // turns, /quit or Ctrl-D to leave, Ctrl-C at the prompt just re-prompts.
 // Ctrl-C mid-turn aborts the process (same as `bi run`) — the session file
 // and printed transcript remain.
-async function repl(skills: Skill[]): Promise<void> {
-	const sessFile = createSessionFile({ cwd: process.cwd() });
-	console.error(`[bi] new session ${sessFile}`);
+async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promise<void> {
+	// bi#100: startup resume-vs-new offer. TTY with saved sessions gets a
+	// New-first picker (no bi#69 raw layer needed — pickList is modal);
+	// Esc/New mints fresh exactly like before (no litter otherwise:
+	// adopting skips the mint). Pipes, empty stores, and --continue /
+	// --session / --print keep today's paths byte-identical.
+	// Unreachable default: every branch below either adopts (sessFile
+	// unused) or mints before use — TS just can't see through them.
+	let sessFile = "";
+	let adopted: { file: string; history: any[] } | null = null;
+	const rows = !opts.skipPicker && promptAvailable() ? await sessionResumeList() : [];
+	if (rows.length > 0) {
+		const text = await format_resume_list_async(rows, null);
+		const disp = ["New session", ...text.split("\n").filter((l) => l.length > 0)];
+		const pick = await pickList("Start (Enter opens, Esc starts new)", disp.map((label) => ({ label })), 0);
+		const row = pick === null ? undefined : rows[pick - 1];
+		const loaded = row ? await loadSessionTranscript(row.id) : null;
+		if (loaded) {
+			adopted = { file: loaded.file, history: loaded.history };
+			console.error(`[bi] resumed ${row!.id} (${loaded.history.length} messages)`);
+		} else {
+			if (row) console.error(`[bi] session ${row.id} vanished — starting fresh`);
+			sessFile = createSessionFile({ cwd: process.cwd() });
+			console.error(`[bi] new session ${sessFile}`);
+		}
+	} else {
+		sessFile = createSessionFile({ cwd: process.cwd() });
+		console.error(`[bi] new session ${sessFile}`);
+	}
 	const reader = new ReplReader();
 	// bi#67: pinned bottom-row footer (scroll region + differential
 	// repaint on TTY; plain printed line on pipes). Installed lazily on
@@ -2011,7 +2140,7 @@ async function repl(skills: Skill[]): Promise<void> {
 	} catch {
 		// Completion is a convenience — never brick REPL startup.
 	}
-	let history: any[] = [];
+	let history: any[] = adopted?.history ?? [];
 	// bi#28 live backend, bi#29 stored defaults: flags are absent in the
 	// REPL, so stored settings apply. Invalid stored settings warn and
 	// fall back to builtins — never brick startup on a bad file.
@@ -2025,7 +2154,13 @@ async function repl(skills: Skill[]): Promise<void> {
 	}
 	// bi#30: session pointer — file/turn/persisted mutate via /new /resume
 	// /fork; turns append to the file as they land (memory authoritative).
-	const sess: ReplSessionState = { file: sessFile, turn: 0, persisted: 0, tree: [], treeRoot: process.cwd(), attachments: [], images: [], skillsDirty: false, stagedIssues: [], issueList: [] };
+	// A startup-adopted session (bi#100) seeds all three from the file.
+	const sess: ReplSessionState = {
+		file: adopted?.file ?? sessFile,
+		turn: adopted ? adopted.history.filter((m: any) => m.role === "user").length : 0,
+		persisted: adopted?.history.length ?? 0,
+		tree: [], treeRoot: process.cwd(), attachments: [], images: [], skillsDirty: false, stagedIssues: [], issueList: [],
+	};
 	try {
 		for (;;) {
 			// bi#29: /trust swaps the project skill set live — reload on
@@ -2138,7 +2273,9 @@ async function main(): Promise<void> {
 		if (process.stdin.isTTY && process.stdout.isTTY && !hasFlag(args, "--print") && !hasFlag(args, "-p")) {
 			const { skills, diagnostics } = await loadSkills(await trustedSkillDirs(true)).catch(() => ({ skills: [], diagnostics: [] }));
 			for (const d of diagnostics) console.error(`[skills] ${d.file}: ${d.message}`);
-			await repl(skills);
+			await repl(skills, {
+				skipPicker: hasFlag(args, "--continue") || hasFlag(args, "-c") || hasFlag(args, "--session") || hasFlag(args, "--print") || hasFlag(args, "-p"),
+			});
 		}
 		process.exit(0);
 	}

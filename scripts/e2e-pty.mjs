@@ -35,7 +35,7 @@
 // offsets cover the settle cap plus SSH-gated drain with margin.
 // Run: npm run test:e2e. Live: BI_E2E_LIVE_KEY=<key> npm run test:e2e.
 import { spawn, execFile } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,20 +63,24 @@ function check(name, cond, extra = "") {
 	if (!cond) failures += 1;
 }
 
-// Fresh sandbox HOME per scenario: seeded sessions for the picker,
-// nothing real touched (sessions/history/settings all land here).
-function makeSandbox() {
+// Fresh sandbox HOME per scenario: nothing real touched
+// (sessions/history/settings/trust all land here). Sessions seed only
+// on request — otherwise the startup picker (bi#100) would hijack
+// burst 1 of every scenario.
+function makeSandbox(seedSessions = false) {
 	const home = mkdtempSync(join(tmpdir(), "bi-e2e-"));
 	const sess = join(home, ".bi", "sessions");
 	mkdirSync(sess, { recursive: true });
 	// Pre-trust the launching cwd: otherwise the first boot stops at the
 	// project-trust modal and scripted keys land in the wrong widget.
 	writeFileSync(join(home, ".bi", "trust.json"), JSON.stringify({ [process.cwd()]: "allow" }) + "\n");
-	for (const id of ["aa11bb22", "cc33dd44"]) {
-		writeFileSync(
-			join(sess, `${id}.jsonl`),
-			JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-09-01T00:00:00.000Z", cwd: "/tmp", parent_session: null }) + "\n",
-		);
+	if (seedSessions) {
+		for (const id of ["aa11bb22", "cc33dd44"]) {
+			writeFileSync(
+				join(sess, `${id}.jsonl`),
+				JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-09-01T00:00:00.000Z", cwd: "/tmp", parent_session: null }) + "\n",
+			);
+		}
 	}
 	return home;
 }
@@ -91,9 +95,12 @@ function makeSandbox() {
 // without the burst) so a missing modal fails loudly, not silently.
 // Resolves with the full output and exit code; helper exit 3 counts as
 // timeout failure (transcript kept under $TMPDIR for diagnosis).
-function runSession({ sends, replyDelayMs = 0, timeoutMs = 30000, extraEnv = {} }) {
+// home: reuse a previous scenario's sandbox (bi#121 two-boot proof).
+// The sandbox is returned on every result; reused homes skip seeding
+// (trust + sessions already in place).
+function runSession({ sends, replyDelayMs = 0, timeoutMs = 30000, extraEnv = {}, seedSessions = false, home = null }) {
 	return new Promise((resolve) => {
-		const home = makeSandbox();
+		home = home ?? makeSandbox(seedSessions);
 		const env = { ...process.env, HOME: home, TERM: "xterm-kitty", ...extraEnv };
 		delete env.BI_TUI_DEBUG;
 		const child = spawn("python3", [join(HERE, "e2e-pty-spawn.py"), String(replyDelayMs), String(Math.ceil(timeoutMs / 1000)), "node", CLI], {
@@ -135,7 +142,7 @@ function runSession({ sends, replyDelayMs = 0, timeoutMs = 30000, extraEnv = {} 
 				writeFileSync(p, out);
 			} catch {}
 			if (code === 3) console.log(`   (transcript kept at ${p})`);
-			resolve({ out, code, timedOut: code === 3, stderr, transcript: p });
+			resolve({ out, code, timedOut: code === 3, stderr, transcript: p, home });
 		});
 		child.on("error", (e) => {
 			clearInterval(watchdog);
@@ -211,15 +218,48 @@ async function sPickerSelect() {
 async function sPickerCancel() {
 	const tag = "picker-cancel";
 	const { out, timedOut } = await runSession({
+		seedSessions: true,
 		sends: [
-			[1, 1200, "/resume\r"],
-			[2, 1200, K_ESC],
-			[3, 1200, "/quit\r"],
+			[1, 1200, K_ESC], // dismiss the startup picker first (fresh mint)
+			[2, 1200, "/resume\r"],
+			[3, 1200, K_ESC],
+			[4, 1200, "/quit\r"],
 		],
 	});
 	check(`${tag} exits (no timeout)`, !timedOut);
 	check(`${tag} picker opened over seeded sessions`, out.includes("aa11bb22"));
-	check(`${tag} Esc keeps the list, next prompt clean`, queryBursts(out) >= 2 && out.includes("session kept"), `bursts=${queryBursts(out)}`);
+	check(`${tag} Esc keeps the list, next prompt clean`, queryBursts(out) >= 3 && out.includes("session kept"), `bursts=${queryBursts(out)}`);
+	assertNoLeak(tag, out);
+}
+
+async function sStartupPickerSelect() {
+	const tag = "startup-picker-select";
+	const { out, code, timedOut } = await runSession({
+		seedSessions: true,
+		sends: [
+			[1, 1500, K_DOWN + "\r"], // New-first list: down once adopts the newest seeded session
+			[2, 1200, "/quit\r"],
+		],
+	});
+	check(`${tag} exits (no timeout)`, !timedOut);
+	check(`${tag} startup adopts the picked session`, /\[bi\] resumed (aa11bb22|cc33dd44)/.test(out));
+	check(`${tag} adopting mints nothing`, !out.includes("new session"));
+	check(`${tag} clean quit`, out.includes("session kept") && code === 0, `code=${code}`);
+	assertNoLeak(tag, out);
+}
+
+async function sStartupPickerNew() {
+	const tag = "startup-picker-new";
+	const { out, code, timedOut } = await runSession({
+		seedSessions: true,
+		sends: [
+			[1, 1500, K_ESC], // Esc starts new, exactly like before the picker existed
+			[2, 1200, "/quit\r"],
+		],
+	});
+	check(`${tag} exits (no timeout)`, !timedOut);
+	check(`${tag} Esc mints fresh`, out.includes("new session"));
+	check(`${tag} clean quit`, out.includes("session kept") && code === 0, `code=${code}`);
 	assertNoLeak(tag, out);
 }
 
@@ -228,6 +268,125 @@ async function sCtrldEof() {
 	const { out, code, timedOut } = await runSession({ sends: [[1, 1200, K_CTRLD]] });
 	check(`${tag} exits (no timeout)`, !timedOut);
 	check(`${tag} EOF keeps session, exit 0`, out.includes("EOF — session kept") && code === 0, `code=${code}`);
+	assertNoLeak(tag, out);
+}
+
+async function sAutocompletePaced() {
+	const tag = "autocomplete-paced";
+	// bi#115: type /quit at human cadence (40ms) with kitty press+release
+	// per key — a slow suggestion round must not splice a stale prefix
+	// into the submit (`unknown slash /qu/quit` era). Clean quit proves
+	// the submitted line survived byte-exact. Regression net only: with
+	// warm BAML rounds this passes with or without the guard (verified
+	// by neutering); the unit stale-splice tests in scripts/prompt.mjs
+	// are the repro proof (they fail guard-less).
+	const chars = [..."/quit"];
+	const sends = chars.map((ch, i) => [1, 1200 + i * 40, typeKitty(ch)]);
+	sends.push([1, 1200 + chars.length * 40 + 150, K_ENTER]);
+	sends.push([2, 1200, "/quit\r"]); // only reached if the paced submit mangled
+	const { out, code, timedOut } = await runSession({ sends });
+	check(`${tag} exits (no timeout)`, !timedOut);
+	check(`${tag} paced submit quits clean`, out.includes("session kept") && code === 0, `code=${code}`);
+	check(`${tag} no stale-prefix mangle`, !/unknown slash \/q/.test(out));
+	assertNoLeak(tag, out);
+}
+
+async function sSettingsBackend() {
+	const tag = "settings-backend";
+	const { out, timedOut } = await runSession({
+		sends: [
+			[1, 1200, "/settings\r"],
+			[2, 1200, "\r"], // Backend section (index 0)
+			[3, 1200, "\r"], // keep provider
+			[4, 1200, "\r"], // keep model
+			[5, 1200, "\r"], // keep thinking
+			[6, 1200, "/quit\r"],
+		],
+	});
+	check(`${tag} exits (no timeout)`, !timedOut);
+	check(`${tag} stepped flow commits live + saved`, /\[bi\] backend now \S+ \+ thinking \S+ \(saved\)/.test(out));
+	check(`${tag} clean quit`, out.includes("session kept"));
+	assertNoLeak(tag, out);
+}
+
+async function sSettingsTheme() {
+	const tag = "settings-theme";
+	const { out, home, timedOut } = await runSession({
+		sends: [
+			[1, 1200, "/settings\r"],
+			[2, 1200, K_DOWN + "\r"], // Theme section (index 1)
+			[3, 1200, K_DOWN + "\r"], // next theme
+			[4, 1200, "/quit\r"],
+		],
+	});
+	check(`${tag} exits (no timeout)`, !timedOut);
+	const m = out.match(/\[bi\] theme now (default|light|none)/);
+	check(`${tag} theme picked and set`, !!m, m?.[1] ?? "no match");
+	if (m) {
+		const disk = JSON.parse(readFileSync(join(home, ".bi", "theme.json"), "utf8"));
+		check(`${tag} theme persisted to disk`, disk.name === m[1], disk.name);
+	}
+	check(`${tag} clean quit`, out.includes("session kept"));
+	assertNoLeak(tag, out);
+}
+
+async function sSettingsEsc() {
+	const tag = "settings-esc";
+	const { out, home, timedOut } = await runSession({
+		sends: [
+			[1, 1200, "/settings\r"],
+			[2, 1200, K_ESC], // abort: lists, writes nothing
+			[3, 1200, "/quit\r"],
+		],
+	});
+	check(`${tag} exits (no timeout)`, !timedOut);
+	check(`${tag} Esc falls back to the list`, out.includes("default_provider") || out.includes("default-model") || /default_\w+/.test(out));
+	check(`${tag} abort writes nothing`, !existsSync(join(home, ".bi", "settings.json")));
+	check(`${tag} clean quit`, out.includes("session kept"));
+	assertNoLeak(tag, out);
+}
+
+async function sPersistModel() {
+	const tag = "persist-model";
+	const first = await runSession({
+		sends: [
+			[1, 1200, "/model gemini-2.0-flash\r"],
+			[2, 1200, "/thinking low\r"],
+			[3, 1200, "/quit\r"],
+		],
+	});
+	check(`${tag} exits (no timeout)`, !first.timedOut);
+	check(`${tag} switch reports saved`, first.out.includes("(saved)"));
+	const saved = JSON.parse(readFileSync(join(first.home, ".bi", "settings.json"), "utf8"));
+	check(`${tag} model cached on disk`, saved.default_model === "gemini-2.0-flash", saved.default_model);
+	check(`${tag} thinking cached on disk`, saved.default_thinking === "low", saved.default_thinking);
+	// Second boot, same HOME: the cached backend resolves with no flags.
+	// (Boot 1 minted a session, so burst 1 is the startup picker.)
+	const second = await runSession({
+		home: first.home,
+		sends: [
+			[1, 1200, K_ESC],
+			[2, 1200, "/session\r"],
+			[3, 1200, "/quit\r"],
+		],
+	});
+	check(`${tag} relaunch exits`, !second.timedOut);
+	check(`${tag} relaunched backend is the cached model`, second.out.includes("gemini-2.0-flash"));
+	check(`${tag} clean quit`, second.out.includes("session kept"));
+	assertNoLeak(tag, first.out + second.out);
+}
+
+async function sPersistCorrupt() {
+	const tag = "persist-corrupt";
+	const home = makeSandbox(false);
+	writeFileSync(join(home, ".bi", "settings.json"), JSON.stringify({ default_provider: "anthropic", default_model: "nope-xyz" }) + "\n");
+	const { out, code, timedOut } = await runSession({
+		home,
+		sends: [[1, 1200, "/quit\r"]],
+	});
+	check(`${tag} exits (no timeout)`, !timedOut);
+	check(`${tag} corrupt cache falls back with warning`, out.includes("stored settings invalid"));
+	check(`${tag} REPL still starts and quits`, out.includes("session kept") && code === 0, `code=${code}`);
 	assertNoLeak(tag, out);
 }
 
@@ -256,7 +415,15 @@ const ALL = {
 	"prompt-cancel": sPromptCancel,
 	"picker-select": sPickerSelect,
 	"picker-cancel": sPickerCancel,
+	"startup-picker-select": sStartupPickerSelect,
+	"startup-picker-new": sStartupPickerNew,
+	"settings-backend": sSettingsBackend,
+	"settings-theme": sSettingsTheme,
+	"settings-esc": sSettingsEsc,
+	"persist-model": sPersistModel,
+	"persist-corrupt": sPersistCorrupt,
 	"ctrld-eof": sCtrldEof,
+	"autocomplete-paced": sAutocompletePaced,
 	"live-smoke": sLiveSmoke,
 };
 const names = only ? [only] : Object.keys(ALL);

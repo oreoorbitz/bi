@@ -1,6 +1,6 @@
 id = "bi#121"
 title = "Persist selected model + cache routine configs"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "cli/bi"
 body = """
@@ -14,4 +14,8 @@ Scope (persist in ~/.bi/settings.json via saveUserSettings, startup stays permis
 
 Out of scope: syncing settings across machines, per-directory overrides.
 
-Acceptance: pick a model, quit, relaunch, backend is that model with no flags; corrupt the cached id by hand, REPL still starts (falls back + warns)."""
+Acceptance: pick a model, quit, relaunch, backend is that model with no flags; corrupt the cached id by hand, REPL still starts (falls back + warns).
+
+Evidence: drill(e2e-pty)
+
+Verdict 2026-09-06: /model persists default_provider+default_model and /thinking persists default_thinking at switch time (all pick paths funnel through applyModelRef; startup already resolved from settings.json and already fell back with `[bi] stored settings invalid` on stale ids). Audit: theme/trust/scoped-models/settings-verbs already persisted; auth stays in auth.json (secrets out of scope); resume pointer covered by the bi#100 startup picker. E2E: persist-model (two-boot proof, gemini-2.0-flash + low cached on disk, relaunch resolves with no flags) + persist-corrupt (hand-corrupted id warns and starts) — green in the 90-ok suite 2x."""

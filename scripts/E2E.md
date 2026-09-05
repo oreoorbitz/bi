@@ -32,6 +32,14 @@ bi with a fresh sandbox HOME (seeded sessions, pre-trusted cwd), so real
 | `picker-select` | `/model` arrows+Enter resolves a backend (`backend now p/m`) |
 | `picker-cancel` | `/resume` Esc keeps the list; next prompt proves stdin clean |
 | `ctrld-eof` | Ctrl-D on empty exits 0 with `EOF — session kept` |
+| `autocomplete-paced` | bi#115: `/quit` at 40ms kitty cadence quits clean, no stale-prefix mangle (regression net; unit stale-splice tests are the repro proof) |
+| `startup-picker-select` | bi#100: Down+Enter adopts a seeded session, mints nothing |
+| `startup-picker-new` | bi#100: Esc mints fresh, byte-identical to pre-picker behavior |
+| `settings-backend` | bi#101: stepped provider→model→thinking commits live + saved |
+| `settings-theme` | bi#101: theme pick sets + persists (asserted on disk) |
+| `settings-esc` | bi#101: Esc aborts — falls back to the list, writes nothing |
+| `persist-model` | bi#121: two-boot proof — switch + thinking cached, relaunch resolves cached backend with no flags |
+| `persist-corrupt` | bi#121: hand-corrupted cache falls back with warning, REPL starts |
 | `live-smoke` | full `bi run` turn against a real key (gated, else SKIP) |
 
 Every scenario also asserts the global no-leak invariant: output never

@@ -1,6 +1,6 @@
 id = "bi#108"
 title = "Dialog chrome primitives (dynamic border, bordered loader, visual truncate)"
-status = "Open"
+status = "Done"
 kind = "Feat"
 area = "tui"
 body = """
@@ -13,7 +13,11 @@ progress, refresh bi#89) would hand-roll its own. Port the three
 primitives once: BAML owns shaping/truncation (baml-testable),
 host owns paint/tick. Acceptance: login + refresh + long lists
 share the frame and loader; rows never exceed terminal width.
-"""
+
+Evidence: drill(prompt)
+Evidence: drill(e2e-pty)
+
+Verdict 2026-09-06: all three primitives ported into bi/src/prompt.ts (host paint layer, matching pi where truncate lives with the Text component — BAML frames keep char-count truncate_chars). DynamicBorder (live-width rule, min 1) frames every modal pickList top/bottom; truncateVisual/visualWidth (UAX #11 BMP table, astral=2) caps titles, SelectList bodies stay width-safe internally; makeBorderedLoader (border/loader/[spacer+hint]/spacer/border, stop-on-teardown contract) built for login bi#94 + refresh bi#89 to wire. No bi#69 needed (edge dropped). prompt.mjs: 15 chrome checks green; full e2e (54 oks, framed pickers throughout) green 2x."""
 
 [[edge]]
 from = "bi#108"
@@ -23,9 +27,4 @@ kind = "DependsOn"
 [[edge]]
 from = "bi#108"
 to = "bi#68"
-kind = "DependsOn"
-
-[[edge]]
-from = "bi#108"
-to = "bi#69"
 kind = "DependsOn"
