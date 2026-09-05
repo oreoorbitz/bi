@@ -1,0 +1,25 @@
+id = "bi#99"
+title = "Mermaid diagram rendering in transcript"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Pi renders mermaid fenced blocks via a markdown transformer
+(mermaid.ts createMermaidMarkdownTransformer). Bi's markdown path
+(bi#27) has no diagram handling — mermaid blocks print as raw
+fences. Port the transformer: detect mermaid fences, render or
+gracefully degrade when the terminal cannot draw. Acceptance:
+mermaid fences render where supported and degrade to labeled raw
+text elsewhere; non-mermaid fences byte-identical to today; covered
+by baml test on literal blocks.
+"""
+
+[[edge]]
+from = "bi#99"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#99"
+to = "bi#27"
+kind = "DependsOn"

@@ -1,0 +1,30 @@
+id = "bi#102"
+title = "OAuth provider selector UI (per-provider status + select)"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Pi picks OAuth providers through oauth-selector.ts: every provider
+row shows configured/expired/missing status before you choose. Bi
+has the /oauth dispatch and the flows (bi#22-24) but no status-first
+selector — you must know which provider needs attention. Audit the
+current /oauth UX, then port the selector rows (status per
+provider) into BAML with host picking. Acceptance: bare /oauth
+lists providers with live status; selecting one starts its flow;
+expired credentials flag before a turn fails on them.
+"""
+
+[[edge]]
+from = "bi#102"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#102"
+to = "bi#29"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#102"
+to = "bi#69"
+kind = "DependsOn"

@@ -1,0 +1,26 @@
+id = "bi#111"
+title = "Link issues without hand-editing TOML (new --blocks/--depends-on + link verb)"
+status = "Open"
+kind = "Feat"
+area = "bais/cli"
+body = """
+Edges are first-class in the model but second-class in the tooling:
+`bi bais new` takes no edge flags and no `link` verb exists, so
+every Blocks/DependsOn is hand-written TOML — the moment dogfooders
+file most (bi#109) they will file UNLINKED most. Add
+`--blocks <id>` / `--depends-on <id>` (repeatable) to `bais new`
+plus `bi bais link <from> <Kind> <to>`; validate ends exist
+(Missing fails loudly per `bais check` §4.3) and refuse self-links
+and cycles at write time. Acceptance: new-with-edges verifies under
+`bais check`; linking into a cycle refuses with the cycle path.
+"""
+
+[[edge]]
+from = "bi#111"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#111"
+to = "bi#109"
+kind = "DependsOn"

@@ -5,11 +5,19 @@ import { render_divider_async, render_select_frame_async } from "../baml_sdk/ind
 
 const CURSOR_MARKER = "\x1b_pi:c\x07";
 
+export function termWidth(fallback = 80): number {
+	// Headless ptys and odd redirections report 0/undefined columns,
+	// which would collapse every width-capped frame to "…"
+	// (truncate_chars with max 0). Only a positive finite width is trusted.
+	const c = process.stdout.columns ?? fallback;
+	return typeof c === "number" && Number.isFinite(c) && c > 0 ? Math.floor(c) : fallback;
+}
+
 export class HostTui {
 	private oldLines: string[] = [];
 	private width: number;
 	private write: (s: string) => void;
-	constructor(width = process.stdout.columns ?? 80, write: (s: string) => void = (s) => process.stdout.write(s)) {
+	constructor(width = termWidth(), write: (s: string) => void = (s) => process.stdout.write(s)) {
 		this.width = width;
 		this.write = write;
 	}
@@ -50,7 +58,7 @@ export class HostTui {
 // bi#69 raw-mode layer. A BAML-shaped divider closes the block on
 // stdout so the next prompt doesn't crowd the list.
 export async function renderSelectList(text: string, cursor: number, width?: number, theme?: string | null): Promise<void> {
-	const w = width ?? process.stdout.columns ?? 80;
+	const w = width ?? termWidth();
 	const rows = text.split("\n").filter((l) => l.length > 0);
 	new HostTui(w).render(await render_select_frame_async(rows, cursor, w));
 	process.stdout.write((await render_divider_async(w, { theme: theme ?? null })) + "\n");
@@ -73,7 +81,7 @@ export class HostFooter {
 	constructor(
 		private dims: () => { rows: number; cols: number } = () => ({
 			rows: process.stdout.rows ?? 0,
-			cols: process.stdout.columns ?? 80,
+			cols: termWidth(),
 		}),
 		private tty: () => boolean = () => !!process.stdout.isTTY && !!process.stderr.isTTY,
 		private write: (s: string) => void = (s) => process.stderr.write(s),

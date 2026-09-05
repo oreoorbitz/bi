@@ -12,4 +12,8 @@ bi#27..bi#33. BAML owns text shaping/policy (message format, keybinding
 schema, theme tokens); host owns terminals, widgets, and event loops.
 Acceptance per child issue; epic closes when a side-by-side smoke of
 `bi` vs `pi` covers message rendering, selectors, sessions, and slashes.
+
+Direction 2026-09-05 (bi#114): screen UI builds on
+@earendil-works/pi-tui 0.84.3 (pinned dep) — depend, don't rebuild.
+Line-mode paths stay as the pipe fallback.
 """

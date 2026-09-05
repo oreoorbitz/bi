@@ -1,0 +1,31 @@
+id = "bi#100"
+title = "Searchable session picker (/resume filter + startup picker)"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Pi filters sessions by text (session-selector-search.ts, current +
+all loaders) and offers a TUI picker for --resume
+(cli/session-picker.ts). Bi's /resume is an unfiltered numbered
+list and startup always mints a fresh session — finding last week's
+session means leaving bi for ls/rg. Port the search rows into BAML
+(id, label, timestamp, message count); host filters + picks behind
+the bi#69 gate, numeric fallback stays. Acceptance: /resume filters
+as you type; startup offers resume-vs-new; empty results read empty,
+never error.
+"""
+
+[[edge]]
+from = "bi#100"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#100"
+to = "bi#30"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#100"
+to = "bi#69"
+kind = "DependsOn"

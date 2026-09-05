@@ -1,0 +1,29 @@
+id = "bi#88"
+title = "Branch-summary message after fork/clone/branch switch"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Pi renders a branch summary block (branch-summary-message.ts) when a
+branch is created or entered — what was kept, where the cut is. Bi's
+/fork and /clone print one stderr line and continue silently, so the
+transcript never records the branch point. Port the summary shape
+into BAML next to the bi#71 diff work; host prints it as a transcript
+block. Acceptance: /fork, /clone, and branch switches emit a summary
+block naming parent id, kept message count, and new id.
+"""
+
+[[edge]]
+from = "bi#88"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#88"
+to = "bi#27"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#88"
+to = "bi#30"
+kind = "DependsOn"

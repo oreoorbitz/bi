@@ -219,5 +219,46 @@ function harness(rows, tty) {
 	check(narrow === "xai/grok-4.6…", `narrow frame caps to one row (got ${JSON.stringify(narrow)})`);
 }
 
+// 10 — location segments: cwd/branch appended when present, omitted when null.
+{
+	const base = await format_repl_footer_async("xai", "grok-4.6", "high", 2, 5, { theme: null });
+	check(base === "xai/grok-4.6 · thinking high · 2 turns · 5 messages", "null segments render the legacy footer");
+	const withLoc = await format_repl_footer_async("xai", "grok-4.6", "high", 2, 5, { theme: null, cwd: "~/bi", branch: "main" });
+	check(withLoc === `${base} · ~/bi · main`, `segments append in order (got ${JSON.stringify(withLoc)})`);
+	const cwdOnly = await format_repl_footer_async("xai", "grok-4.6", "high", 2, 5, { theme: null, cwd: "~/bi" });
+	check(cwdOnly === `${base} · ~/bi`, "cwd alone appends without branch");
+	const frameLoc = await render_footer_frame_async("xai", "grok-4.6", "high", 2, 5, 200, { theme: null, cwd: "~/bi", branch: "main" });
+	check(frameLoc === withLoc, "wide frame with segments is byte-identical to the printed footer");
+}
+
+// 11 — host segment suppliers (footer_info): ~/ collapse, branch oracle.
+{
+	const { execFileSync } = await import("node:child_process");
+	const { footerCwd, gitBranch } = await import(join(ROOT, "..", "dist", "src", "footer_info.js"));
+	const cwd = process.cwd();
+	const savedHome = process.env.HOME;
+	process.env.HOME = dirname(cwd);
+	try {
+		check(footerCwd() === `~/${cwd.split("/").pop()}`, `cwd collapses under HOME (got ${JSON.stringify(footerCwd())})`);
+	} finally {
+		if (savedHome === undefined) delete process.env.HOME;
+		else process.env.HOME = savedHome;
+	}
+	// Independent oracle: git itself, not our parsing.
+	let expected = null;
+	try {
+		expected = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).trim();
+		if (expected === "HEAD") expected = null;
+	} catch {
+		expected = null;
+	}
+	check(gitBranch() === expected, `branch matches git oracle (got ${JSON.stringify(gitBranch())})`);
+	// Outside any repo the branch is null (never throws, never "HEAD").
+	const probe = execFileSync(process.execPath, ["--input-type=module", "-e",
+		`import(${JSON.stringify(join(ROOT, "..", "dist", "src", "footer_info.js"))}).then((m) => process.stdout.write(String(m.gitBranch())))`,
+	], { cwd: "/tmp", encoding: "utf8" });
+	check(probe === "null", `non-repo cwd yields null branch (got ${JSON.stringify(probe)})`);
+}
+
 if (failures) process.exit(1);
 console.log("footer-pin: all green");

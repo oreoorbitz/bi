@@ -1,0 +1,29 @@
+id = "bi#109"
+title = "REPL issue writes: /bais new + /bais move without leaving the session"
+status = "Done"
+kind = "Feat"
+area = "tui"
+body = """
+Dogfood blocker: the REPL human can stage issues (/issues) but not
+file or advance them — `bi bais new/move` live outside, and the REPL
+has no shell escape, so working BAIS from inside Bi means leaving
+Bi. The agent side already has bais_new/bais_move tools; the host
+lib already has createBaisIssue/moveBaisIssue. Add REPL verbs
+(`/bais new "title" [--kind] [--area]`, `/bais move <id> <Status>`)
+reusing the CLI paths, staying in-session. Acceptance: file + move
++ invalid-transition refusal all work mid-REPL; new ids complete in
+later /issues verbs; pipes keep today's CLI behavior.
+
+Closed 2026-09-05: `/bais` builtin registered (33 total, registry
+tests updated) + host dispatch in src/cli.ts reusing
+createBaisIssue/moveBaisIssue. Verified live over a pty REPL in a
+scratch workspace: `/bais new "probe issue" --kind Feat --area tui`
+filed, `/bais move bi#01 Doing` moved, invalid kind/status refused
+loudly in-session, bare /bais prints usage. Gates: baml test 274
+passed, tsc + host suite green.
+"""
+
+[[edge]]
+from = "bi#109"
+to = "bi#26"
+kind = "DependsOn"

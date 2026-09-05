@@ -13,7 +13,8 @@
 		"test": "node scripts/keeper.mjs && node scripts/notify.mjs && node scripts/leased-flags.mjs && node scripts/ready-shape.mjs && node scripts/check-evidence.mjs && node scripts/auth-chain.mjs && node scripts/tui-diff.mjs && node scripts/tool-diff.mjs && node scripts/footer-pin.mjs && node scripts/write-jail.mjs && node scripts/action-log.mjs"
 	},
 	"dependencies": {
-		"@boundaryml/baml-bridge": "0.17.0"
+		"@boundaryml/baml-bridge": "0.17.0",
+		"@earendil-works/pi-tui": "0.84.3"
 	},
 	"devDependencies": {
 		"@types/node": "22.19.19",

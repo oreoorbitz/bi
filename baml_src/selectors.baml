@@ -226,6 +226,8 @@ function footer_text(
     thinking: string,
     turns: int,
     messages: int,
+    cwd: string? = null,
+    branch: string? = null,
 ) -> string {
     let tm = if (turns == 1) {
         "1 turn"
@@ -237,7 +239,9 @@ function footer_text(
     } else {
         `${messages} messages`
     };
-    `${provider}/${model} · thinking ${thinking} · ${tm} · ${mm}`
+    let cs = if let c: string = cwd { ` · ${c}` } else { "" };
+    let bs = if let b: string = branch { ` · ${b}` } else { "" };
+    `${provider}/${model} · thinking ${thinking} · ${tm} · ${mm}${cs}${bs}`
 }
 
 function format_repl_footer(
@@ -247,8 +251,10 @@ function format_repl_footer(
     turns: int,
     messages: int,
     theme: string? = null,
+    cwd: string? = null,
+    branch: string? = null,
 ) -> string {
-    style_segment(footer_text(provider, model, thinking, turns, messages), "dim", theme)
+    style_segment(footer_text(provider, model, thinking, turns, messages, cwd = cwd, branch = branch), "dim", theme)
 }
 
 // Pinned-footer frame (bi#67): the readout width-capped to one terminal
@@ -264,8 +270,10 @@ function render_footer_frame(
     messages: int,
     width: int,
     theme: string? = null,
+    cwd: string? = null,
+    branch: string? = null,
 ) -> string {
-    style_segment(truncate_chars(footer_text(provider, model, thinking, turns, messages), width), "dim", theme)
+    style_segment(truncate_chars(footer_text(provider, model, thinking, turns, messages, cwd = cwd, branch = branch), width), "dim", theme)
 }
 
 test "thinking levels are pi's seven in order" {
@@ -413,5 +421,20 @@ test "footer frame caps to one row" {
     assert.equal(
         render_footer_frame("anthropic", "claude-haiku-4-5", "medium", 1, 1, 80),
         "anthropic/claude-haiku-4-5 · thinking medium · 1 turn · 1 message",
+    )
+}
+
+test "footer appends cwd and branch when present" {
+    assert.equal(
+        footer_text("xai", "grok-4.6", "high", 2, 5, cwd = "~/bi", branch = "main"),
+        "xai/grok-4.6 · thinking high · 2 turns · 5 messages · ~/bi · main",
+    );
+    assert.equal(
+        footer_text("xai", "grok-4.6", "high", 2, 5, cwd = "~/bi"),
+        "xai/grok-4.6 · thinking high · 2 turns · 5 messages · ~/bi",
+    );
+    assert.equal(
+        footer_text("xai", "grok-4.6", "high", 2, 5),
+        "xai/grok-4.6 · thinking high · 2 turns · 5 messages",
     )
 }

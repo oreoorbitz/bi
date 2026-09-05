@@ -1,0 +1,20 @@
+id = "bi#93"
+title = "First-time setup flow (theme detect + preview, analytics opt-in)"
+status = "Open"
+kind = "Feat"
+area = "cli/bi"
+body = """
+Pi onboards via FirstTimeSetupComponent (startup-ui.ts): detected
+theme with live preview, analytics share opt-in, cancelable. Bi has
+no first run — theme defaults silently, no consent surface exists
+for any future telemetry. Port the flow: BAML owns the prompt copy
++ choice schema, host owns detection/preview/persistence.
+Acceptance: fresh ~/.bi runs setup once; theme preview cycles
+default/light/none live; declining persists and never re-prompts;
+/settings shows the recorded choices.
+"""
+
+[[edge]]
+from = "bi#93"
+to = "bi#26"
+kind = "DependsOn"

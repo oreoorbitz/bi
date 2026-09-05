@@ -1,0 +1,31 @@
+id = "bi#108"
+title = "Dialog chrome primitives (dynamic border, bordered loader, visual truncate)"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Pi dialogs share chrome: DynamicBorder frames every selector,
+BorderedLoader covers async waits (share upload), visual-truncate
+keeps rows width-safe (dynamic-border.ts, bordered-loader.ts,
+visual-truncate.ts). Bi's select frames (bi#68) have no border
+primitive and no loader — each future dialog (login bi#94, share
+progress, refresh bi#89) would hand-roll its own. Port the three
+primitives once: BAML owns shaping/truncation (baml-testable),
+host owns paint/tick. Acceptance: login + refresh + long lists
+share the frame and loader; rows never exceed terminal width.
+"""
+
+[[edge]]
+from = "bi#108"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#108"
+to = "bi#68"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#108"
+to = "bi#69"
+kind = "DependsOn"

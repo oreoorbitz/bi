@@ -1,0 +1,19 @@
+id = "bi#112"
+title = "/issues staged view + staged marks on list rows"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Staged issues ride every turn (bi#79) but are invisible to the
+human: stage/drop print counts, and bare /issues rows carry no
+staged mark — "what context am I paying for?" has no answer. Mark
+staged rows in the list output and add an `/issues staged` verb
+(id + title + neighbor count per row). Acceptance: staged rows show
+their mark in bare and `all` listings; `staged` lists exactly the
+working set; dropping all clears both the set and the marks.
+"""
+
+[[edge]]
+from = "bi#112"
+to = "bi#26"
+kind = "DependsOn"

@@ -1,0 +1,21 @@
+id = "bi#89"
+title = "Model catalog refresh (dedupe + abort coordinator)"
+status = "Open"
+kind = "Feat"
+area = "providers"
+body = """
+Pi refreshes the model catalog live (model-catalog-refresh.ts:
+per-runtime coordinator dedupes concurrent refreshes, abort
+propagates to waiters). Bi's catalog is a static BAML table — new
+provider models never appear without a code change. Add a
+host-owned refresh lifecycle (BAML keeps the validated catalog
+schema; host owns fetch/dedupe/abort), surfaced as /model refresh
+or automatic staleness refresh. Acceptance: concurrent refreshes
+coalesce to one fetch; abort cancels cleanly; refreshed ids complete
+and resolve like builtins.
+"""
+
+[[edge]]
+from = "bi#89"
+to = "bi#26"
+kind = "DependsOn"

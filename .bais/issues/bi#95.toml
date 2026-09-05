@@ -1,0 +1,24 @@
+id = "bi#95"
+title = "Shared countdown primitive for dialogs (login expiry, auto-retry)"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Pi's CountdownTimer (countdown-timer.ts) is the one tick source for
+dialog expiry: device-code windows, retry countdowns, cancel-safe
+cleanup. Bi has no timed-dialog primitive, so bi#94 and retry UI
+would each hand-roll setInterval. Port it once as a host utility
+with BAML-owned second-formatting. Acceptance: login expiry and a
+retry countdown share the implementation; expire fires exactly once;
+unmount always clears the interval (no stray ticks after Esc).
+"""
+
+[[edge]]
+from = "bi#95"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#95"
+to = "bi#69"
+kind = "DependsOn"

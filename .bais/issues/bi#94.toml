@@ -1,0 +1,25 @@
+id = "bi#94"
+title = "In-REPL login dialog (device-code input + countdown + cancel)"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Pi's OAuth login replaces the editor with a dialog
+(login-dialog.ts): browser-open hint, device-code input, expiry
+countdown, cancelable without killing the session. Bi's /login path
+has no in-canvas dialog — auth interrupts drop to bare prompts.
+Port the dialog against the bi#69 layer with readline fallback.
+Acceptance: /login <oauth-provider> opens the dialog; code entry,
+expiry, and Esc-cancel all work; success returns to the exact prior
+prompt state; pipes keep the current linear flow.
+"""
+
+[[edge]]
+from = "bi#94"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#94"
+to = "bi#69"
+kind = "DependsOn"

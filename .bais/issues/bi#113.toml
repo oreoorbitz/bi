@@ -1,0 +1,19 @@
+id = "bi#113"
+title = "REPL startup ready frame (parity with bare `bi`)"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Bare `bi` opens on the ready BAIS frame (render_ready_frame); the
+interactive REPL opens on a bare session line — the dogfooder's
+first question ("what's ready?") costs a command in exactly the
+mode meant for doing the work. Print the ready frame (or its count
++ top rows when long) at REPL startup, same loader as `bi run`
+uses. Acceptance: REPL first paint names the ready set; zero ready
+reads as the CLI's empty hint, not silence; pipes unchanged.
+"""
+
+[[edge]]
+from = "bi#113"
+to = "bi#26"
+kind = "DependsOn"

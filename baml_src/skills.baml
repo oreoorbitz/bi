@@ -299,12 +299,18 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
         BuiltinSlashCommand {
             name: "issues",
             description: "List BAIS issues, stage one into the agent context, or drop it",
-            argument_hint: "[n|id|all|drop]",
+            argument_hint: "[n|id|all|drop|show <n|id>]",
+            scope: null,
+        },
+        BuiltinSlashCommand {
+            name: "bais",
+            description: "File or advance BAIS issues without leaving the REPL",
+            argument_hint: "[new \"title\" [--kind K] [--area A] | move <id> <Status>]",
             scope: null,
         },
         BuiltinSlashCommand {
             name: "reload",
-            description: "Reload keybindings, extensions, skills, prompts, themes, and context files",
+            description: "Reload skills from trusted project directories",
             argument_hint: null,
             scope: null,
         },
@@ -517,10 +523,10 @@ test "slash dispatch finds builtins then skills" {
     assert.equal(lookup_slash("/oauth", skills), "oauth");
     assert.equal(lookup_slash("/config", skills), "config");
     assert.equal(lookup_slash("/skills", skills), "skills");
-    assert.equal(builtin_slash_commands().length(), 32)
+    assert.equal(builtin_slash_commands().length(), 33)
 }
 
-test "registry is pi's 23 plus bi help" {
+test "registry is pi's 23 plus bi extras" {
     for (
         let want in [
             "help",
@@ -553,6 +559,7 @@ test "registry is pi's 23 plus bi help" {
             "compact",
             "resume",
             "issues",
+            "bais",
             "reload",
             "quit",
         ]
@@ -575,6 +582,7 @@ test "scope marks live vs owning issue" {
             "new" => assert.is_true(b.scope is null),
             "resume" => assert.is_true(b.scope is null),
             "issues" => assert.is_true(b.scope is null),
+            "bais" => assert.is_true(b.scope is null),
             "fork" => assert.is_true(b.scope is null),
             "compact" => assert.is_true(b.scope is null),
             "reload" => assert.is_true(b.scope is null),

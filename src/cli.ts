@@ -82,23 +82,30 @@ async function activeTheme(): Promise<string | null> {
 // (turn on stderr, slash listings on stdout) so the next prompt never
 // crowds the last line. Width follows the stream being written.
 async function stderrRule(theme: string | null): Promise<void> {
-	process.stderr.write((await render_divider_async(process.stderr.columns ?? process.stdout.columns ?? 80, { theme })) + "\n");
+	const c = process.stderr.columns;
+	process.stderr.write((await render_divider_async(typeof c === "number" && c > 0 ? c : termWidth(), { theme })) + "\n");
+}
+
+async function stdoutRule(theme: string | null): Promise<void> {
+	process.stdout.write((await render_divider_async(termWidth(), { theme })) + "\n");
 }
 
 async function printBlock(text: string): Promise<void> {
 	console.log(text);
-	process.stdout.write((await render_divider_async(process.stdout.columns ?? 80, { theme: await activeTheme() })) + "\n");
+	await stdoutRule(await activeTheme());
 }
 
 // Second-word Tab pools per slash command. Static pools mirror the
 // BAML-validated sets (thinking levels, theme names, trust verbs);
-// dynamic pools come from the VM (model catalog, setting keys).
-// Unknown commands complete nothing — never guess.
-async function argCandidates(cmd: string, names: string[]): Promise<string[]> {
+// dynamic pools come from the VM (model catalog, setting keys,
+// provider ids) or the host (session ids, filesystem paths).
+// Free-text commands (name, copy payloads) complete nothing — never guess.
+async function argCandidates(cmd: string, names: string[], prefix = ""): Promise<string[]> {
 	try {
 		switch (cmd) {
 			case "model":
-				return await all_model_ids_async();
+			case "scoped-models":
+				return cmd === "model" ? await all_model_ids_async() : ["enable", "disable", "only", "all", ...(await all_model_ids_async())];
 			case "thinking":
 				return ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 			case "theme":
@@ -111,11 +118,43 @@ async function argCandidates(cmd: string, names: string[]): Promise<string[]> {
 				return await setting_keys_async();
 			case "issues":
 				return [...scanBaisHeaders().headers.map((h) => h.id), "all", "drop"];
+			case "bais":
+				return ["new", "move", ...scanBaisHeaders().headers.map((h) => h.id)];
 			case "help":
 				return names.map((n) => n.replace(/^\//, ""));
+			case "login":
+			case "logout":
+			case "oauth":
+				return (await ListProviders_async()).map((p: any) => String(p.id ?? p));
+			case "resume":
+				return (await sessionResumeList()).map((r) => r.id);
+			case "tree":
+			case "attach":
+			case "import":
+			case "export":
+				return completePathPrefix(prefix);
 			default:
 				return [];
 		}
+	} catch {
+		return [];
+	}
+}
+
+// Filesystem-path completion for the file-taking slashes (tree,
+// attach, import, export): complete entries of the partial
+// directory, trailing slash on directories. Sync by readline's
+// contract; failures complete nothing.
+function completePathPrefix(prefix: string): string[] {
+	try {
+		const expanded = prefix.startsWith("~/") ? join(process.env.HOME ?? "", prefix.slice(2)) : prefix;
+		const slash = expanded.lastIndexOf("/");
+		const dir = slash === -1 ? "." : expanded.slice(0, slash + 1) || "/";
+		const base = slash === -1 ? expanded : expanded.slice(slash + 1);
+		const head = prefix.slice(0, prefix.length - base.length);
+		return readdirSync(dir, { withFileTypes: true })
+			.filter((e) => e.name.startsWith(base) && !e.name.startsWith("."))
+			.map((e) => `${head}${e.name}${e.isDirectory() ? "/" : ""}`);
 	} catch {
 		return [];
 	}
@@ -168,11 +207,15 @@ function bamlErrorMessage(e: unknown): string {
 	const raw = e instanceof Error ? e.message : String(e);
 	return raw.replace(/^baml error: (baml\.errors\.\w+: )?/, "").split("\n")[0];
 }
-import { HostTui, HostStatus, HostFooter, renderSelectList } from "./tui.js";
+import { HostTui, HostStatus, HostFooter, renderSelectList, termWidth } from "./tui.js";
 import { ActionLog, safeJson } from "./actionlog.js";
+import { canRawPick, pickFromList } from "./pick.js";
+import { screenAvailable, screenPickList } from "./screen.js";
+import { screenModelAvailable, screenPickModel } from "./screen-model.js";
 import { format_status, format_turn_summary, format_turn_error } from "../baml_sdk/index.js";
 import { runBiLoop } from "./agent_loop.js";
 import { editInExternalEditor, editorCommand } from "./editor.js";
+import { footerCwd, gitBranch } from "./footer_info.js";
 
 function printHelp(): void {
 	// BAML is spec: format_help() is bi-renamed pi help (APP_NAME bi, .bi)
@@ -368,7 +411,9 @@ async function buildTree(root: string, maxDepth = 3, cap = 200): Promise<{ rows:
 	return { rows, capped };
 }
 
-async function handleSlash(line: string, skills: Skill[], history: any[], signal?: TurnSignal, backend?: ReplBackend, sess?: ReplSessionState): Promise<any[] | "quit" | "none"> {
+// raw carries the REPL's line-input suspend/resume for raw-mode picks
+// (bi#69); null off-REPL or on pipes (numeric fallback, byte-identical).
+async function handleSlash(line: string, skills: Skill[], history: any[], signal?: TurnSignal, backend?: ReplBackend, sess?: ReplSessionState, raw?: { suspend(): void; resume(): void } | null): Promise<any[] | "quit" | "none"> {
 	// Decision (BAML-backed) lives in skills.ts; this keeps only effects.
 	const t = await resolveSlash(line, skills);
 	if (t.kind === "none") return "none";
@@ -648,9 +693,31 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				sess.treeRoot = root;
 			}
 			// bi#68: tree lists through the shared select frame (cursor
-			// parks on the first row — picks stay numeric against
-			// sess.tree until the bi#69 raw-mode layer).
-			await renderSelectList(await format_tree_async(rows), 0, undefined, await activeTheme());
+			// parks on the first row). bi#69: TTY picks by arrows (Enter
+			// reuses the numeric path — dirs browse, files hint /attach);
+			// pipes keep today's path byte-identical.
+			const treeText = await format_tree_async(rows);
+			const treeTheme = await activeTheme();
+			if (sess && rows.length > 0 && raw && (screenAvailable() || canRawPick())) {
+				// Same 1:1 split as renderSelectList, so the picked index
+				// addresses sess.tree directly. Screen first (slice 2),
+				// host picker with BI_SCREEN=0, static list on pipes.
+				const disp = treeText.split("\n").filter((l) => l.length > 0);
+				const screen = screenAvailable();
+				raw.suspend();
+				let at: number | null;
+				try {
+					at = screen
+						? await screenPickList("Browse (Enter opens, Esc keeps)", disp.map((label) => ({ label })), 0)
+						: await pickFromList(disp, 0);
+				} finally {
+					raw.resume();
+				}
+				if (at !== null && disp[at] && rows[at]) {
+					return handleSlash(`/tree ${at + 1}`, skills, history, signal, backend, sess, raw);
+				}
+			}
+			await renderSelectList(treeText, 0, undefined, treeTheme);
 			if (capped) console.error("[bi] tree capped at 200 entries, depth 3 — narrow with /tree <dir>");
 			return history;
 		}
@@ -714,38 +781,86 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 		// resolved model record, so `xai/grok-4.6` moves both at once.
 		if (t.name === "model") {
 			const scoped = loadUserSettings().enabled_models ?? null;
+			const applyModelRef = async (ref: string) => {
+				const numeric = /^\d+$/.test(ref);
+				const m = numeric ? await pick_model_async(Number(ref)) : await resolve_model_ref_async(ref);
+				if (!m) {
+					console.error(numeric ? `no model #${ref} — bare /model lists numbers` : `unknown model "${ref}" — bare /model lists the catalog (try provider/id or a number)`);
+					return history;
+				}
+				// Disabled models refuse with their own fix; startup stays
+				// permissive (resolve_backend ignores the list) so a bad
+				// stored set never bricks the REPL.
+				if (!(await is_model_enabled_async(scoped, m.id))) {
+					console.error(`model "${m.id}" is disabled — /scoped-models enable ${m.id} to use it`);
+					return history;
+				}
+				if (backend) {
+					backend.provider = m.provider;
+					backend.model = m.id;
+				}
+				console.error(`[bi] backend now ${m.provider}/${m.id}`);
+				return history;
+			};
 			if (!t.args) {
 				// bi#68: model catalog lists through the shared select
 				// frame; the cursor highlights the live backend (same
 				// BAML walk as the numbers, so `/model <n>` still agrees).
 				const currentModel = backend?.model ?? "claude-haiku-4-5";
-				await renderSelectList(
-					await format_model_list_async(currentModel, { theme: await activeTheme(), enabled: scoped }),
-					await model_list_cursor_async(currentModel),
-					undefined,
-					await activeTheme(),
-				);
+				const theme = await activeTheme();
+				const text = await format_model_list_async(currentModel, { theme, enabled: scoped });
+				const cursor = await model_list_cursor_async(currentModel);
+				// Screen mode (pi-tui SelectList): default on TTY unless
+				// BI_SCREEN=0. Values are model ids, resolved through the
+				// same apply path. A screen failure falls through to the
+				// host picker below — /model never bricks on widgets.
+				if (raw && screenModelAvailable()) {
+					let failed = false;
+					raw.suspend();
+					try {
+						const id = await screenPickModel(currentModel, scoped);
+						if (id !== null) return applyModelRef(id);
+					} catch (e) {
+						failed = true;
+						console.error(`[bi] screen picker failed (${e instanceof Error ? e.message : e}) — falling back`);
+					} finally {
+						raw.resume();
+					}
+					if (!failed) {
+						await renderSelectList(text, cursor, undefined, theme);
+						return history;
+					}
+				}
+				// bi#69: TTY picks by arrows (Enter switches, Esc keeps the
+				// list with numbers still working); pipes keep today's
+				// path byte-identical.
+				if (raw && canRawPick()) {
+					// Same split as renderSelectList, so the picked index
+					// addresses the displayed rows 1:1 (headers included).
+					const rows = text.split("\n").filter((l) => l.length > 0);
+					raw.suspend();
+					let at: number | null;
+					try {
+						at = await pickFromList(rows, cursor);
+					} finally {
+						raw.resume();
+					}
+					if (at === null) {
+						await renderSelectList(text, cursor, undefined, theme);
+						return history;
+					}
+					const line = rows[at] ?? "";
+					const num = /^\d+/.exec(line.replace(/\x1b\[[0-9;]*m/g, ""));
+					if (!num) {
+						console.error("that row is a provider header — pick a numbered model");
+						return history;
+					}
+					return applyModelRef(num[0]);
+				}
+				await renderSelectList(text, cursor, undefined, theme);
 				return history;
 			}
-			const numeric = /^\d+$/.test(t.args);
-			const m = numeric ? await pick_model_async(Number(t.args)) : await resolve_model_ref_async(t.args);
-			if (!m) {
-				console.error(numeric ? `no model #${t.args} — bare /model lists numbers` : `unknown model "${t.args}" — bare /model lists the catalog (try provider/id or a number)`);
-				return history;
-			}
-			// Disabled models refuse with their own fix; startup stays
-			// permissive (resolve_backend ignores the list) so a bad
-			// stored set never bricks the REPL.
-			if (!(await is_model_enabled_async(scoped, m.id))) {
-				console.error(`model "${m.id}" is disabled — /scoped-models enable ${m.id} to use it`);
-				return history;
-			}
-			if (backend) {
-				backend.provider = m.provider;
-				backend.model = m.id;
-			}
-			console.error(`[bi] backend now ${m.provider}/${m.id}`);
-			return history;
+			return applyModelRef(t.args);
 		}
 		if (t.name === "scoped-models") {
 			// bi#28: pi's scoped-models selector as verbs over the
@@ -754,8 +869,59 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			const parts = t.args ? t.args.split(/\s+/) : [];
 			const [verb, ...refs] = parts;
 			const stored = loadUserSettings();
+			// Shared validate → persist → print tail (verbs and the
+			// bare toggle below resolve refs first, so saves stay atomic).
+			const commitEnabled = async (next: string[]): Promise<void> => {
+				const errors = await validate_settings_async(bamlSettings({ ...stored, enabled_models: next }));
+				if (errors.length) {
+					for (const e of errors) console.error(e);
+					return;
+				}
+				try {
+					saveUserSettings({ ...stored, enabled_models: next });
+				} catch (e) {
+					console.error(`[bi] settings persist failed (${e instanceof Error ? e.message : e})`);
+					return;
+				}
+				await printBlock(await format_scoped_models_async(next));
+			};
 			if (!verb) {
-				await printBlock(await format_scoped_models_async(stored.enabled_models ?? null));
+				const cur = stored.enabled_models ?? null;
+				// bi#69: TTY toggles by arrows (Enter flips the row, Esc
+				// keeps the summary); pipes keep today's summary
+				// byte-identical. Screen first (slice 2).
+				if (raw && (screenAvailable() || canRawPick())) {
+					const ids = await all_model_ids_async();
+					if (ids.length === 0) {
+						await printBlock(await format_scoped_models_async(cur));
+						return history;
+					}
+					const rows = ids.map((id) => `${cur === null || cur.includes(id) ? "[x]" : "[ ]"} ${id}`);
+					const screen = screenAvailable();
+					raw.suspend();
+					let at: number | null;
+					try {
+						at = screen
+							? await screenPickList("Toggle models (Enter flips, Esc keeps)", rows.map((label) => ({ label })), 0)
+							: await pickFromList(rows, 0);
+					} finally {
+						raw.resume();
+					}
+					const id = at === null ? undefined : ids[at];
+					if (!id) {
+						await printBlock(await format_scoped_models_async(cur));
+						return history;
+					}
+					const base = cur ?? ids;
+					const next = cur === null || cur.includes(id) ? base.filter((e) => e !== id) : [...base, id];
+					if (next.length === 0) {
+						console.error("[bi] refusing to disable the last model — /scoped-models all resets to all-enabled");
+						return history;
+					}
+					await commitEnabled(next);
+					return history;
+				}
+				await printBlock(await format_scoped_models_async(cur));
 				return history;
 			}
 			if (verb === "all") {
@@ -779,7 +945,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 					ids.push(rec.id);
 				}
 				const cur = stored.enabled_models ?? null;
-				let next: string[] | null;
+				let next: string[];
 				if (verb === "only") {
 					next = [...new Set(ids)];
 				} else if (verb === "enable") {
@@ -792,18 +958,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 					const base = cur ?? await all_model_ids_async();
 					next = base.filter((id) => !ids.includes(id));
 				}
-				const errors = await validate_settings_async(bamlSettings({ ...stored, enabled_models: next ?? undefined }));
-				if (errors.length) {
-					for (const e of errors) console.error(e);
-					return history;
-				}
-				try {
-					saveUserSettings({ ...stored, enabled_models: next ?? undefined });
-				} catch (e) {
-					console.error(`[bi] settings persist failed (${e instanceof Error ? e.message : e})`);
-					return history;
-				}
-				await printBlock(await format_scoped_models_async(next));
+				await commitEnabled(next);
 				return history;
 			}
 			console.error("usage: /scoped-models [enable|disable|only <ref...> | all]");
@@ -855,6 +1010,23 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			const arg = (t.args ?? "").trim();
 			const scan = scanBaisHeaders();
 			const byId = new Map(scan.headers.map((h) => [h.id, h]));
+			// Shared stage-by-id tail (numeric picks, raw picks, id args).
+			const stageById = async (stageId: string): Promise<any[] | "quit" | "none"> => {
+				const header = byId.get(stageId);
+				if (!header || !header.parseable) {
+					console.error(`unknown issue "${stageId}" — bare /issues lists numbers and ids`);
+					return history;
+				}
+				// Single-file BAML validation: the only VM call on this path.
+				const loaded = await loadStagedIssues([stageId]);
+				if (!loaded.staged.length) {
+					console.error(`[bi] ${stageId} failed validation — bais check names the fix`);
+					return history;
+				}
+				if (!sess.stagedIssues.includes(stageId)) sess.stagedIssues.push(stageId);
+				console.error(`[bi] staged ${stageId} (${sess.stagedIssues.length} staged — full body + ${loaded.staged[0].neighbors.length} neighbor(s) ride every turn until /issues drop)`);
+				return history;
+			};
 			if (arg === "" || arg === "all") {
 				const listed = (arg === "all" ? [...scan.headers] : scan.headers.filter((h) => h.status === "Open"))
 					.sort((a, b) => a.id.localeCompare(b.id));
@@ -874,7 +1046,75 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 							: await format_issue_row_async(i + 1, h.file, "?", "?", "(unparseable — bais check names the fix)", []),
 					);
 				}
-				await renderSelectList(rows.join("\n"), 0, undefined, await activeTheme());
+				const theme = await activeTheme();
+				// bi#69: TTY picks by arrows (Enter stages, Esc keeps the
+				// list with numbers still working); pipes keep today's
+				// path byte-identical. Screen first (slice 2).
+				if (raw && (screenAvailable() || canRawPick())) {
+					const screen = screenAvailable();
+					raw.suspend();
+					let at: number | null;
+					try {
+						at = screen
+							? await screenPickList("Stage issue (Enter stages, Esc keeps)", rows.map((label) => ({ label })), 0)
+							: await pickFromList(rows, 0);
+					} finally {
+						raw.resume();
+					}
+					if (at === null) {
+						await stdoutRule(theme);
+						return history;
+					}
+					const id = sess.issueList[at];
+					if (!id) {
+						console.error(`row ${at + 1} is unparseable — bais check names the fix`);
+						await stdoutRule(theme);
+						return history;
+					}
+					const out = await stageById(id);
+					await stdoutRule(theme);
+					return out;
+				}
+				await renderSelectList(rows.join("\n"), 0, undefined, theme);
+				return history;
+			}
+			// bi#110: read the full body + edges as the human (same
+			// loader and formatter the agent's staged context uses).
+			const showM = arg.match(/^show\s+(\S+)\s*$/);
+			if (showM) {
+				let showId = showM[1];
+				if (/^\d+$/.test(showId)) {
+					const pick = sess.issueList[Number(showId) - 1];
+					if (!pick) {
+						console.error(`no issue row ${showId} — bare /issues re-lists`);
+						return history;
+					}
+					showId = pick;
+				}
+				const loaded = await loadStagedIssues([showId]);
+				const s = loaded.staged[0];
+				if (!s) {
+					console.error(`unknown issue "${showM[1]}" — bare /issues lists numbers and ids`);
+					return history;
+				}
+				const f = s.file;
+				await printBlock(
+					await format_issue_context_async(
+						f.issue.id,
+						f.issue.title,
+						f.issue.status,
+						f.issue.kind,
+						f.issue.area,
+						f.issue.body,
+						4000,
+						f.edges.map((e) => e.from),
+						f.edges.map((e) => e.to),
+						f.edges.map((e) => e.kind),
+						s.neighbors.map((n) => n.id),
+						s.neighbors.map((n) => n.title),
+						s.neighbors.map((n) => n.status),
+					),
+				);
 				return history;
 			}
 			const dropM = arg.match(/^drop(?:\s+(.+))?$/);
@@ -905,19 +1145,42 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			} else {
 				stageId = arg;
 			}
-			const header = byId.get(stageId);
-			if (!header || !header.parseable) {
-				console.error(`unknown issue "${stageId}" — bare /issues lists numbers and ids`);
+			return stageById(stageId);
+		}
+		// bi#109: file or advance BAIS issues without leaving the REPL
+		// (same host lib the `bi bais` CLI uses; errors stay in-session,
+		// never process.exit).
+		if (t.name === "bais") {
+			const rest = (t.args ?? "").trim();
+			const flag = (name: string): string | undefined => {
+				const m = rest.match(new RegExp(`--${name}\\s+("[^"]+"|'[^']+'|\\S+)`));
+				if (!m) return undefined;
+				const v = m[1];
+				return v.length > 1 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) ? v.slice(1, -1) : v;
+			};
+			const newM = rest.match(/^new\s+("[^"]+"|'[^']+'|\S+)\s*([\s\S]*)$/);
+			if (newM) {
+				const rawTitle = newM[1];
+				const title = rawTitle.length > 1 && ((rawTitle.startsWith('"') && rawTitle.endsWith('"')) || (rawTitle.startsWith("'") && rawTitle.endsWith("'"))) ? rawTitle.slice(1, -1) : rawTitle;
+				try {
+					const file = await createBaisIssue({ title, kind: flag("kind"), area: flag("area"), body: flag("body"), status: flag("status") });
+					console.error(`[bi] filed ${file.issue.id} — ${file.issue.title}`);
+				} catch (e) {
+					console.error(`[bi] file failed (${e instanceof Error ? e.message : e})`);
+				}
 				return history;
 			}
-			// Single-file BAML validation: the only VM call on this path.
-			const loaded = await loadStagedIssues([stageId]);
-			if (!loaded.staged.length) {
-				console.error(`[bi] ${stageId} failed validation — bais check names the fix`);
+			const moveM = rest.match(/^move\s+(\S+)\s+(\S+)\s*$/);
+			if (moveM) {
+				try {
+					const file = await moveBaisIssue(moveM[1], moveM[2]);
+					console.error(`[bi] moved ${file.issue.id} → ${file.issue.status}`);
+				} catch (e) {
+					console.error(`[bi] move failed (${e instanceof Error ? e.message : e})`);
+				}
 				return history;
 			}
-			if (!sess.stagedIssues.includes(stageId)) sess.stagedIssues.push(stageId);
-			console.error(`[bi] staged ${stageId} (${sess.stagedIssues.length} staged — full body + ${loaded.staged[0].neighbors.length} neighbor(s) ride every turn until /issues drop)`);
+			console.error('usage: /bais new "title" [--kind K] [--area A] [--body B] [--status S] | /bais move <id> <Status>');
 			return history;
 		}
 		if (t.name === "new") {
@@ -931,17 +1194,44 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			return [];
 		}
 		if (t.name === "resume") {
+			let resumeId = t.args;
 			if (!t.args) {
-				const rows = await sessionResumeList();
+				const list = await sessionResumeList();
 				// bi#68: resume lists through the shared select frame; the
 				// cursor highlights the live session (same array the
 				// numeric pick resolves against, so `/resume <n>` agrees).
 				const cur = sess ? sessionIdFromFile(sess.file) : null;
-				const at = cur ? rows.findIndex((r) => r.id === cur) : -1;
-				await renderSelectList(await format_resume_list_async(rows, cur), at < 0 ? 0 : at, undefined, await activeTheme());
-				return history;
+				const at = cur ? list.findIndex((r) => r.id === cur) : -1;
+				const theme = await activeTheme();
+				const text = await format_resume_list_async(list, cur);
+				// bi#69: TTY picks by arrows (Enter resumes, Esc keeps the
+				// list with numbers still working); pipes keep today's
+				// path byte-identical. Screen first (slice 2).
+				if (raw && (screenAvailable() || canRawPick()) && list.length > 0) {
+					// Same split as renderSelectList, so the picked index
+					// addresses the displayed rows 1:1.
+					const disp = text.split("\n").filter((l) => l.length > 0);
+					const screen = screenAvailable();
+					raw.suspend();
+					let pick: number | null;
+					try {
+						pick = screen
+							? await screenPickList("Resume session (Enter resumes, Esc keeps)", disp.map((label) => ({ label })), at < 0 ? 0 : at)
+							: await pickFromList(disp, at < 0 ? 0 : at);
+					} finally {
+						raw.resume();
+					}
+					const row = pick === null ? undefined : list[pick];
+					if (!row) {
+						await renderSelectList(text, at < 0 ? 0 : at, undefined, theme);
+						return history;
+					}
+					resumeId = row.id;
+				} else {
+					await renderSelectList(text, at < 0 ? 0 : at, undefined, theme);
+					return history;
+				}
 			}
-			let resumeId = t.args;
 			if (/^\d+$/.test(t.args)) {
 				const rows = await sessionResumeList();
 				const row = rows[Number(t.args) - 1];
@@ -1251,8 +1541,8 @@ async function runToolWithStatus(name: string, args: Record<string, unknown>): P
 // opts.aborted resolves when the user hits Ctrl-C mid-turn: the turn is
 // abandoned (flagged via opts.signal), the spinner stops now, and the late
 // VM result is discarded on arrival — transcript and prompt survive.
-async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = [], opts: { signal?: TurnSignal; aborted?: Promise<void> } = {}, backend: ReplBackend = { provider: "anthropic", model: "claude-haiku-4-5", thinking: null }, sess?: ReplSessionState): Promise<any[] | "quit"> {
-	const slash = await handleSlash(q, skills, history, opts.signal, backend, sess);
+async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = [], opts: { signal?: TurnSignal; aborted?: Promise<void>; raw?: { suspend(): void; resume(): void } | null } = {}, backend: ReplBackend = { provider: "anthropic", model: "claude-haiku-4-5", thinking: null }, sess?: ReplSessionState): Promise<any[] | "quit"> {
+	const slash = await handleSlash(q, skills, history, opts.signal, backend, sess, opts.raw ?? null);
 	if (slash === "quit") return "quit";
 	if (slash !== "none") return slash;
 	// bi#75: the turn's own log lines (tool.* / edit.write / bais.*
@@ -1456,6 +1746,25 @@ class ReplReader {
 		// on every Tab, so late wiring (after skill loads) just works.
 		(this.r as any).completer = fn;
 	}
+	// bi#69: suspend line editing while a raw-mode component (pick)
+	// owns stdin; resume restores it. stdin stays PAUSED here on purpose:
+	// resuming before the pick's own listener attaches would flow bytes
+	// into readline's paused-ignoring handler and lose them. The pick
+	// attaches first, then resumes, so early keys queue instead of drop.
+	suspendLineInput(): void {
+		try { this.r.pause(); } catch {}
+	}
+	resumeLineInput(): void {
+		try { this.r.resume(); } catch {}
+		// TEMP bi#69 diagnosis: one-shot spy logs the next stdin chunk.
+		if (process.env.BI_PICK_DEBUG) {
+			const spy = (chunk: Buffer) => {
+				try { process.stdin.removeListener("data", spy); } catch {}
+				process.stderr.write(`[pick-debug] post-resume bytes=${JSON.stringify(chunk.toString("utf8"))}\n`);
+			};
+			try { process.stdin.on("data", spy); } catch {}
+		}
+	}
 	constructor() {
 		this.historyFile = historyFile();
 		const lines = readHistoryFile(this.historyFile);
@@ -1530,8 +1839,10 @@ async function repl(skills: Skill[]): Promise<void> {
 	const footer = new HostFooter();
 	// Tab completes first-word slashes (builtins + loaded skills, same
 	// array the loop mutates on /trust reloads) and second-word
-	// arguments for commands with a known pool (/model ids, /thinking
-	// levels, /theme names, /trust verbs, /settings keys, /help names).
+	// arguments for commands with a known pool (model ids, provider
+	// ids, session ids, paths, levels, names, verbs, keys).
+	// A bare exact command ("/model") completes the trailing space so
+	// the next Tab reaches the argument pool — never a silent no-op.
 	// BAML owns the match; the callback form keeps readline's sync
 	// contract over the VM call.
 	try {
@@ -1540,6 +1851,11 @@ async function repl(skills: Skill[]): Promise<void> {
 			const names = [...builtins, ...skills.map((s) => s.name)];
 			const second = line.match(/^\/(\S+)[ \t]+(\S*)$/);
 			if (!second) {
+				const bare = line.match(/^\/(\S+)$/);
+				if (bare && names.includes(bare[1])) {
+					cb(null, [[`${line} `], line]);
+					return;
+				}
 				complete_slash_async(line, names).then(
 					(m: string[]) => cb(null, [m, line]),
 					(e: unknown) => cb(null, [[], line]),
@@ -1547,7 +1863,7 @@ async function repl(skills: Skill[]): Promise<void> {
 				return;
 			}
 			const prefix = second[2];
-			argCandidates(second[1], names).then((pool) =>
+			argCandidates(second[1], names, prefix).then((pool) =>
 				complete_arg_async(prefix, pool).then(
 					(m: string[]) => cb(null, [m, prefix]),
 					(e: unknown) => cb(null, [[], prefix]),
@@ -1602,7 +1918,7 @@ async function repl(skills: Skill[]): Promise<void> {
 			let fireAbort: () => void = () => {};
 			const aborted = new Promise<void>((res) => { fireAbort = res; });
 			reader.onMidTurnInterrupt = () => fireAbort();
-			const out = await runOnePrompt(line.trim(), skills, history, { signal, aborted }, backend, sess);
+			const out = await runOnePrompt(line.trim(), skills, history, { signal, aborted, raw: { suspend: () => reader.suspendLineInput(), resume: () => reader.resumeLineInput() } }, backend, sess);
 			reader.onMidTurnInterrupt = null;
 			if (out === "quit") {
 				console.error(`[bi] session kept at ${sess.file} (${history.length} messages)`);
@@ -1624,9 +1940,11 @@ async function repl(skills: Skill[]): Promise<void> {
 					// bi#67: pinned to the bottom row on TTY, plain print on pipes.
 					const theme = await activeTheme();
 					const thinking = backend.thinking ?? "default";
-					const fallback = await format_repl_footer_async(backend.provider, backend.model, thinking, sess.turn, history.length, { theme });
+					const cwd = footerCwd();
+					const branch = gitBranch();
+					const fallback = await format_repl_footer_async(backend.provider, backend.model, thinking, sess.turn, history.length, { theme, cwd, branch });
 					footer.show(
-						await render_footer_frame_async(backend.provider, backend.model, thinking, sess.turn, history.length, process.stdout.columns ?? 80, { theme }),
+						await render_footer_frame_async(backend.provider, backend.model, thinking, sess.turn, history.length, termWidth(), { theme, cwd, branch }),
 						fallback,
 					);
 				}
@@ -1665,7 +1983,7 @@ async function main(): Promise<void> {
 		tui.render(
 			await render_ready_frame_async(
 				ready.map((f) => ({ id: f.issue.id, title: f.issue.title })),
-				process.stdout.columns ?? 80,
+				termWidth(),
 			),
 		);
 		if (ready.length === 0) {
@@ -2027,10 +2345,11 @@ async function main(): Promise<void> {
 			return;
 		}
 		if (sub === "check") {
-			const { ok, bad, dangling, cycles } = await checkBaisIssues();
+			const { ok, bad, dangling, cycles, evidence } = await checkBaisIssues();
 			const missing = dangling.filter((d) => d.status === "Missing");
 			const external = dangling.filter((d) => d.status === "External");
-			if (asJson) console.log(JSON.stringify({ ok: ok.length, bad, dangling, cycles }, null, 2));
+			const fatalEvidence = evidence.filter((p) => p.status === "Missing");
+			if (asJson) console.log(JSON.stringify({ ok: ok.length, bad, dangling, cycles, evidence }, null, 2));
 			else {
 				for (const f of ok) console.log(`ok\t${f.issue.id}`);
 				for (const b of bad) console.log(`bad\t${b.file}\t${b.error}`);

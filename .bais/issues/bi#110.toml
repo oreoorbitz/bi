@@ -1,0 +1,27 @@
+id = "bi#110"
+title = "/issues show <id>: read full body + edges as the human"
+status = "Done"
+kind = "Feat"
+area = "tui"
+body = """
+/issues lists and stages, and the AGENT gets full bodies via
+loadStagedIssues — but the human never sees more than one
+format_issue_row line. Triaging from inside Bi ("what does bi#87
+actually say? who blocks it?") currently needs cat/rg outside.
+Add `/issues show <id|n>`: full body + status/kind/area/severity +
+edge list + neighbor titles, rendered through the shared select
+frame family. Acceptance: show works by id and by list number;
+unparseable files refuse with the bais-check hint; output replays
+from staged context (same loader bi#79 uses).
+
+Closed 2026-09-05: `/issues show <n|id>` in src/cli.ts reuses
+loadStagedIssues + format_issue_context_async (identical call shape
+to the agent's staged context). Verified live over a pty REPL:
+showed full body + edges after a move. Numeric resolution shares
+the stage path's sess.issueList contract.
+"""
+
+[[edge]]
+from = "bi#110"
+to = "bi#26"
+kind = "DependsOn"

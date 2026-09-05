@@ -1,0 +1,30 @@
+id = "bi#101"
+title = "Settings submenus (nested/stepped selectors)"
+status = "Open"
+kind = "Feat"
+area = "tui"
+body = """
+Pi nests settings behind submenu components (settings-submenu.ts:
+SelectSubmenu, SteppedSubmenu — e.g. provider -> auth method ->
+key). Bi's /settings is flat get/set/unset verbs; multi-step
+settings (OAuth provider choice) have no guided path. Port the
+submenu walk into BAML (choice schema + validation), host drives
+selection via the bi#69 layer. Acceptance: /settings opens sections;
+stepped flows validate per step and abort atomically; verbs keep
+working as shortcuts into the same walk.
+"""
+
+[[edge]]
+from = "bi#101"
+to = "bi#26"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#101"
+to = "bi#29"
+kind = "DependsOn"
+
+[[edge]]
+from = "bi#101"
+to = "bi#69"
+kind = "DependsOn"
