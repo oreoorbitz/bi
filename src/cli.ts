@@ -9,7 +9,7 @@ import { getProvider, listProviders } from "./provider.js";
 import { runAgent, runSingleImageTurn } from "./agent.js";
 import { HttpKeeperHub, LeaseKeeper } from "./keeper.js";
 import { HubSubscriber } from "./notify.js";
-import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, moveBaisIssue, checkBaisIssues, graphBaisIssues, scanBaisHeaders, scannedBlockers, loadStagedIssues } from "./bais.js";
+import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, moveBaisIssue, checkBaisIssues, graphBaisIssues, scanBaisHeaders, scannedBlockers, loadStagedIssues, parseClaimDuration, renewBaisClaim, reapBaisClaims } from "./bais.js";
 import { listTools, handleTool, emitToolDiff, setTrustReader } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { runAuthStatus, runLogin, runLogout } from "./auth_cli.js";
@@ -211,6 +211,7 @@ import { HostTui, HostStatus, HostFooter, renderSelectList, termWidth } from "./
 import { ActionLog, safeJson } from "./actionlog.js";
 import { canRawPick, pickFromList } from "./pick.js";
 import { screenAvailable, screenPickList } from "./screen.js";
+import { editAvailable, screenAskEdit, type SlashPool } from "./edit.js";
 import { screenModelAvailable, screenPickModel } from "./screen-model.js";
 import { format_status, format_turn_summary, format_turn_error } from "../baml_sdk/index.js";
 import { runBiLoop } from "./agent_loop.js";
@@ -235,7 +236,9 @@ function printHelp(): void {
   bi bais list [--json]
   bi bais ready [--json]
   bi bais new "title" --kind <Kind> [--area <area>] [--status <Status>] [--body <md>]
-  bi bais move <id> <Status>
+  bi bais move <id> <Status> [--as <owner> --for 4h]
+  bi bais renew <id> --as <owner> [--for 4h]
+  bi bais reap [--now <instant>]
   bi bais check [--json]
   bi bais graph --from <id> [--json]
 `);
@@ -1190,17 +1193,25 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				}
 				return history;
 			}
-			const moveM = rest.match(/^move\s+(\S+)\s+(\S+)\s*$/);
+			const moveM = rest.match(/^move\s+(\S+)\s+(\S+)\s*([\s\S]*)$/);
 			if (moveM) {
 				try {
-					const file = await moveBaisIssue(moveM[1], moveM[2]);
+					const as = flag("as");
+					const forRaw = flag("for");
+					let forMs: number | undefined;
+					if (forRaw != null) {
+						const p = parseClaimDuration(forRaw);
+						if (p == null) throw new Error(`--for ${JSON.stringify(forRaw)} needs <n>s|m|h|d`);
+						forMs = p;
+					}
+					const file = await moveBaisIssue(moveM[1], moveM[2], undefined, as != null ? { as, forMs } : undefined);
 					console.error(`[bi] moved ${file.issue.id} → ${file.issue.status}`);
 				} catch (e) {
 					console.error(`[bi] move failed (${e instanceof Error ? e.message : e})`);
 				}
 				return history;
 			}
-			console.error('usage: /bais new "title" [--kind K] [--area A] [--body B] [--status S] | /bais move <id> <Status>');
+			console.error('usage: /bais new "title" [--kind K] [--area A] [--body B] [--status S] | /bais move <id> <Status> [--as O] [--for D]');
 			return history;
 		}
 		if (t.name === "new") {
@@ -1802,7 +1813,32 @@ class ReplReader {
 		});
 		this.r.on("close", () => this.pending?.reject(new Error("EOF")));
 	}
+	editPool: SlashPool | null = null;
+	setEditPool(pool: SlashPool): void {
+		this.editPool = pool;
+	}
+	// Slice 3: TTY prompts go through the pi-tui editor modal (Enter
+	// submits, Ctrl-J newline, Up recalls, Tab completes); readline
+	// stays paused underneath (bi#69 pattern) and remains the pipe
+	// fallback. History merges file + this session's submissions.
+	async askWithEditor(promptText: string): Promise<string> {
+		if (!this.editPool) throw new Error("askWithEditor: no pool");
+		this.suspendLineInput();
+		this.pending = null;
+		try {
+			const text = await screenAskEdit(
+				promptText,
+				[...readHistoryFile(this.historyFile), ...this.submitted],
+				this.editPool,
+			);
+			if (text !== "\x03" && text.trim().length > 0) this.submitted.push(text);
+			return text;
+		} finally {
+			this.resumeLineInput();
+		}
+	}
 	ask(prompt: string): Promise<string> {
+		if (editAvailable() && this.editPool) return this.askWithEditor(prompt);
 		return new Promise<string>((resolve, reject) => {
 			this.pending = { resolve, reject };
 			this.r.question(prompt, (a: string) => {
@@ -1813,8 +1849,10 @@ class ReplReader {
 		});
 	}
 	// Trailing backslash continues onto the next line ("... " prompt),
-	// so multi-line prompts survive the line editor.
+	// so multi-line prompts survive the line editor. The TTY editor is
+	// natively multiline (Ctrl-J), so one modal serves the whole turn.
 	async askMultiline(prompt: string): Promise<string> {
+		if (editAvailable() && this.editPool) return this.askWithEditor(prompt);
 		const parts: string[] = [];
 		let p = prompt;
 		for (;;) {
@@ -1866,7 +1904,24 @@ async function repl(skills: Skill[]): Promise<void> {
 	// BAML owns the match; the callback form keeps readline's sync
 	// contract over the VM call.
 	try {
-		const builtins = (await builtin_slash_commands_async()).map((b: any) => String(b.name));
+		const builtinRows: { name: string; description: string | null }[] = (
+			await builtin_slash_commands_async()
+		).map((b: any) => ({ name: String(b.name), description: b.description != null ? String(b.description) : null }));
+		const builtins = builtinRows.map((b) => b.name);
+		// Slice 3: the modal editor's Tab provider shares the readline
+		// pools (same names array the loop mutates on /trust reloads).
+		reader.setEditPool({
+			names: () => [...builtins, ...skills.map((s) => s.name)],
+			describe: (name) => {
+				const b = builtinRows.find((r) => r.name === name);
+				if (b?.description) return b.description;
+				const s = skills.find((k) => k.name === name);
+				const d = (s as any)?.description;
+				return d != null ? String(d) : null;
+			},
+			argPool: (cmd, prefix) =>
+				argCandidates(cmd, [...builtins, ...skills.map((s) => s.name)], prefix),
+		});
 		reader.setCompleter((line: string, cb: (err: unknown, res: [string[], string]) => void) => {
 			const names = [...builtins, ...skills.map((s) => s.name)];
 			const second = line.match(/^\/(\S+)[ \t]+(\S*)$/);
@@ -2360,8 +2415,57 @@ async function main(): Promise<void> {
 			const id = args[2];
 			const status = args[3];
 			if (!id || !status) { console.error("bais move requires <id> <Status>"); process.exit(1); }
-			const file = await moveBaisIssue(id, status);
-			console.log(`${file.issue.id}\t${file.issue.status}`);
+			const as = getFlag(args, "--as");
+			const forRaw = getFlag(args, "--for");
+			let forMs: number | undefined;
+			if (forRaw != null) {
+				const p = parseClaimDuration(forRaw);
+				if (p == null) { console.error(`bais move: --for ${JSON.stringify(forRaw)} needs <n>s|m|h|d`); process.exit(1); }
+				forMs = p;
+			}
+			try {
+				const file = await moveBaisIssue(id, status, undefined, as != null ? { as, forMs } : undefined);
+				console.log(`${file.issue.id}\t${file.issue.status}`);
+			} catch (e) {
+				console.error(`bais move: ${e instanceof Error ? e.message : e}`);
+				process.exit(1);
+			}
+			return;
+		}
+		if (sub === "renew") {
+			const id = args[2];
+			const as = getFlag(args, "--as");
+			if (!id || !as) { console.error("bais renew requires <id> --as <owner> [--for <n>s|m|h|d]"); process.exit(1); }
+			const forRaw = getFlag(args, "--for");
+			let forMs = 4 * 3600000;
+			if (forRaw != null) {
+				const p = parseClaimDuration(forRaw);
+				if (p == null) { console.error(`bais renew: --for ${JSON.stringify(forRaw)} needs <n>s|m|h|d`); process.exit(1); }
+				forMs = p;
+			}
+			try {
+				const file = await renewBaisClaim(id, as, forMs);
+				console.log(`renewed\t${file.issue.id}\t${file.holder}\t${file.lease}`);
+			} catch (e) {
+				console.error(`bais renew: ${e instanceof Error ? e.message : e}`);
+				process.exit(1);
+			}
+			return;
+		}
+		if (sub === "reap") {
+			const nowRaw = getFlag(args, "--now");
+			let nowMs = Date.now();
+			if (nowRaw != null) {
+				const t = Date.parse(nowRaw);
+				if (Number.isNaN(t)) { console.error(`bais reap: --now ${JSON.stringify(nowRaw)} does not parse as an instant`); process.exit(1); }
+				nowMs = t;
+			}
+			const reaped = await reapBaisClaims(nowMs);
+			if (asJson) console.log(JSON.stringify({ reaped }, null, 2));
+			else {
+				if (!reaped.length) console.log("reaped\t0");
+				for (const r of reaped) console.log(`reaped\t${r.id}\t${r.holder ?? "unknown"}\t${r.lease ?? "no-lease"}`);
+			}
 			return;
 		}
 		if (sub === "check") {
@@ -2405,7 +2509,7 @@ async function main(): Promise<void> {
 			else for (const f of files) console.log(`${f.issue.id}\t${f.issue.title}\t[${f.edges.map((e) => e.kind).join(",")}]`);
 			return;
 		}
-		console.error(`Unknown bais subcommand: ${sub ?? ""} (try: bais list | ready | new | move | check | graph)`);
+		console.error(`Unknown bais subcommand: ${sub ?? ""} (try: bais list | ready | new | move | renew | reap | check | graph)`);
 		printHelp();
 		process.exit(1);
 	}

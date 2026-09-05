@@ -1,6 +1,6 @@
 id = "bi#77"
 title = "Envelope emission from edit/write executors (diffs stage 2)"
-status = "Doing"
+status = "Open"
 kind = "Feat"
 area = "tui"
 body = """

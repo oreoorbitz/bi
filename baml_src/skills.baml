@@ -305,7 +305,7 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
         BuiltinSlashCommand {
             name: "bais",
             description: "File or advance BAIS issues without leaving the REPL",
-            argument_hint: "[new \"title\" [--kind K] [--area A] | move <id> <Status>]",
+            argument_hint: "[new \"title\" [--kind K] [--area A] | move <id> <Status> [--as O] [--for D]]",
             scope: null,
         },
         BuiltinSlashCommand {

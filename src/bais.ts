@@ -21,7 +21,9 @@ export type BaisIssue = {
 };
 
 export type BaisEdge = { from: string; to: string; kind: string };
-export type BaisFile = { issue: BaisIssue; edges: BaisEdge[] };
+// File-envelope claim mirror (bais/src/graph.ts): holder + RFC3339 UTC
+// lease, null when unclaimed. BAML serialize round-trips them untouched.
+export type BaisFile = { issue: BaisIssue; edges: BaisEdge[]; holder: string | null; lease: string | null };
 
 // Resolve the BAIS issues directory. Prefer the nearest .bais/issues
 // (cwd → bais project → repo dot). Mirrors `rg` file-per-issue layout.
@@ -365,6 +367,8 @@ export async function createBaisIssue(opts: {
 			body: opts.body ?? `Seeded via \`bi bais new\` for ${id}.`,
 		},
 		edges: [],
+		holder: null,
+		lease: null,
 	};
 	// BAML is validator — serialize via BAML, then re-validate
 	const toml = await serializeViaBaisBaml(file);
@@ -374,18 +378,95 @@ export async function createBaisIssue(opts: {
 	return file;
 }
 
-export async function moveBaisIssue(id: string, status: string, dir?: string): Promise<BaisFile> {
+export interface BaisClaim {
+	as: string;
+	forMs?: number;
+	nowMs?: number;
+}
+
+// Claim mirrors (bais/src/cli.ts): duration grammar, millis-stripped
+// UTC lease, expiry comparison where unparseable reads as expired.
+export function parseClaimDuration(s: string): number | null {
+	const m = /^(\d+)(s|m|h|d)$/.exec(s);
+	if (!m) return null;
+	const mult = m[2] === "s" ? 1000 : m[2] === "m" ? 60000 : m[2] === "h" ? 3600000 : 86400000;
+	return Number(m[1]) * mult;
+}
+export function toLeaseIso(at: number): string {
+	return new Date(at).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+export function leaseExpiredMs(lease: string | null, at: number): boolean {
+	if (lease == null) return true;
+	const t = Date.parse(lease);
+	if (Number.isNaN(t)) return true;
+	return t <= at;
+}
+const DEFAULT_CLAIM_MS = 4 * 3600000;
+
+export async function moveBaisIssue(id: string, status: string, dir?: string, claim?: BaisClaim): Promise<BaisFile> {
 	const issuesDir = dir ?? resolveIssuesDir() ?? join(process.cwd(), "bi/.bais/issues");
 	if (!existsSync(issuesDir)) throw new Error(`No .bais/issues at ${issuesDir}`);
 	const fp = join(issuesDir, `${id}.toml`);
 	if (!existsSync(fp)) throw new Error(`No issue ${id} at ${fp}`);
 	const text = readFileSync(fp, "utf8");
 	const file = await validateViaBaisBaml(text);
-	(file as any).issue.status = status;
+	const from = file.issue.status;
+	file.issue.status = status;
+	if (status === "Doing") {
+		if (claim?.as == null) {
+			// Anonymous claim: allowed (bi#49 bare-move contract), but
+			// instantly stale — reap reclaims on sight. Pass as for live.
+			file.holder = null;
+			file.lease = null;
+		} else {
+			file.holder = claim.as;
+			file.lease = toLeaseIso((claim.nowMs ?? Date.now()) + (claim.forMs ?? DEFAULT_CLAIM_MS));
+		}
+	} else if (from === "Doing") {
+		file.holder = null;
+		file.lease = null;
+	}
 	const toml = await serializeViaBaisBaml(file);
 	await validateViaBaisBaml(toml);
 	writeFileSync(fp, toml);
 	return file;
+}
+
+// Heartbeat: only the recorded holder extends a live Doing claim.
+export async function renewBaisClaim(id: string, holder: string, forMs = DEFAULT_CLAIM_MS, nowMs = Date.now(), dir?: string): Promise<BaisFile> {
+	const issuesDir = dir ?? resolveIssuesDir() ?? join(process.cwd(), "bi/.bais/issues");
+	const fp = join(issuesDir, `${id}.toml`);
+	if (!existsSync(fp)) throw new Error(`No issue ${id} at ${fp}`);
+	const file = await validateViaBaisBaml(readFileSync(fp, "utf8"));
+	if (file.issue.status !== "Doing") throw new Error(`${id} is ${file.issue.status}, not Doing (nothing to renew)`);
+	if (file.holder !== holder) throw new Error(`${id} held by ${JSON.stringify(file.holder)}, not ${JSON.stringify(holder)} (strangers cannot renew)`);
+	file.lease = toLeaseIso(nowMs + forMs);
+	const toml = await serializeViaBaisBaml(file);
+	await validateViaBaisBaml(toml);
+	writeFileSync(fp, toml);
+	return file;
+}
+
+// Reclamation: every Doing with an expired (or missing) lease flips to
+// Open with the claim cleared. Pure function of (files, now).
+export async function reapBaisClaims(nowMs = Date.now(), dir?: string): Promise<{ id: string; holder: string | null; lease: string | null }[]> {
+	const issuesDir = dir ?? resolveIssuesDir() ?? join(process.cwd(), "bi/.bais/issues");
+	if (!existsSync(issuesDir)) throw new Error(`No .bais/issues at ${issuesDir}`);
+	const reaped: { id: string; holder: string | null; lease: string | null }[] = [];
+	for (const f of readdirSync(issuesDir).filter((x) => x.endsWith(".toml")).sort()) {
+		const fp = join(issuesDir, f);
+		const file = await validateViaBaisBaml(readFileSync(fp, "utf8"));
+		if (file.issue.status !== "Doing" || !leaseExpiredMs(file.lease, nowMs)) continue;
+		const rec = { id: file.issue.id, holder: file.holder, lease: file.lease };
+		file.issue.status = "Open";
+		file.holder = null;
+		file.lease = null;
+		const toml = await serializeViaBaisBaml(file);
+		await validateViaBaisBaml(toml);
+		writeFileSync(fp, toml);
+		reaped.push(rec);
+	}
+	return reaped.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
 // Directory scope of an id: "bi#04" -> "bi". An id with no "#" has no scope.

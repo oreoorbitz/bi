@@ -1,6 +1,6 @@
 id = "bi#51"
 title = "Computed urgency: ordered ready with receipts"
-status = "Doing"
+status = "Open"
 kind = "Feat"
 area = "bais/policy"
 body = """
