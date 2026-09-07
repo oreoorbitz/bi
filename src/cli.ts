@@ -8,21 +8,37 @@ import { getModel, listAllModels, listModels } from "./models.js";
 import { getProvider, listProviders } from "./provider.js";
 import { runAgent, runSingleImageTurn } from "./agent.js";
 import { HttpKeeperHub, LeaseKeeper } from "./keeper.js";
-import { HubSubscriber } from "./notify.js";
-import { loadBaisIssues, readyBaisIssues, filterReadyIssues, createBaisIssue, moveBaisIssue, checkBaisIssues, graphBaisIssues, scanBaisHeaders, scannedBlockers, loadStagedIssues, parseClaimDuration, renewBaisClaim, reapBaisClaims } from "./bais.js";
+import { HubSubscriber, TerminalNotifier, notifyApprovalRequired, notifyTurnComplete } from "./notify.js";
+import { loadBaisIssues, readyBaisIssues, filterReadyIssues, blastRadii, dispatchPack, parseFileClaims, warnUnknownShared, warnUnknownWithheld, createBaisIssue, moveBaisIssue, linkBaisIssues, checkBaisIssues, graphBaisIssues, scanBaisHeaders, scannedBlockers, loadStagedIssues, parseClaimDuration, renewBaisClaim, reapBaisClaims } from "./bais.js";
 import { listTools, handleTool, emitToolDiff, setTrustReader } from "./tools.js";
 import { listImageModels } from "./image.js";
+import { showStagedImage, teardownInlineImages } from "./image-display.js";
 import { runAuthStatus, runLogin, runLogout, runOAuthLogin } from "./auth_cli.js";
 import { getOAuthFlow } from "./oauth.js";
 import { listCredentials } from "./auth.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, render_footer_frame_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, trust_options_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, format_issue_row_async, format_issue_context_async, render_ready_frame_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, render_footer_frame_async, render_model_line_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, trust_options_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, format_skill_history_entry_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, setup_theme_options_async, setup_analytics_options_async, format_first_run_theme_step_async, format_first_run_analytics_step_async, format_first_run_done_async, format_setup_skipped_async, format_setup_status_async, branch_row_prefix_async, format_branch_row_async, format_branches_list_async, format_branch_summary_async, format_fork_list_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, format_issue_row_async, format_issue_context_async, render_ready_frame_async, format_image_placeholder_async, staged_image_label_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
 import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
-import { readClipboardImage, writeClipboardText, clipboardSupportsImage } from "./clipboard.js";
+import { readClipboardImage, writeClipboardText, clipboardSupportsImage, extensionForImageMime, sniffImageMime } from "./clipboard.js";
 import { runResultToJsonLines, finalText } from "./events.js";
-import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow, appendSessionEntries, loadSessionTranscript, sessionResumeList, sessionIdFromFile, setSessionLabel, importSessionFile, shareSessionGist } from "./session.js";
+import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow, appendSessionEntries, loadSessionTranscript, sessionResumeList, sessionIdFromFile, setSessionLabel, importSessionFile, shareSessionGist, detectTerminalThemeFromEnv, sessionBranchList, orderBranchRows, branchSwitchState, BI_AGENT_DIR_ENV } from "./session.js";
+import { execFileSync } from "node:child_process";
+import { colorizeDiffLines } from "./diff-render.js";
+import {
+	parseUnifiedDiff, buildHunkQueue, assertQueueCoversDiffOnce, applyDecisionInputs,
+	flagSpecFor, reviewToJson, provenanceForFile, gitDiffArgs, parseUntrackedFiles,
+	assertSkepticReady, hunkLabel,
+	type ReviewDecision, type ReviewDecisionInput, type ReviewProvenance,
+} from "./review.js";
 import { createInterface } from "node:readline";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, writeSync } from "node:fs";
+
+// Machine-consumed JSON MUST go through printJson, never console.log:
+// console.log to a pipe is async, and process.exit() truncates payloads past
+// the 64KB pipe buffer. writeSync drains before exit. New --json emits: use this.
+function printJson(obj: unknown): void {
+	writeSync(1, JSON.stringify(obj, null, 2) + "\n");
+}
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -68,7 +84,10 @@ async function readActiveTheme(): Promise<string> {
 		if (!existsSync(themeFile())) return "default";
 		const raw = JSON.parse(readFileSync(themeFile(), "utf8"));
 		const name = typeof raw?.name === "string" ? raw.name : "default";
-		return (await get_theme_async(name)) ? name : "default";
+		if (await get_theme_async(name)) return name;
+		// bi#105: custom theme files resolve by validated content name.
+		if ((await listCustomThemes()).some((t) => t.name === name)) return name;
+		return "default";
 	} catch {
 		return "default";
 	}
@@ -80,12 +99,44 @@ async function activeTheme(): Promise<string | null> {
 }
 
 // Shared theme persist (bi#101 submenu + /theme verb): validates the
-// name, writes theme.json, reports. True on success.
+// name, writes theme.json, reports. True on success. bi#105: custom
+// theme files (BAML-validated) commit by content name; a malformed
+// file refuses with its row-level reasons, never persisted.
 async function saveTheme(name: string): Promise<boolean> {
-	if (!(await get_theme_async(name))) {
-		console.error(`unknown theme "${name}" — /theme lists default/light/none`);
-		return false;
+	if (await get_theme_async(name)) return writeThemeName(name);
+	if ((await listCustomThemes()).some((t) => t.name === name)) return writeThemeName(name);
+	// Name a broken file precisely: it exists but refused validation.
+	if (await refuseBrokenTheme(name)) return false;
+	console.error(`unknown theme "${name}" — /theme lists ${(await allThemeNames()).join("/")}`);
+	return false;
+}
+
+// A *.json file the user MEANT (stem or content name matches) but that
+// refuses validation: print its row-level reasons, never persist.
+async function refuseBrokenTheme(name: string): Promise<boolean> {
+	const dir = customThemesDir();
+	if (!existsSync(dir)) return false;
+	for (const file of readdirSync(dir)) {
+		if (!file.endsWith(".json")) continue;
+		const path = join(dir, file);
+		const loaded = await validateCustomFile(path);
+		if (!("reasons" in loaded)) continue;
+		let contentName = "";
+		try {
+			const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+			if (typeof parsed === "object" && parsed !== null && typeof (parsed as Record<string, unknown>).name === "string") {
+				contentName = (parsed as Record<string, unknown>).name as string;
+			}
+		} catch { /* reason already names the parse failure */ }
+		if (file.slice(0, -5) === name || contentName === name) {
+			for (const reason of loaded.reasons) console.error(`[bi] theme refused — ${reason}`);
+			return true;
+		}
 	}
+	return false;
+}
+
+function writeThemeName(name: string): boolean {
 	try {
 		mkdirSync(dirname(themeFile()), { recursive: true });
 		writeFileSync(themeFile(), JSON.stringify({ name }) + "\n");
@@ -127,7 +178,9 @@ async function argCandidates(cmd: string, names: string[], prefix = ""): Promise
 			case "thinking":
 				return ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 			case "theme":
-				return ["default", "light", "none"];
+				// bi#105: completion follows the merged catalog
+				// (builtins + valid custom theme files).
+				return await allThemeNames();
 			case "trust":
 				return ["allow", "deny", "session", "forget"];
 			case "changelog":
@@ -137,7 +190,7 @@ async function argCandidates(cmd: string, names: string[], prefix = ""): Promise
 			case "issues":
 				return [...scanBaisHeaders().headers.map((h) => h.id), "all", "drop"];
 			case "bais":
-				return ["new", "move", ...scanBaisHeaders().headers.map((h) => h.id)];
+				return ["new", "move", "link", ...scanBaisHeaders().headers.map((h) => h.id)];
 			case "help":
 				return names.map((n) => n.replace(/^\//, ""));
 			case "login":
@@ -145,6 +198,7 @@ async function argCandidates(cmd: string, names: string[], prefix = ""): Promise
 			case "oauth":
 				return (await ListProviders_async()).map((p: any) => String(p.id ?? p));
 			case "resume":
+			case "branches":
 				return (await sessionResumeList()).map((r) => r.id);
 			case "tree":
 			case "attach":
@@ -159,24 +213,9 @@ async function argCandidates(cmd: string, names: string[], prefix = ""): Promise
 	}
 }
 
-// Filesystem-path completion for the file-taking slashes (tree,
-// attach, import, export): complete entries of the partial
-// directory, trailing slash on directories. Sync by readline's
-// contract; failures complete nothing.
-function completePathPrefix(prefix: string): string[] {
-	try {
-		const expanded = prefix.startsWith("~/") ? join(process.env.HOME ?? "", prefix.slice(2)) : prefix;
-		const slash = expanded.lastIndexOf("/");
-		const dir = slash === -1 ? "." : expanded.slice(0, slash + 1) || "/";
-		const base = slash === -1 ? expanded : expanded.slice(slash + 1);
-		const head = prefix.slice(0, prefix.length - base.length);
-		return readdirSync(dir, { withFileTypes: true })
-			.filter((e) => e.name.startsWith(base) && !e.name.startsWith("."))
-			.map((e) => `${head}${e.name}${e.isDirectory() ? "/" : ""}`);
-	} catch {
-		return [];
-	}
-}
+// Filesystem-path completion lives in `./paths.js` (bi#159:
+// recursive fuzzy, dotfile-aware, quote-round-tripped); call sites
+// below use it unchanged.
 
 // bi#29: user settings (~/.bi/settings.json). Three backend-default keys
 // in v1; BAML owns schema + validation + precedence, host owns FS.
@@ -186,7 +225,14 @@ export interface UserSettings {
 	default_provider?: string;
 	default_model?: string;
 	default_thinking?: string;
+	// bi#171: "off" | "unfocused" | "always"; absent = disabled (zero bytes).
+	notifications?: string;
 	enabled_models?: string[];
+	// bi#93 first-run answers (bi#30): setup_done marks the install as
+	// onboarded so bi never re-prompts; share_analytics records consent
+	// only (bi collects no telemetry). Absent = predates the marker.
+	setup_done?: boolean;
+	share_analytics?: boolean;
 }
 
 function settingsFile(): string {
@@ -201,7 +247,10 @@ export function loadUserSettings(): UserSettings {
 		if (typeof raw?.default_provider === "string") out.default_provider = raw.default_provider;
 		if (typeof raw?.default_model === "string") out.default_model = raw.default_model;
 		if (typeof raw?.default_thinking === "string") out.default_thinking = raw.default_thinking;
+		if (typeof raw?.notifications === "string") out.notifications = raw.notifications;
 		if (Array.isArray(raw?.enabled_models) && raw.enabled_models.every((e: unknown) => typeof e === "string")) out.enabled_models = raw.enabled_models;
+		if (typeof raw?.setup_done === "boolean") out.setup_done = raw.setup_done;
+		if (typeof raw?.share_analytics === "boolean") out.share_analytics = raw.share_analytics;
 		return out;
 	} catch {
 		console.error("[bi] settings file unreadable — using builtins (`/settings` to repair)");
@@ -215,8 +264,8 @@ function saveUserSettings(s: UserSettings): void {
 }
 
 // The SDK's UserSettings is null-based; the host's is undefined-based.
-function bamlSettings(s: UserSettings): { default_provider: string | null; default_model: string | null; default_thinking: string | null; enabled_models: string[] | null } {
-	return { default_provider: s.default_provider ?? null, default_model: s.default_model ?? null, default_thinking: s.default_thinking ?? null, enabled_models: s.enabled_models ?? null };
+function bamlSettings(s: UserSettings): { default_provider: string | null; default_model: string | null; default_thinking: string | null; notifications: string | null; enabled_models: string[] | null } {
+	return { default_provider: s.default_provider ?? null, default_model: s.default_model ?? null, default_thinking: s.default_thinking ?? null, notifications: s.notifications ?? null, enabled_models: s.enabled_models ?? null };
 }
 
 // BAML VM errors arrive as "baml error: baml.errors.Kind: message" —
@@ -225,15 +274,23 @@ function bamlErrorMessage(e: unknown): string {
 	const raw = e instanceof Error ? e.message : String(e);
 	return raw.replace(/^baml error: (baml\.errors\.\w+: )?/, "").split("\n")[0];
 }
-import { HostTui, HostStatus, HostFooter, renderSelectList, termWidth } from "./tui.js";
+import { HostTui, HostFooter, renderSelectList, releaseReplTui, retainReplTui, runTranscriptSearch, termWidth, composeFrame } from "./tui.js";
+import { FullscreenSession, fullscreenRequested, teeOutputTo } from "./screen-fullscreen.js";
+import { KindStatus } from "./status.js";
 import { ActionLog, safeJson } from "./actionlog.js";
-import { promptAvailable, askEdit, pickList, type SlashPool } from "./prompt.js";
+import { promptAvailable, askEdit, askText, pickList, pickListWithPreview, type SlashPool } from "./prompt.js";
+import { completePathPrefix, splitSecondWord, unquotePath } from "./paths.js";
+import { allThemeNames, customThemesDir, listCustomThemes, mergedThemeList, previewForTheme, validateCustomFile } from "./theme-files.js";
+import { getKeybindingsPath, getUserKeybindings, listKeybindingRows, loadKeybindingsFile, reloadKeybindings, renderKeybindingJson, renderKeybindingList, resetKeybindings, saveKeybindings, type KeybindingFileEntry } from "./keybindings.js";
 import { screenModelAvailable, screenPickModel } from "./screen-model.js";
 import { format_status, format_turn_summary, format_turn_error } from "../baml_sdk/index.js";
 import { runBiLoop } from "./agent_loop.js";
+import { streamTextIncremental } from "./incremental.js";
 import { editInExternalEditor, editorCommand } from "./editor.js";
 import { footerCwd, gitBranch } from "./footer_info.js";
 import { printMarkdownText } from "./markdown.js";
+import { replayCompactionBlocks } from "./compaction.js";
+import { printCompactionSummary, printSkillBlock } from "./summary-blocks.js";
 
 function printHelp(): void {
 	// BAML is spec: format_help() is bi-renamed pi help (APP_NAME bi, .bi)
@@ -248,15 +305,21 @@ function printHelp(): void {
   bi logout <provider>
   bi auth status
   bi run <prompt> [--provider <id>] [--model <id>] [--api-key <key>] [--base-url <url>] [--temperature <n>] [--max-turns <n>]
+                   [--image <path> stages one PNG/JPEG/WebP/GIF for a single-shot image turn]
                    [--azure-resource <r> --azure-deployment <d> [--azure-api-version <v>]]
   bi bais list [--json]
-  bi bais ready [--json]
-  bi bais new "title" --kind <Kind> [--area <area>] [--status <Status>] [--body <md>]
+  bi bais ready [--json] [--order blast-radius]
+  bi bais dispatch --agents N [--json] [--briefs]   # dry-run swarm pack, never mutates
+  bi bais goal <start|sketch|commit|status|switch> [--approve]  # per-directory campaign interview (bi#132)
+  bi bais new "title" --kind <Kind> [--area <area>] [--status <Status>] [--body <md>] [--blocks <id> --depends-on <id>]
   bi bais move <id> <Status> [--as <owner> --for 4h]
+  bi bais link <from> <Kind> <to>   # no self-links, ends must exist, cycles refuse with the path
   bi bais renew <id> --as <owner> [--for 4h]
   bi bais reap [--now <instant>]
   bi bais check [--json]
   bi bais graph --from <id> [--json]
+  bi review [<ref>] [--json] [--decide <file>] [--provenance <file>] [--apply]   # hunk queue with provenance (bi#138, read-only unless --apply)
+  bi keybindings [list [--json] | set <id> <keys...> | unset <id> | reset]   # ~/.bi/keybindings.json, BAML-validated
 `);
 }
 
@@ -272,6 +335,17 @@ function getFlag(args: string[], name: string): string | undefined {
 
 function hasFlag(args: string[], name: string): boolean {
 	return args.includes(name);
+}
+
+// bi#111: repeatable edge flags (--blocks A --blocks B). Collects every
+// `--name value` and `--name=value` occurrence in order.
+function getAllFlags(args: string[], name: string): string[] {
+	const out: string[] = [];
+	for (let i = 0; i < args.length; i++) {
+		if (args[i] === name && i + 1 < args.length) out.push(args[i + 1]);
+		else if (name.startsWith("--") && args[i].startsWith(`${name}=`)) out.push(args[i].slice(name.length + 1));
+	}
+	return out;
 }
 
 // Unparseable .bais files no longer masquerade as issues (see loadBaisIssues),
@@ -453,6 +527,20 @@ async function buildTree(root: string, maxDepth = 3, cap = 200): Promise<{ rows:
 // raw carries the REPL's line-input suspend/resume for pi-tui modals;
 // null off-REPL or on pipes (numeric fallback, byte-identical).
 async function handleSlash(line: string, skills: Skill[], history: any[], signal?: TurnSignal, backend?: ReplBackend, sess?: ReplSessionState, raw?: { suspend(): void; resume(): void } | null): Promise<any[] | "quit" | "none"> {
+	// bi#158: /search is a host viewport operation, not BAML dispatch —
+	// it reads the in-memory history (same source /export serializes)
+	// and writes no session state, so it never reaches resolveSlash
+	// (no registry entry by design). Suspends readline exactly like a
+	// modal (same suspend/resume pair) so the alt screen owns stdin.
+	if (/^\s*\/search(?:\s|$)/.test(line)) {
+		if (raw) raw.suspend();
+		try {
+			await runTranscriptSearch(history, dirname(getBiSessionsDir()));
+		} finally {
+			if (raw) raw.resume();
+		}
+		return history;
+	}
 	// Decision (BAML-backed) lives in skills.ts; this keeps only effects.
 	const t = await resolveSlash(line, skills);
 	if (t.kind === "none") return "none";
@@ -467,12 +555,27 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			const lines = ["slash commands:"];
 			for (const b of builtins) lines.push(`  /${b.name} — ${b.description}`);
 			for (const s of skills) lines.push(`  /${s.name} — ${s.description} (skill)`);
+			// bi#158: host viewport command (no BAML registry entry —
+			// handleSlash intercepts before resolveSlash).
+			lines.push("  /search — Search the session transcript in-terminal (TTY only; pipes use /export)");
+			// bi#107: deliberate divergence — bi has no third-party
+			// extension surface. Pi's extensions are TS modules running
+			// code inside the agent loop (lifecycle/tools/commands/UI);
+			// that would break bi's BAML-owns-LLM split, so skills
+			// (auditable markdown in .bi/skills + ~/.bi/skills, /trust
+			// gated, /skills to list) are the only command surface.
+			lines.push("extensions: none by design — skills are the only third-party surface (bi#107)");
 			await printBlock(lines.join("\n"));
 			return history;
 		}
 		if (t.name === "reload") {
 			const fresh = await loadSkills(await trustedSkillDirs(true));
 			console.error(`[bi] reloaded ${fresh.skills.length} skill(s)`);
+			// bi#91: /reload also picks up keybindings.json edits (loud on
+			// unknown ids / bad key names, valid subset still applies).
+			const kb = await reloadKeybindings();
+			if (kb.errors.length) console.error(`[bi] keybindings reloaded with ${kb.errors.length} error(s) — valid overrides applied`);
+			else console.error(`[bi] reloaded keybindings (${kb.applied} override(s))`);
 			return history;
 		}
 		if (t.name === "compact") {
@@ -579,15 +682,50 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 		}
 		// bi#33: bare /theme lists (current marked), `preview` samples
 		// every role in each palette, a name persists the choice.
+		// bi#105: bare /theme on TTY opens the interactive selector
+		// with LIVE preview (highlight repaints before Enter commits,
+		// Esc keeps); pipes keep the verb paths byte-identical in
+		// shape (list/preview/set, now including custom theme files).
 		if (t.name === "theme") {
 			if (!t.args || t.args === "list") {
-				await printBlock(await format_theme_list_async(await readActiveTheme()));
+				// TTY picks interactively (Enter commits, Esc keeps the
+				// printed list); pipes keep today's print path.
+				if (!t.args && raw && promptAvailable()) {
+					const names = await allThemeNames();
+					const customs = await listCustomThemes();
+					const descs = new Map(customs.map((c) => [c.name, c.description]));
+					const rows = names.map((label) => ({
+						label,
+						description: descs.get(label) ?? "",
+					}));
+					const cur = await readActiveTheme();
+					raw.suspend();
+					let at: number | null;
+					try {
+						at = await pickListWithPreview(
+							"Theme (↑↓ previews live · Enter sets · Esc keeps)",
+							rows,
+							Math.max(0, names.indexOf(cur)),
+							async (i) => (await previewForTheme(names[i]!)) ?? `no preview for "${names[i]}"`,
+						);
+					} finally {
+						raw.resume();
+					}
+					if (at === null) {
+						await printBlock(await mergedThemeList(cur));
+						return history;
+					}
+					if (!(await saveTheme(names[at]!))) return history;
+					console.error(`[bi] theme now ${names[at]}`);
+					return history;
+				}
+				await printBlock(await mergedThemeList(await readActiveTheme()));
 				return history;
 			}
 			if (t.args === "preview") {
 				const previews: string[] = [];
-				for (const name of ["default", "light", "none"]) {
-					previews.push(`${name}:\n${await theme_preview_async(name)}`);
+				for (const name of await allThemeNames()) {
+					previews.push((await previewForTheme(name)) ?? `${name}: (unresolvable)`);
 				}
 				await printBlock(previews.join("\n"));
 				return history;
@@ -692,7 +830,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				return history;
 			}
 			const dir = join(dirname(getBiSessionsDir()), "paste");
-			const file = join(dir, `paste-${Date.now()}.png`);
+			const file = join(dir, `paste-${Date.now()}.${extensionForImageMime(img.mime)}`);
 			try {
 				mkdirSync(dir, { recursive: true });
 				writeFileSync(file, img.bytes);
@@ -710,7 +848,8 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 		// (raw-mode input layer).
 		if (t.name === "tree") {
 			let root = process.cwd();
-			const arg = t.args.trim();
+			// bi#159: a quoted completion (`"my dir/"`) reads back whole.
+			const arg = unquotePath(t.args);
 			if (arg) {
 				if (/^\d+$/.test(arg) && sess) {
 					const row = sess.tree[Number(arg) - 1];
@@ -775,7 +914,8 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				else for (const f of sess.attachments) console.log(`staged: ${f}`);
 				return history;
 			}
-			const arg = t.args.trim();
+			// bi#159: a quoted completion (`"my dir/file.md"`) reads back whole.
+			const arg = unquotePath(t.args);
 			let file: string;
 			if (/^\d+$/.test(arg) && sess) {
 				const row = sess.tree[Number(arg) - 1];
@@ -1105,11 +1245,16 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				const rows: string[] = [];
 				for (let i = 0; i < listed.length; i++) {
 					const h = listed[i];
-					rows.push(
-						h.parseable
-							? await format_issue_row_async(i + 1, h.id, h.status, h.kind, h.title, scannedBlockers(h.id, scan, byId))
-							: await format_issue_row_async(i + 1, h.file, "?", "?", "(unparseable — bais check names the fix)", []),
-					);
+					let row = h.parseable
+						? await format_issue_row_async(i + 1, h.id, h.status, h.kind, h.title, scannedBlockers(h.id, scan, byId))
+						: await format_issue_row_async(i + 1, h.file, "?", "?", "(unparseable — bais check names the fix)", []);
+					// bi#112: the staged working set rides every turn but
+					// was invisible — staged rows carry their mark in bare
+					// and `all` listings (host-suffixed; the BAML row shape
+					// is untouched). The mark derives from the live set, so
+					// dropping clears both the set and the marks.
+					if (h.parseable && sess.stagedIssues.includes(h.id)) row += " [staged]";
+					rows.push(row);
 				}
 				const theme = await activeTheme();
 				// TTY picks by arrows (Enter stages, Esc keeps the list with
@@ -1179,6 +1324,35 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				);
 				return history;
 			}
+			// bi#112: the staged working set, listed — id + title +
+			// neighbor count per row. Read-only (no picker); an empty set
+			// reads empty, never errors. Unresolvable ids name their fix
+			// instead of breaking the view.
+			if (arg === "staged") {
+				if (!sess.stagedIssues.length) {
+					console.error("[bi] no staged issues — /issues <n|id> stages into the working set");
+					return history;
+				}
+				const loaded = await loadStagedIssues(sess.stagedIssues);
+				const byStagedId = new Map(loaded.staged.map((s) => [s.file.issue.id, s]));
+				const stagedRows: string[] = [];
+				let n = 1;
+				for (const id of sess.stagedIssues) {
+					const s = byStagedId.get(id);
+					if (!s) {
+						stagedRows.push(`${n}  ${id} (unresolvable — bais check names the fix)`);
+					} else {
+						const f = s.file;
+						const title = f.issue.title.length > 60 ? f.issue.title.slice(0, 57) + "..." : f.issue.title;
+						const nn = s.neighbors.length;
+						stagedRows.push(`${n}  ${f.issue.id} [${f.issue.status}/${f.issue.kind}] ${title} (${nn} neighbor${nn === 1 ? "" : "s"})`);
+					}
+					n++;
+				}
+				const theme = await activeTheme();
+				await renderSelectList(stagedRows.join("\n"), 0, undefined, theme);
+				return history;
+			}
 			const dropM = arg.match(/^drop(?:\s+(.+))?$/);
 			if (dropM) {
 				const which = (dropM[1] ?? "").trim();
@@ -1220,15 +1394,39 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				const v = m[1];
 				return v.length > 1 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) ? v.slice(1, -1) : v;
 			};
+			const flagAll = (name: string): string[] => {
+				const out: string[] = [];
+				const re = new RegExp(`--${name}\\s+("[^"]+"|'[^']+'|\\S+)`, "g");
+				for (const m of rest.matchAll(re)) {
+					const v = m[1];
+					out.push(v.length > 1 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) ? v.slice(1, -1) : v);
+				}
+				return out;
+			};
 			const newM = rest.match(/^new\s+("[^"]+"|'[^']+'|\S+)\s*([\s\S]*)$/);
 			if (newM) {
 				const rawTitle = newM[1];
 				const title = rawTitle.length > 1 && ((rawTitle.startsWith('"') && rawTitle.endsWith('"')) || (rawTitle.startsWith("'") && rawTitle.endsWith("'"))) ? rawTitle.slice(1, -1) : rawTitle;
 				try {
-					const file = await createBaisIssue({ title, kind: flag("kind"), area: flag("area"), body: flag("body"), status: flag("status") });
+					// bi#111: edges at birth (repeatable --blocks/--depends-on).
+					const edges = [
+						...flagAll("blocks").map((to) => ({ kind: "Blocks", to })),
+						...flagAll("depends-on").map((to) => ({ kind: "DependsOn", to })),
+					];
+					const file = await createBaisIssue({ title, kind: flag("kind"), area: flag("area"), body: flag("body"), status: flag("status"), edges });
 					console.error(`[bi] filed ${file.issue.id} — ${file.issue.title}`);
 				} catch (e) {
 					console.error(`[bi] file failed (${e instanceof Error ? e.message : e})`);
+				}
+				return history;
+			}
+			const linkM = rest.match(/^link\s+(\S+)\s+(\S+)\s+(\S+)\s*$/);
+			if (linkM) {
+				try {
+					const file = await linkBaisIssues(linkM[1], linkM[2], linkM[3]);
+					console.error(`[bi] linked ${file.issue.id} ${linkM[2]} ${linkM[3]}`);
+				} catch (e) {
+					console.error(`[bi] link failed (${e instanceof Error ? e.message : e})`);
 				}
 				return history;
 			}
@@ -1250,7 +1448,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				}
 				return history;
 			}
-			console.error('usage: /bais new "title" [--kind K] [--area A] [--body B] [--status S] | /bais move <id> <Status> [--as O] [--for D]');
+			console.error('usage: /bais new "title" [--kind K] [--area A] [--body B] [--status S] [--blocks <id> --depends-on <id>] | /bais move <id> <Status> [--as O] [--for D] | /bais link <from> <Kind> <to>');
 			return history;
 		}
 		if (t.name === "new") {
@@ -1298,8 +1496,10 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 					await renderSelectList(text, at < 0 ? 0 : at, undefined, theme);
 					return history;
 				}
-			}
-			if (/^\d+$/.test(t.args)) {
+				// bi#100: a bare-pick resumeId must not fall through to the
+				// numeric/verb dispatch below (t.args is "" there, so the
+				// verb filter matched everything and Enter never resumed).
+			} else if (/^\d+$/.test(t.args)) {
 				const rows = await sessionResumeList();
 				const row = rows[Number(t.args) - 1];
 				if (!row) {
@@ -1310,8 +1510,9 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			} else {
 				// bi#100: non-numeric args filter id/label/cwd
 				// (case-insensitive). An exact id still resumes directly;
-				// one match resumes it; several render the filtered frame
-				// for an id pick; zero matches read empty, never error.
+				// one match resumes it; several pick from the filtered
+				// rows on TTY (pipes keep the printed frame + id hint);
+				// zero matches read empty, never error.
 				const rows = await sessionResumeList();
 				const exact = rows.find((r) => r.id === t.args);
 				if (exact) {
@@ -1333,9 +1534,32 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 					} else {
 						const cur = sess ? sessionIdFromFile(sess.file) : null;
 						const theme = await activeTheme();
-						await renderSelectList(await format_resume_list_async(filtered, cur), 0, undefined, theme);
-						console.error(`${filtered.length} match "${t.args}" — /resume <id> resumes (numbers above are display-only)`);
-						return history;
+						const text = await format_resume_list_async(filtered, cur);
+						// bi#100: TTY picks from the filtered rows directly
+						// (Enter resumes, Esc keeps the printed list); pipes
+						// keep the print+hint path byte-identical.
+						if (raw && promptAvailable() && filtered.length > 0) {
+							const disp = text.split("\n").filter((l) => l.length > 0);
+							raw.suspend();
+							let pick: number | null;
+							try {
+								pick = await pickList(`Resume — ${filtered.length} match "${t.args}" (Enter resumes, Esc lists)`, disp.map((label) => ({ label })), 0);
+							} finally {
+								raw.resume();
+							}
+							const row = pick === null ? undefined : filtered[pick];
+							if (row) {
+								resumeId = row.id;
+							} else {
+								await renderSelectList(text, 0, undefined, theme);
+								console.error(`${filtered.length} match "${t.args}" — /resume <id> resumes (numbers above are display-only)`);
+								return history;
+							}
+						} else {
+							await renderSelectList(text, 0, undefined, theme);
+							console.error(`${filtered.length} match "${t.args}" — /resume <id> resumes (numbers above are display-only)`);
+							return history;
+						}
 					}
 				}
 			}
@@ -1350,21 +1574,90 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				sess.persisted = loaded.history.length;
 			}
 			console.error(`[bi] resumed ${resumeId} (${loaded.history.length} messages)`);
+			// bi#97: compaction markers in the session file replay as
+			// transcript blocks so the resumed transcript shows the folds.
+			await replayCompactionBlocks(loaded.history, await activeTheme());
 			return loaded.history;
 		}
 		if (t.name === "fork") {
+			// bi#86: pi's user-message picker — user messages oldest-first,
+			// one row each; picking N branches the transcript *before* the
+			// Nth user message and the picked text stays as the retry draft
+			// (pi preloads it into the editor; bi prints it, nothing lost).
+			// Numbers resolve against the same array the list displays, so
+			// `/fork <n>` agrees with bare-/fork rows (bi#68 contract).
 			if (!sess) return history;
-			const parentId = sessionIdFromFile(sess.file);
-			const f = createSessionFile({ cwd: process.cwd(), parentSession: parentId });
-			// The branch keeps the transcript: copy persisted + pending
-			// lines into the fork file so both files stand alone.
-			appendSessionEntries(
-				f,
-				history.map((m: any) => ({ role: String(m.role ?? "user"), text: String(m.text ?? ""), provider: backend?.provider ?? null, model: backend?.model ?? null, thinking: backend?.thinking ?? null })),
-			);
-			sess.file = f;
-			sess.persisted = history.length;
-			console.error(`[bi] forked ${parentId} → ${sessionIdFromFile(f)} (transcript kept, turn continues at ${sess.turn})`);
+			const userAt: number[] = [];
+			const userTexts: string[] = [];
+			history.forEach((m: any, i: number) => {
+				const text = String(m.text ?? "");
+				if (String(m.role ?? "user") === "user" && text.length > 0) {
+					userAt.push(i);
+					userTexts.push(text);
+				}
+			});
+			const forkAtMessage = async (n: number): Promise<any[]> => {
+				const at = userAt[n - 1];
+				if (at === undefined) {
+					console.error(`no message #${t.args} — bare /fork lists user messages`);
+					return history;
+				}
+				const kept = history.slice(0, at);
+				const draft = userTexts[n - 1];
+				const parentId = sessionIdFromFile(sess.file);
+				const f = createSessionFile({ cwd: process.cwd(), parentSession: parentId });
+				// The branch keeps the transcript: copy persisted + pending
+				// lines into the fork file so both files stand alone.
+				appendSessionEntries(
+					f,
+					kept.map((m: any) => ({ role: String(m.role ?? "user"), text: String(m.text ?? ""), provider: backend?.provider ?? null, model: backend?.model ?? null, thinking: backend?.thinking ?? null })),
+				);
+				sess.file = f;
+				sess.persisted = kept.length;
+				sess.turn = kept.filter((m: any) => String(m.role ?? "user") === "user").length;
+				console.error(`[bi] forked ${parentId} → ${sessionIdFromFile(f)} (transcript kept, turn continues at ${sess.turn})`);
+				// bi#88: transcript block naming parent, kept count, new id.
+				console.error(await format_branch_summary_async("forked", parentId, kept.length, sessionIdFromFile(f)));
+				// pi's editor preload, printed: the picked message is NOT in
+				// the branch — send it again to retry from turn n.
+				console.error(`[bi] retry draft from message #${n} (not in branch — send again to retry):`);
+				console.error(draft);
+				return kept;
+			};
+			const forkArg = t.args.trim();
+			if (!forkArg) {
+				if (userTexts.length === 0) {
+					console.error("no messages to fork from");
+					return history;
+				}
+				const text = await format_fork_list_async(userTexts);
+				const theme = await activeTheme();
+				// TTY picks by arrows (Enter forks at the row, Esc keeps
+				// today); pipes keep the printed list, byte-identical to
+				// /resume's path. Cursor starts on the most recent (pi's
+				// initial selection).
+				if (raw && promptAvailable()) {
+					// Same split as renderSelectList, so the picked index
+					// addresses the displayed rows 1:1.
+					const disp = text.split("\n").filter((l) => l.length > 0);
+					raw.suspend();
+					let pick: number | null;
+					try {
+						pick = await pickList("Fork from message (Enter forks, Esc keeps)", disp.map((label) => ({ label })), disp.length - 1);
+					} finally {
+						raw.resume();
+					}
+					if (pick === null) {
+						await renderSelectList(text, disp.length - 1, undefined, theme);
+						return history;
+					}
+					return forkAtMessage(pick + 1);
+				}
+				await renderSelectList(text, userTexts.length - 1, undefined, theme);
+				return history;
+			}
+			if (/^\d+$/.test(forkArg)) return forkAtMessage(Number(forkArg));
+			console.error(`unknown fork "${forkArg}" — bare /fork lists user messages (try a number)`);
 			return history;
 		}
 		if (t.name === "clone") {
@@ -1382,6 +1675,82 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			sess.file = f;
 			sess.persisted = history.length;
 			console.error(`[bi] cloned ${srcId} → ${sessionIdFromFile(f)} (independent copy, no parent link)`);
+			// bi#88: same block shape as /fork (from = the source copy).
+			console.error(await format_branch_summary_async("cloned", srcId, history.length, sessionIdFromFile(f)));
+			return history;
+		}
+		// bi#87 (namespace decided: /tree stays the directory browser for
+		// /attach, /branches is the session-branch switcher — registered
+		// in skills.baml builtin_slash_commands, divergence noted there).
+		// Walks parent_session links root-first (BAML gutters) and
+		// switches the REPL onto the picked branch: TTY gets the pi-tui
+		// modal picker first (pickList, arrows + filter), pipes keep the
+		// printed list — same split as /resume and /fork.
+		if (t.name === "branches") {
+			const entries = await sessionBranchList();
+			const rows = orderBranchRows(entries);
+			const byId = new Map(entries.map((e) => [e.id, e]));
+			const cur = sess ? sessionIdFromFile(sess.file) : null;
+			const at = cur ? rows.findIndex((r) => r.id === cur) : -1;
+			const lines: string[] = [];
+			for (const r of rows) {
+				const e = byId.get(r.id)!;
+				lines.push(await format_branch_row_async(e.id, e.label, e.turns, cur !== null && cur === e.id, await branch_row_prefix_async(r.depth, r.is_last, r.guides)));
+			}
+			const switchToBranch = async (id: string): Promise<any[] | "quit" | "none"> => {
+				const prev = sess ? sessionIdFromFile(sess.file) : "(none)";
+				const loaded = await loadSessionTranscript(id);
+				if (!loaded) {
+					console.error(`[bi] branch ${id} vanished — staying put`);
+					return history;
+				}
+				if (sess) {
+					const next = branchSwitchState(loaded);
+					sess.file = next.file;
+					sess.turn = next.turn;
+					sess.persisted = next.persisted;
+				}
+				console.error(`[bi] switched ${prev} → ${id} (${loaded.history.length} messages)`);
+				// Same replay as /resume (bi#97): compaction markers in
+				// the entered branch print as collapsed blocks.
+				await replayCompactionBlocks(loaded.history, await activeTheme());
+				// bi#88: branch switches emit the summary block too.
+				console.error(await format_branch_summary_async("switched", prev, loaded.history.length, id));
+				return loaded.history;
+			};
+			const arg = t.args.trim();
+			if (arg) {
+				let target = byId.get(arg);
+				if (!target && /^\d+$/.test(arg)) {
+					const rr = rows[Number(arg) - 1];
+					target = rr ? byId.get(rr.id) : undefined;
+				}
+				if (!target) {
+					console.error(`no branch "${arg}" — bare /branches lists the tree`);
+					return history;
+				}
+				return switchToBranch(target.id);
+			}
+			const text = await format_branches_list_async(lines);
+			const theme = await activeTheme();
+			// TTY picks by arrows (Enter switches, Esc keeps); pipes
+			// keep the printed list, byte-identical to /resume's path.
+			if (raw && promptAvailable() && rows.length > 0) {
+				raw.suspend();
+				let pick: number | null;
+				try {
+					pick = await pickList("Branches (Enter switches, Esc keeps)", lines.map((label) => ({ label })), at < 0 ? 0 : at);
+				} finally {
+					raw.resume();
+				}
+				const row = pick === null ? undefined : rows[pick];
+				if (!row) {
+					await renderSelectList(text, at < 0 ? 0 : at, undefined, theme);
+					return history;
+				}
+				return switchToBranch(row.id);
+			}
+			await renderSelectList(text, at < 0 ? 0 : at, undefined, theme);
 			return history;
 		}
 		if (t.name === "name") {
@@ -1421,7 +1790,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			// HistoryEntry shape with null provenance for the export.
 			const entries = loaded.history.map((m) => ({ type: "history", role: m.role, text: m.text, provider: null, model: null, thinking: null }));
 			const md = await format_session_markdown_async(id, loaded.header.label, loaded.header.timestamp, loaded.header.cwd, entries);
-			const dest = t.args.trim() || join(process.cwd(), `${id}.md`);
+			const dest = unquotePath(t.args) || join(process.cwd(), `${id}.md`);
 			try {
 				writeFileSync(dest, md);
 			} catch (e) {
@@ -1457,7 +1826,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			// bi#30: adopt an external JSONL transcript (pi's
 			// "import and resume from a JSONL file"). Stays put on
 			// anything unimportable — no session switch, no files.
-			const src = t.args.trim();
+			const src = unquotePath(t.args);
 			if (!src) {
 				console.error("usage: /import <file.jsonl>");
 				return history;
@@ -1499,11 +1868,14 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 					const sections = ["Backend: provider / model / thinking", "Theme", "Show all settings"];
 					const at = await modal(() => pickList("Settings (Enter opens, Esc lists)", sections.map((label) => ({ label })), 0));
 					if (at === null || at === 2) {
-						console.log(await format_settings_list_async(bamlSettings(stored)));
+						await printSettingsList(stored);
 						return history;
 					}
 					if (at === 1) {
-						const names = ["default", "light", "none"];
+						// bi#105: same merged catalog as /theme (custom
+						// files commit by content name; malformed ones
+						// refuse with reasons via saveTheme).
+						const names = await allThemeNames();
 						const cur = await readActiveTheme();
 						const picked = await modal(() => pickList("Theme (Enter sets, Esc keeps)", names.map((label) => ({ label })), Math.max(0, names.indexOf(cur))));
 						if (picked === null) return history;
@@ -1562,12 +1934,12 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 					console.error(`[bi] backend now ${m.provider}/${m.id} + thinking ${levels[tAt]} (saved)`);
 					return history;
 				}
-				console.log(await format_settings_list_async(bamlSettings(stored)));
+				await printSettingsList(stored);
 				return history;
 			}
 			const [verb, key, ...rest] = parts;
 			if ((verb === "get" || verb === "set" || verb === "unset") && key && !(await is_setting_key_async(key))) {
-				console.error(`unknown setting "${key}" — bare /settings lists default_provider/default_model/default_thinking`);
+				console.error(`unknown setting "${key}" — bare /settings lists default_provider/default_model/default_thinking/notifications`);
 				return history;
 			}
 			if (verb === "get" && key) {
@@ -1684,7 +2056,20 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 		}
 		return history;
 	}
-	return runOnePrompt(`${skillBody(t.skill)}\n\n${t.args}`.trim(), skills, history, signal ? { signal } : undefined);
+	// bi#98: every skill invocation emits its named transcript block before
+	// the guidance runs — skill use is visible in review, not just in the
+	// prompt context. A shaping failure warns loud and the guidance still
+	// runs; blocking the skill on a display error would fail closed.
+	const skillExpanded = `${skillBody(t.skill)}\n\n${t.args}`.trim();
+	try {
+		await printSkillBlock({ name: t.skill.name, content: skillBody(t.skill), theme: await activeTheme() });
+	} catch (e) {
+		console.error(`[bi] skill block failed to print (${e instanceof Error ? e.message : e}) — guidance still runs`);
+	}
+	return runOnePrompt(skillExpanded, skills, history, {
+		...(signal ? { signal } : {}),
+		historyText: await format_skill_history_entry_async(t.skill.name, skillExpanded),
+	});
 }
 
 // bi#27: tool executions announce themselves — start line before the
@@ -1727,7 +2112,7 @@ async function runToolWithStatus(name: string, args: Record<string, unknown>): P
 // opts.aborted resolves when the user hits Ctrl-C mid-turn: the turn is
 // abandoned (flagged via opts.signal), the spinner stops now, and the late
 // VM result is discarded on arrival — transcript and prompt survive.
-async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = [], opts: { signal?: TurnSignal; aborted?: Promise<void>; raw?: { suspend(): void; resume(): void } | null } = {}, backend: ReplBackend = { provider: "anthropic", model: "claude-haiku-4-5", thinking: null }, sess?: ReplSessionState): Promise<any[] | "quit"> {
+async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = [], opts: { signal?: TurnSignal; aborted?: Promise<void>; raw?: { suspend(): void; resume(): void } | null; historyText?: string } = {}, backend: ReplBackend = { provider: "anthropic", model: "claude-haiku-4-5", thinking: null }, sess?: ReplSessionState): Promise<any[] | "quit"> {
 	const slash = await handleSlash(q, skills, history, opts.signal, backend, sess, opts.raw ?? null);
 	if (slash === "quit") return "quit";
 	if (slash !== "none") return slash;
@@ -1795,14 +2180,20 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	// Same first-class tools as `bi run` so the interactive agent manages .bais too.
 	// The raw user line (not the injected context) joins history — fresh BAIS
 	// context is re-injected every turn, never baked into the transcript.
-	const withUser = [...history, { role: "user", text: q }];
+	// bi#98: skill invocations persist the BAML-shaped [skill] label instead
+	// of the raw line, so the session file (and /export) names which skill
+	// fired. The model still receives q (the expanded body) via fullPrompt.
+	const withUser = [...history, { role: "user", text: opts.historyText ?? q }];
 	let loopTools: any[] = [];
 	try {
 		loopTools = await listTools();
 	} catch {}
 	// Live status on stderr (in-place spinner on TTY, plain lines on pipes);
 	// BAML shapes every line, the host only schedules repaints.
-	const status = new HostStatus("thinking", { formatStatus: format_status, formatSummary: format_turn_summary });
+	// bi#96: kind-aware (working/retry/compaction/branchSummary) — retry and
+	// compaction waits report through the ambient sink; stop() resets so
+	// no kind leaks into the next turn.
+	const status = new KindStatus("thinking", { formatStatus: format_status, formatSummary: format_turn_summary });
 	status.start();
 	// Turn chrome theme, hoisted: every stop/result path below closes
 	// with the same palette (summary good/bad, divider, error lines).
@@ -1835,13 +2226,22 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 			await stderrRule(turnTheme);
 			return withUser;
 		}
+		// bi#70: the staged part echoes in the transcript first (graphics
+		// on kitty/iTerm2 TTYs, BAML placeholder elsewhere). Env-only
+		// detection here — a live probe's reply bytes would land in the
+		// TUI's own stdin.
+		await showStagedImage(sess.images[0], imageB64, {
+			labelForPath: (p) => staged_image_label_async(p),
+			fallbackForLabel: (label) => format_image_placeholder_async(label, { theme: turnTheme }),
+			probeLive: false,
+		});
 		const img = await runSingleImageTurn(fullPrompt, {
 			provider: backend.provider,
 			model: backend.model,
 			thinkingLevel: backend.thinking,
 			baseUrl: process.env.BI_BASE_URL ?? null,
 			imageBase64: imageB64,
-			imageMime: "image/png",
+			imageMime: sniffImageMime(Buffer.from(imageB64, "base64")) ?? "image/png",
 		});
 		if ("failure" in img) {
 			status.stop({ failed: true, detail: `TurnFailure ${img.failure.kind}`, turns: 1, messages: withUser.length, theme: turnTheme });
@@ -1864,7 +2264,23 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	}
 	// BI_BASE_URL lets the REPL talk to a local gateway/proxy (and makes
 	// slow-turn behavior testable without real provider latency).
-	const turnP = runBiLoop(fullPrompt, { provider: backend.provider, model: backend.model, thinking: backend.thinking, maxTurns: 5, baseUrl: process.env.BI_BASE_URL ?? null, onEvent: (e) => status.onEvent(e), tools: loopTools, toolHandler: loggingHandler(alog), history });
+	// bi#97: auto-compaction inside the turn emits its transcript block
+	// (folded turns + reclaimed tokens) with the turn's theme.
+	// bi#168: TTY live stream — each per-turn assistant text surfaces on
+	// stderr while the turn still runs (kimi streaming-ui.ts: draft +
+	// throttled flush + transient render, finalize settles). The settled
+	// stdout transcript below is untouched, so piped output stays
+	// byte-identical single-shot with no control bytes. Abort (bi#16)
+	// flips the guard: partials stop and history is untouched, exactly
+	// as the no-stream path.
+	const streamAlive = process.stdout.isTTY === true;
+	const streamSettled = { current: false };
+	const cancelStream = (): boolean => streamSettled.current || (opts.signal?.aborted ?? false);
+	const turnP = runBiLoop(fullPrompt, { provider: backend.provider, model: backend.model, thinking: backend.thinking, maxTurns: 5, baseUrl: process.env.BI_BASE_URL ?? null, onEvent: (e) => status.onEvent(e), tools: loopTools, toolHandler: loggingHandler(alog), history, compaction: { onCompacted: async (info) => { await printCompactionSummary({ summary: info.summary, tokensBefore: info.tokensBefore, tokensAfter: info.tokensAfter, foldedTurns: info.foldedTurns, theme: turnTheme }); } }, onAssistantText: streamAlive ? async (text) => {
+		if (cancelStream()) return;
+		await streamTextIncremental(text, (delta) => { if (!cancelStream()) process.stderr.write(delta); }, { isCancelled: cancelStream });
+		if (!cancelStream()) process.stderr.write("\n");
+	} : undefined });
 	type Settled = { done: true; result: Awaited<typeof turnP> } | { done: false };
 	let settled: Settled;
 	if (opts.aborted) {
@@ -1876,6 +2292,7 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 		settled = { done: true, result: await turnP };
 	}
 	if (!settled.done) {
+		streamSettled.current = true;
 		if (opts.signal) opts.signal.aborted = true;
 		status.stop({ failed: true, detail: "aborted", turns: 0, messages: history.length, theme: turnTheme });
 		console.error("[bi] turn aborted — transcript unchanged (a late VM result is discarded on arrival)");
@@ -1888,6 +2305,7 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 		return history;
 	}
 	const result = settled.result;
+	streamSettled.current = true;
 	if (opts.signal?.aborted) {
 		console.error("[bi] turn finished after abort — result discarded");
 		alog?.record("turn.end", "discarded");
@@ -1979,6 +2397,10 @@ class ReplReader {
 		this.historyFile = historyFile();
 		this.r = this.buildInterface();
 	}
+	// bi#160: fullscreen forces readline line-mode (the docked prompt
+	// row mirrors the label; keystroke routing into a docked editor is
+	// follow-up). Set once at REPL start, read by ask/askMultiline.
+	forceLineMode = false;
 	editPool: SlashPool | null = null;
 	setEditPool(pool: SlashPool): void {
 		this.editPool = pool;
@@ -2004,7 +2426,7 @@ class ReplReader {
 		}
 	}
 	ask(prompt: string): Promise<string> {
-		if (promptAvailable() && this.editPool) return this.askWithEditor(prompt);
+		if (!this.forceLineMode && promptAvailable() && this.editPool) return this.askWithEditor(prompt);
 		return new Promise<string>((resolve, reject) => {
 			this.pending = { resolve, reject };
 			this.r.question(prompt, (a: string) => {
@@ -2018,7 +2440,7 @@ class ReplReader {
 	// so multi-line prompts survive the line editor. The TTY editor is
 	// natively multiline (Ctrl-J), so one modal serves the whole turn.
 	async askMultiline(prompt: string): Promise<string> {
-		if (promptAvailable() && this.editPool) return this.askWithEditor(prompt);
+		if (!this.forceLineMode && promptAvailable() && this.editPool) return this.askWithEditor(prompt);
 		const parts: string[] = [];
 		let p = prompt;
 		for (;;) {
@@ -2049,11 +2471,101 @@ class ReplReader {
 	}
 }
 
+// bi#93 first-run setup (via bi#30): fresh installs (settings.json
+// absent) get a theme + analytics-consent pass on TTY before anything
+// else renders, so the chosen theme styles the whole session. BAML owns
+// the copy + choice schema; the host owns detection (env heuristic),
+// preview (theme_preview), and persistence. Every exit — pick, answer,
+// or Esc — writes setup_done, so bi never asks twice. Custom
+// BI_AGENT_DIR, pipes, and non-TTY skip silently WITHOUT creating
+// files, so a later interactive run still prompts. `bi run` and
+// --print never enter repl(), so headless stays quiet.
+async function maybeRunFirstTimeSetup(): Promise<void> {
+	if (process.env[BI_AGENT_DIR_ENV]) return;
+	if (!promptAvailable()) return;
+	let fresh = false;
+	try {
+		fresh = !existsSync(settingsFile());
+	} catch {
+		return;
+	}
+	if (!fresh) return;
+	const detected = detectTerminalThemeFromEnv();
+	console.error(await format_first_run_theme_step_async(detected));
+	const themeOpts = await setup_theme_options_async();
+	const themeNames = themeOpts.map((o: any) => String(o.value));
+	// Live preview: highlighting a row repaints its palette below the
+	// list before Enter commits (pi's ThemeSelectorComponent shape:
+	// onSelectionChange → preview). Esc skips the rest of setup but
+	// still records setup_done, so bi never asks twice.
+	const themeAt = await pickListWithPreview(
+		"First run — pick a theme (↑↓ previews live · Enter confirms · Esc skips setup)",
+		(themeOpts as any[]).map((o) => ({ label: `${String(o.label)} — ${String(o.description)}` })),
+		Math.max(0, themeNames.indexOf(detected)),
+		async (i) => `${themeNames[i]}:\n${await theme_preview_async(themeNames[i]!)}`,
+	);
+	if (themeAt === null) {
+		try {
+			saveUserSettings({ ...loadUserSettings(), setup_done: true });
+		} catch (e) {
+			console.error(`[bi] settings persist failed (${e instanceof Error ? e.message : e})`);
+		}
+		console.error(await format_setup_skipped_async());
+		return;
+	}
+	const theme = themeNames[themeAt]!;
+	await saveTheme(theme);
+	console.error(await format_first_run_analytics_step_async());
+	const analyticsOpts = await setup_analytics_options_async();
+	// The safe default is preselected: Don't share (index 1). bi
+	// collects no telemetry — this records consent state only.
+	const analyticsAt = await pickList(
+		"Analytics (Enter records, Esc skips)",
+		(analyticsOpts as any[]).map((o) => ({ label: `${String(o.label)} — ${String(o.description)}` })),
+		1,
+	);
+	const answered = analyticsAt !== null;
+	try {
+		saveUserSettings({ ...loadUserSettings(), setup_done: true, ...(answered ? { share_analytics: analyticsAt === 0 } : {}) });
+	} catch (e) {
+		console.error(`[bi] settings persist failed (${e instanceof Error ? e.message : e})`);
+	}
+	if (!answered) {
+		console.error(await format_setup_skipped_async());
+		return;
+	}
+	console.error(await format_first_run_done_async(theme, analyticsAt === 0));
+}
+
+// bi#93: /settings shows the recorded first-run choices next to the
+// backend defaults — appended only once setup has spoken, so older
+// settings files print byte-identical output.
+async function printSettingsList(stored: UserSettings): Promise<void> {
+	const list = await format_settings_list_async(bamlSettings(stored));
+	if (stored.setup_done || stored.share_analytics !== undefined) {
+		console.log(list + (await format_setup_status_async(await readActiveTheme(), stored.share_analytics ?? null, stored.setup_done ?? false)));
+	} else {
+		console.log(list);
+	}
+}
+
 // Persistent REPL: one session file, conversation history threaded across
 // turns, /quit or Ctrl-D to leave, Ctrl-C at the prompt just re-prompts.
 // Ctrl-C mid-turn aborts the process (same as `bi run`) — the session file
 // and printed transcript remain.
 async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promise<void> {
+	// bi#160: opt-in alt-screen shell (BI_FULLSCREEN=1 on a TTY).
+	// The fullscreen session owns the single terminal: no modal host
+	// lease (a second ProcessTerminal would split stdin), forced
+	// readline line-mode, no first-run/resume modals. Unset or piped:
+	// every line below is skipped and the REPL is byte-identical.
+	const fullscreen = fullscreenRequested();
+	// bi#162: hold the modal host for the whole REPL — every picker,
+	// editor, and login dialog overlays one persistent TUI (one kitty
+	// negotiation per session, not per modal). Released in the finally
+	// below, which stops the host exactly once.
+	if (!fullscreen) retainReplTui();
+	if (!fullscreen) await maybeRunFirstTimeSetup();
 	// bi#100: startup resume-vs-new offer. TTY with saved sessions gets a
 	// New-first picker (no bi#69 raw layer needed — pickList is modal);
 	// Esc/New mints fresh exactly like before (no litter otherwise:
@@ -2063,7 +2575,9 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 	// unused) or mints before use — TS just can't see through them.
 	let sessFile = "";
 	let adopted: { file: string; history: any[] } | null = null;
-	const rows = !opts.skipPicker && promptAvailable() ? await sessionResumeList() : [];
+	// bi#160: the resume picker is a main-screen modal — it would fight
+	// the alt screen for stdin, so fullscreen mints fresh (documented).
+	const rows = !opts.skipPicker && !fullscreen && promptAvailable() ? await sessionResumeList() : [];
 	if (rows.length > 0) {
 		const text = await format_resume_list_async(rows, null);
 		const disp = ["New session", ...text.split("\n").filter((l) => l.length > 0)];
@@ -2073,6 +2587,8 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 		if (loaded) {
 			adopted = { file: loaded.file, history: loaded.history };
 			console.error(`[bi] resumed ${row!.id} (${loaded.history.length} messages)`);
+			// bi#97: same replay as /resume — markers become blocks.
+			await replayCompactionBlocks(loaded.history, await activeTheme());
 		} else {
 			if (row) console.error(`[bi] session ${row.id} vanished — starting fresh`);
 			sessFile = createSessionFile({ cwd: process.cwd() });
@@ -2083,10 +2599,29 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 		console.error(`[bi] new session ${sessFile}`);
 	}
 	const reader = new ReplReader();
+	// bi#160: start the alt-screen shell before anything else prints —
+	// the tee then mirrors the whole loop into the ScrollView. Readline
+	// stays closed across the kitty negotiation (same reason modals
+	// suspend it) plus a settle beat, so late replies never echo as
+	// keypress junk into the pending prompt.
+	let fsSession: FullscreenSession | null = null;
+	let releaseTee: (() => void) | null = null;
+	if (fullscreen) {
+		reader.forceLineMode = true;
+		reader.suspendLineInput();
+		fsSession = new FullscreenSession();
+		fsSession.start(dirname(getBiSessionsDir()));
+		releaseTee = teeOutputTo(fsSession);
+		await new Promise((r) => setTimeout(r, 150));
+		reader.resumeLineInput();
+	}
 	// bi#67: pinned bottom-row footer (scroll region + differential
 	// repaint on TTY; plain printed line on pipes). Installed lazily on
 	// the first turn-end paint, torn down when the REPL leaves.
+	// Fullscreen never installs it — the dock owns the footer frame.
 	const footer = new HostFooter();
+	// bi#171: exactly-once terminal page per completed REPL turn.
+	const turnNotifier = new TerminalNotifier();
 	// Tab completes first-word slashes (builtins + loaded skills, same
 	// array the loop mutates on /trust reloads) and second-word
 	// arguments for commands with a known pool (model ids, provider
@@ -2103,8 +2638,14 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 		// Slice 3: the modal editor's Tab provider shares the readline
 		// pools (same names array the loop mutates on /trust reloads).
 		reader.setEditPool({
-			names: () => [...builtins, ...skills.map((s) => s.name)],
+			// bi#158: "search" is host-augmented (no BAML registry
+			// entry) — completion offers it, skillNames stays pure.
+			names: () => [...builtins, "search", ...skills.map((s) => s.name)],
+			// bi#155: inline picker reads the same live skills array —
+			// /trust reloads (sess.skillsDirty) show up next prompt.
+			skillNames: () => skills.map((s) => s.name),
 			describe: (name) => {
+				if (name === "search") return "Search the session transcript in-terminal";
 				const b = builtinRows.find((r) => r.name === name);
 				if (b?.description) return b.description;
 				const s = skills.find((k) => k.name === name);
@@ -2115,9 +2656,23 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 				argCandidates(cmd, [...builtins, ...skills.map((s) => s.name)], prefix),
 		});
 		reader.setCompleter((line: string, cb: (err: unknown, res: [string[], string]) => void) => {
-			const names = [...builtins, ...skills.map((s) => s.name)];
-			const second = line.match(/^\/(\S+)[ \t]+(\S*)$/);
-			if (!second) {
+			// bi#158: same host augmentation as the edit pool above.
+			const names = [...builtins, "search", ...skills.map((s) => s.name)];
+			// Second-word flow shared by the plain and quoted branches:
+			// the match key is the typed token (quote included, so quoted
+			// values keep their leading quote through BAML ranking).
+			const runSecond = (cmd: string, prefix: string) => {
+				argCandidates(cmd, names, prefix).then((pool) =>
+					complete_arg_async(prefix, pool).then(
+						(m: string[]) => cb(null, [m, prefix]),
+						(e: unknown) => cb(null, [[], prefix]),
+					),
+				);
+			};
+			// bi#159: plain and quoted second words split in one helper;
+			// anything else keeps today's fallthrough byte-identical.
+			const split = splitSecondWord(line);
+			if (!split) {
 				const bare = line.match(/^\/(\S+)$/);
 				if (bare && names.includes(bare[1])) {
 					cb(null, [[`${line} `], line]);
@@ -2129,13 +2684,7 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 				);
 				return;
 			}
-			const prefix = second[2];
-			argCandidates(second[1], names, prefix).then((pool) =>
-				complete_arg_async(prefix, pool).then(
-					(m: string[]) => cb(null, [m, prefix]),
-					(e: unknown) => cb(null, [[], prefix]),
-				),
-			);
+			runSecond(split.cmd, split.token);
 		});
 	} catch {
 		// Completion is a convenience — never brick REPL startup.
@@ -2161,6 +2710,20 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 		persisted: adopted?.history.length ?? 0,
 		tree: [], treeRoot: process.cwd(), attachments: [], images: [], skillsDirty: false, stagedIssues: [], issueList: [],
 	};
+	// bi#67: pin the footer on load — not just first turn-end — so the
+	// scroll region installs and rows N-1/N hold the frame before the
+	// first prompt draws. Cosmetic only: never brick startup.
+	try {
+		const loadTheme = await activeTheme();
+		const loadThinking = backend.thinking ?? "default";
+		footer.show(
+			await render_footer_frame_async(backend.provider, backend.model, loadThinking, sess.turn, history.length, termWidth(), { theme: loadTheme, cwd: footerCwd(), branch: gitBranch() }),
+			await render_model_line_async(backend.provider, backend.model, loadThinking, termWidth(), { theme: loadTheme }),
+			await format_repl_footer_async(backend.provider, backend.model, loadThinking, sess.turn, history.length, { theme: loadTheme, cwd: footerCwd(), branch: gitBranch() }),
+		);
+	} catch {
+		// No footer on load — the first turn-end paint installs it.
+	}
 	try {
 		for (;;) {
 			// bi#29: /trust swaps the project skill set live — reload on
@@ -2175,6 +2738,12 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 			}
 			let line: string;
 			try {
+				// bi#67: the prompt draws as part of the footer block —
+				// homed to the row directly above the pinned rows.
+				footer.homeInput();
+				// bi#160: the dock's prompt row mirrors the live label;
+				// readline still owns the keystrokes (v1, see NOTES).
+				if (fsSession) fsSession.setPrompt(`bi[${sess.turn}]> `);
 				line = await reader.askMultiline(`bi[${sess.turn}]> `);
 			} catch {
 				console.error("\n[bi] EOF — session kept at " + sess.file);
@@ -2184,6 +2753,18 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 				if (line === "\x03") console.error("(Ctrl-D or /quit to exit)");
 				continue;
 			}
+			// bi#160: record the submitted command in the mirror.
+			// Readline's echo path doesn't cross stdout.write (traced
+			// in a pty: the prompt + cursor moves arrive, typed bytes
+			// never do — kernel echo is invisible to the tee), so
+			// without this neither the live ScrollView nor the replay
+			// names the command behind each turn.
+			if (fsSession) {
+				const cmdRows = line.split("\n");
+				fsSession.pushLines(
+					cmdRows.map((r, i) => (i === 0 ? `bi[${sess.turn}]> ${r.trim()}` : `... ${r.trim()}`)),
+				);
+			}
 			// Mid-turn Ctrl-C abandons the turn (bi#16): the VM request has
 			// no signal passthrough, so the turn is orphaned and discarded
 			// on arrival — the prompt and transcript survive.
@@ -2191,7 +2772,8 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 			let fireAbort: () => void = () => {};
 			const aborted = new Promise<void>((res) => { fireAbort = res; });
 			reader.onMidTurnInterrupt = () => fireAbort();
-			const out = await runOnePrompt(line.trim(), skills, history, { signal, aborted, raw: { suspend: () => reader.suspendLineInput(), resume: () => reader.resumeLineInput() } }, backend, sess);
+			let out: any[] | "quit";
+			out = await runOnePrompt(line.trim(), skills, history, { signal, aborted, raw: { suspend: () => reader.suspendLineInput(), resume: () => reader.resumeLineInput() } }, backend, sess);
 			reader.onMidTurnInterrupt = null;
 			if (out === "quit") {
 				console.error(`[bi] session kept at ${sess.file} (${history.length} messages)`);
@@ -2216,16 +2798,51 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 					const cwd = footerCwd();
 					const branch = gitBranch();
 					const fallback = await format_repl_footer_async(backend.provider, backend.model, thinking, sess.turn, history.length, { theme, cwd, branch });
-					footer.show(
-						await render_footer_frame_async(backend.provider, backend.model, thinking, sess.turn, history.length, termWidth(), { theme, cwd, branch }),
-						fallback,
-					);
+					// bi#160: fullscreen routes the same BAML frame into
+					// the dock (footer.show's DECSTBM region would fight
+					// the alt screen); HostFooter stays uninstalled so its
+					// dispose below is a silent no-op.
+					if (fsSession) {
+						fsSession.setFooter([
+							await render_footer_frame_async(backend.provider, backend.model, thinking, sess.turn, history.length, termWidth(), { theme, cwd, branch }),
+							await render_model_line_async(backend.provider, backend.model, thinking, termWidth(), { theme }),
+						]);
+					} else {
+						footer.show(
+							await render_footer_frame_async(backend.provider, backend.model, thinking, sess.turn, history.length, termWidth(), { theme, cwd, branch }),
+							await render_model_line_async(backend.provider, backend.model, thinking, termWidth(), { theme }),
+							fallback,
+						);
+					}
+					// bi#171: page once per completed REPL turn (success or
+					// TurnFailure both land here as new history; slash and
+					// aborted paths return `history` above and stay silent).
+					// Unset key = disabled = zero bytes (today's behavior).
+					notifyTurnComplete(turnNotifier, sess.turn, { session: sess.file, setting: loadUserSettings().notifications });
 				}
 			}
 		}
 	} finally {
+		// bi#160: release the tee before stopping the shell, then stop
+		// the shell (drain + host replay into scrollback). Readline
+		// closes after the stop so the drain never eats user input.
+		if (releaseTee) {
+			releaseTee();
+			releaseTee = null;
+		}
+		if (fsSession) {
+			const fs = fsSession;
+			fsSession = null;
+			await fs.stop();
+		}
+		// bi#167: delete live kitty images on session teardown (zero bytes
+		// when nothing was shown) before the footer region resets.
+		teardownInlineImages();
 		footer.dispose();
 		reader.close();
+		// bi#162: drain/pop/stop the modal host last — stdin is closed,
+		// so the drain eats only terminal stragglers, never user input.
+		if (!fullscreen) await releaseReplTui();
 	}
 }
 
@@ -2246,6 +2863,15 @@ async function main(): Promise<void> {
 		}
 		if (parsed.help) { printHelp(); process.exit(0); }
 	} catch {}
+	// bi#91: keybindings overrides load once at startup (file → cache, loud
+	// on unknown ids / bad key names); /reload re-reads live, every prompt
+	// modal consumes the cache via currentKeybindingsManager().
+	try {
+		const kb = await reloadKeybindings();
+		if (kb.applied > 0 && kb.errors.length === 0) console.error(`[bi] ${kb.applied} keybinding override(s) from ${getKeybindingsPath()}`);
+	} catch (e) {
+		console.error(`[keybindings] ${e instanceof Error ? e.message : e}`);
+	}
 	if (!cmd) {
 		await warnBaisFailures();
 		const ready = await readyBaisIssues();
@@ -2253,10 +2879,23 @@ async function main(): Promise<void> {
 		// first production frame from the component model. HostTui
 		// only diffs + writes lines.
 		const tui = new HostTui();
+		// bi#163: the ready frame composes through composeFrame (transcript
+		// region, grow) like every other frame — HostTui only diffs lines.
+		const readyWidth = termWidth();
 		tui.render(
-			await render_ready_frame_async(
-				ready.map((f) => ({ id: f.issue.id, title: f.issue.title })),
-				termWidth(),
+			composeFrame(
+				[
+					{
+						lines: await render_ready_frame_async(
+							ready.map((f) => ({ id: f.issue.id, title: f.issue.title })),
+							readyWidth,
+						),
+						grow: 1,
+						shrink: 1,
+						minSize: 0,
+					},
+				],
+				{ width: readyWidth },
 			),
 		);
 		if (ready.length === 0) {
@@ -2494,6 +3133,66 @@ async function main(): Promise<void> {
 			});
 			subscriber.start();
 		}
+		// bi#70: --image <path> stages one file for a single-shot image
+		// turn (no tools — the SendTurnWithImage wire carries none by
+		// construction, same as the REPL staged-image path). The part
+		// echoes in the transcript first: graphics bytes on kitty/iTerm2
+		// TTYs (live probe upgrades an inconclusive env), the BAML
+		// placeholder everywhere else (always on pipes). Machine modes
+		// stay out: RunEvent JSON has no image event (events.baml,
+		// BAML-validated), so --mode json/rpc refuse --image.
+		const imagePath = getFlag(args, "--image");
+		if (imagePath) {
+			const imageMode = getFlag(args, "--mode");
+			if (imageMode === "json" || imageMode === "rpc") {
+				console.error("bi run --image is human-mode only (RunEvent JSON has no image event)");
+				process.exit(1);
+			}
+			let imageBytes: Buffer;
+			try {
+				imageBytes = readFileSync(imagePath);
+			} catch {
+				console.error(`bi run: --image unreadable: ${imagePath}`);
+				process.exit(1);
+			}
+			if (imageBytes.length > 5 * 1024 * 1024) {
+				console.error(`bi run: --image is ${(imageBytes.length / 1_048_576).toFixed(1)}mb (5mb cap, same as /paste)`);
+				process.exit(1);
+			}
+			const imageMime = sniffImageMime(imageBytes);
+			if (!imageMime) {
+				console.error("bi run: --image needs a PNG/JPEG/WebP/GIF file (sniffed, not extended)");
+				process.exit(1);
+			}
+			let imageSupported = true;
+			try {
+				imageSupported = await ModelSupportsImage_async(model);
+			} catch {}
+			if (!imageSupported) {
+				console.error(`bi run: ${model} doesn't take image parts — pick an image-capable model`);
+				process.exit(1);
+			}
+			const echoTheme = await activeTheme();
+			await showStagedImage(imagePath, imageBytes.toString("base64"), {
+				labelForPath: (p) => staged_image_label_async(p),
+				fallbackForLabel: (label) => format_image_placeholder_async(label, { theme: echoTheme }),
+				probeLive: true,
+			});
+			const img = await runSingleImageTurn(fullPrompt + skillsSection, {
+				provider, model, apiKey, baseUrl, temperature, thinkingLevel,
+				imageBase64: imageBytes.toString("base64"),
+				imageMime,
+			});
+			turnLog.record("turn.end", "failure" in img ? `failed:${img.failure.kind}` : "ok");
+			if ("failure" in img) {
+				console.error(`TurnFailure: kind=${img.failure.kind} retry_safe=${img.failure.retry_safe} message=${img.failure.message}`);
+				const imageGuidance = await GuidanceFor_async(img.failure.kind, provider);
+				if (imageGuidance) console.error(imageGuidance);
+				process.exit(1);
+			}
+			await printMarkdownText(img.text, echoTheme);
+			return;
+		}
 		let result: Awaited<ReturnType<typeof runAgent>>;
 		try {
 			result = await runAgent(fullPrompt + skillsSection, {
@@ -2511,6 +3210,9 @@ async function main(): Promise<void> {
 				toolHandler: loggingHandler(turnLog),
 				notify: subscriber?.queue,
 				keeper,
+				// bi#97: human modes emit the compaction transcript block;
+				// --mode json stays machine-clean (block data is in messages).
+				...(getFlag(args, "--mode") === "json" ? {} : { compaction: { onCompacted: async (info: { summary: string; foldedTurns: number; tokensBefore: number; tokensAfter: number }) => { await printCompactionSummary({ summary: info.summary, tokensBefore: info.tokensBefore, tokensAfter: info.tokensAfter, foldedTurns: info.foldedTurns, theme: null }); } } }),
 			});
 			turnLog.record("turn.end", result.failure ? `failed:${result.failure.kind}` : "ok");
 		} finally {
@@ -2577,10 +3279,17 @@ async function main(): Promise<void> {
 		const sub = args[1];
 		const asJson = hasFlag(args, "--json");
 		if (sub === "list") {
+			if (getFlag(args, "--order") !== undefined) {
+				console.error("bi bais list: --order is only supported by `bi bais ready`");
+				process.exit(1);
+			}
 			const { issues: files, failures } = await loadBaisIssues();
-			if (asJson) console.log(JSON.stringify({ issues: files, unparseable: failures }, null, 2));
+			// bi#122 marker: trailing br=N column (open blast radius).
+			const radii = new Map(blastRadii(files).map((r) => [r.id, r]));
+			const brCol = (id: string): string => `\tbr=${radii.get(id)?.open_downstream ?? 0}`;
+			if (asJson) printJson({ issues: files, unparseable: failures });
 			else {
-				for (const f of files) console.log(`${f.issue.id}\t${f.issue.status}\t${f.issue.kind}\t${f.issue.title}`);
+				for (const f of files) console.log(`${f.issue.id}\t${f.issue.status}\t${f.issue.kind}\t${f.issue.title}${brCol(f.issue.id)}`);
 				for (const b of failures) console.log(`bad\t${b.file}\t${b.error}`);
 				if (files.length === 0 && failures.length === 0) console.error("(no .bais/issues/*.toml — run bais init or add issues)");
 			}
@@ -2590,12 +3299,132 @@ async function main(): Promise<void> {
 			// JSON shape matches `bais ready --json`: {ready, unparseable}.
 			// Unparseable files are absent from the graph, so both the ready
 			// set and the edges that would have constrained it are short.
+			const order = getFlag(args, "--order");
+			if (order !== undefined && order !== "blast-radius") {
+				console.error(`bi bais ready: --order ${JSON.stringify(order)} needs blast-radius (the only ordering)`);
+				process.exit(1);
+			}
 			const { issues, failures } = await loadBaisIssues();
-			const ready = filterReadyIssues(issues);
-			if (asJson) console.log(JSON.stringify({ ready, unparseable: failures }, null, 2));
+			const radii = new Map(blastRadii(issues).map((r) => [r.id, r]));
+			let ready = filterReadyIssues(issues);
+			if (order === "blast-radius") {
+				ready = [...ready].sort(
+					(a, b) => (radii.get(b.issue.id)?.open_downstream ?? 0) - (radii.get(a.issue.id)?.open_downstream ?? 0) || (a.issue.id < b.issue.id ? -1 : a.issue.id > b.issue.id ? 1 : 0),
+				);
+			}
+			const brCol = (id: string): string => `\tbr=${radii.get(id)?.open_downstream ?? 0}`;
+			if (asJson) printJson({ ready, unparseable: failures });
 			else {
-				for (const f of ready) console.log(`${f.issue.id}\t${f.issue.title}`);
+				for (const f of ready) console.log(`${f.issue.id}\t${f.issue.title}${brCol(f.issue.id)}`);
 				if (ready.length === 0) console.log("(no ready issues)");
+				if (failures.length) console.error(`[bais] ${failures.length} unparseable file(s) excluded — \`bi bais check\` for details`);
+			}
+			return;
+		}
+		if (sub === "dispatch") {
+			// bi#123 dry-run swarm pack. Scan-only (live envelopes + fresh
+			// bodies); never mutates — agents claim for themselves.
+			// hub#163: single-source briefs — renderBrief/warnPartial are
+			// imported from bais/scripts/briefs.mjs (canonical), never
+			// mirrored here. Resolution is module-anchored first (works from
+			// any cwd in this checkout) with cwd-anchored fallbacks; a miss
+			// fails loud, never silent-drifted. Same runtime requirement
+			// class as the bais dist delegation (bi#84): no bais checkout,
+			// no bais-backed briefs.
+			const loadBriefsRenderer = async (): Promise<{ renderBrief: (o: any) => string; warnPartial: (b: number, p: number) => string | null }> => {
+				const { dirname } = await import("node:path");
+				const { fileURLToPath, pathToFileURL } = await import("node:url");
+				const here = dirname(fileURLToPath(import.meta.url));
+				const { existsSync: exists } = await import("node:fs");
+				const { resolve: resolveP, join: joinP } = await import("node:path");
+				const candidates = [
+					joinP(here, "..", "..", "..", "bais", "scripts", "briefs.mjs"), // bi/dist/src -> repo/bais
+					joinP(here, "..", "..", "bais", "scripts", "briefs.mjs"), // bi/src dev -> repo/bais
+					joinP(resolveP(process.cwd(), "bais"), "scripts", "briefs.mjs"),
+					joinP(resolveP(process.cwd(), "../bais"), "scripts", "briefs.mjs"),
+					joinP(resolveP(process.cwd(), "../../bais"), "scripts", "briefs.mjs"),
+				];
+				const found = candidates.find((c) => exists(c));
+				if (!found) {
+					console.error(`bi bais dispatch: brief renderer not found (tried ${candidates.join(", ")})`);
+					process.exit(1);
+				}
+				return (await import(pathToFileURL(found).href)) as any;
+			};
+			const { renderBrief: renderSlotBrief, warnPartial: warnPartialSlots } = await loadBriefsRenderer();
+			// hub#163: local renderBrief/warnPartial mirrors deleted —
+			// renderSlotBrief/warnPartialSlots ARE bais/scripts/briefs.mjs.
+			// No `style` passed (same parser gap as bais/src/cli.ts: ns_toml
+			// rejects top-level `style`, so no loadable issue carries one).
+			const rawAgents = getFlag(args, "--agents");
+			const budget = rawAgents === undefined ? NaN : Number(rawAgents);
+			if (!Number.isInteger(budget) || budget <= 0) {
+				console.error("bi bais dispatch needs --agents <positive integer>");
+				process.exit(1);
+			}
+			const { issues, failures } = await loadBaisIssues();
+			const now = Date.now();
+			const leased = issues
+				.filter((f) => f.holder != null && f.lease != null && Number.isFinite(Date.parse(f.lease)) && Date.parse(f.lease) > now)
+				.map((f) => f.issue.id);
+			const footprints = new Map(issues.map((f) => [f.issue.id, parseFileClaims(f.issue.body)]));
+			const declared = new Set(
+				issues.filter((f) => (f.issue.body ?? "").split("\n").some((l) => l.trim().startsWith("Files:"))).map((f) => f.issue.id),
+			);
+			const radii = new Map(blastRadii(issues).map((r) => [r.id, r]));
+			const byId = new Map(issues.map((f) => [f.issue.id, f]));
+			const slots = dispatchPack(issues, leased, footprints, budget).map((s) => ({
+				slot: s.slot,
+				issue: { id: s.issue_id, title: byId.get(s.issue_id)?.issue.title ?? "" },
+				open_downstream: radii.get(s.issue_id)?.open_downstream ?? 0,
+				files: footprints.get(s.issue_id) ?? [],
+				files_state: declared.has(s.issue_id) ? "declared" : "unknown",
+			}));
+			// hub#175 warning path (mirror of bais/src/cli.ts): dispatchPack
+			// withholds 2nd+ unknowns — name the cost. withheld = unpacked
+			// ready+unleased unknowns capped by unfilled, in greedy order; a
+			// kept unknown alongside declared partners warns naming it.
+			const unfilled = budget - slots.length;
+			const packedIds = new Set(slots.map((s) => s.issue.id));
+			const readyIds = new Set(filterReadyIssues(issues).map((f) => f.issue.id));
+			const keptUnknown = slots.find((s) => s.files_state !== "declared");
+			const unpackedUnknowns = issues
+				.filter((f) => !declared.has(f.issue.id) && !packedIds.has(f.issue.id) && !leased.includes(f.issue.id) && readyIds.has(f.issue.id))
+				.map((f) => f.issue.id)
+				.sort((a, b) => (radii.get(b)?.open_downstream ?? 0) - (radii.get(a)?.open_downstream ?? 0) || (a < b ? -1 : a > b ? 1 : 0));
+			const withheld = keptUnknown !== undefined ? unpackedUnknowns.slice(0, Math.max(0, unfilled)) : [];
+			const unknownWarnings: string[] = [];
+			if (withheld.length) unknownWarnings.push(warnUnknownWithheld(withheld));
+			if (keptUnknown !== undefined) {
+				const partners = slots.filter((s) => s.files_state === "declared").map((s) => s.issue.id);
+				if (partners.length) unknownWarnings.push(warnUnknownShared(keptUnknown.issue.id, partners));
+			}
+			// bi#125/bi#126: --briefs renders spawn briefs instead of slot
+			// rows; every mode carries unfilled + the loud partial-pack line.
+			const wantBriefs = hasFlag(args, "--briefs");
+			const partial = warnPartialSlots(budget, slots.length);
+			const briefFor = (s: (typeof slots)[number]): string => {
+				const f = byId.get(s.issue.id);
+				return renderSlotBrief({ slot: s.slot, id: s.issue.id, title: s.issue.title, status: f?.issue.status, body: f?.issue.body, files: s.files, files_state: s.files_state, open_downstream: s.open_downstream, dir: process.cwd() });
+			};
+			// --json stays stderr-quiet (the machine field is unfilled);
+			// briefs.mjs shells here inheriting stderr and warns itself, so
+			// a loud line here would double §8's pinned single line.
+			if (asJson) printJson({ slots: wantBriefs ? slots.map((s) => ({ ...s, brief: briefFor(s) })) : slots, leased, budget, unfilled, warnings: unknownWarnings, withheld, unparseable: failures });
+			else if (wantBriefs) {
+				if (partial) console.error(partial);
+				for (const w of unknownWarnings) console.error(w);
+				if (slots.length === 0) console.log("(no packable issues for this budget)");
+				slots.forEach((s, i) => console.log((i === 0 ? "" : "\n") + briefFor(s)));
+			} else {
+				if (partial) console.error(partial);
+				for (const w of unknownWarnings) console.error(w);
+				for (const s of slots) {
+					const files = s.files_state === "declared" ? s.files.join(",") : "unknown";
+					console.log(`slot${s.slot}\t${s.issue.id}\tbr=${s.open_downstream}\tfiles: ${files}\t${s.issue.title}`);
+				}
+				if (slots.length === 0) console.log("(no packable issues for this budget)");
+				if (leased.length) console.error(`[bais] skipped live-claimed: ${leased.join(", ")}`);
 				if (failures.length) console.error(`[bais] ${failures.length} unparseable file(s) excluded — \`bi bais check\` for details`);
 			}
 			return;
@@ -2607,8 +3436,33 @@ async function main(): Promise<void> {
 			const area = getFlag(args, "--area");
 			const status = getFlag(args, "--status") ?? "Open";
 			const body = getFlag(args, "--body");
-			const file = await createBaisIssue({ title, kind, area, body, status });
-			console.log(`${file.issue.id}\t${file.issue.title}`);
+			// bi#111: edges at birth (repeatable). Ends must exist;
+			// Missing/self-link/dup refuse loudly, never half-written.
+			const edges = [
+				...getAllFlags(args, "--blocks").map((to) => ({ kind: "Blocks", to })),
+				...getAllFlags(args, "--depends-on").map((to) => ({ kind: "DependsOn", to })),
+			];
+			try {
+				const file = await createBaisIssue({ title, kind, area, body, status, edges });
+				console.log(`${file.issue.id}\t${file.issue.title}`);
+			} catch (e) {
+				console.error(`bais new: ${e instanceof Error ? e.message : e}`);
+				process.exit(1);
+			}
+			return;
+		}
+		if (sub === "link") {
+			const from = args[2];
+			const kind = args[3];
+			const to = args[4];
+			if (!from || !kind || !to) { console.error("bais link requires <from> <Kind> <to>"); process.exit(1); }
+			try {
+				const file = await linkBaisIssues(from, kind, to);
+				console.log(`linked\t${file.issue.id}\t${kind}\t${to}`);
+			} catch (e) {
+				console.error(`bais link: ${e instanceof Error ? e.message : e}`);
+				process.exit(1);
+			}
 			return;
 		}
 		if (sub === "move") {
@@ -2709,9 +3563,435 @@ async function main(): Promise<void> {
 			else for (const f of files) console.log(`${f.issue.id}\t${f.issue.title}\t[${f.edges.map((e) => e.kind).join(",")}]`);
 			return;
 		}
-		console.error(`Unknown bais subcommand: ${sub ?? ""} (try: bais list | ready | new | move | renew | reap | check | graph)`);
+		if (sub === "goal") {
+			// bi#132: /goal interview/sketch/commit/status/switch (src lane).
+			// Same single-source rule as dispatch --briefs (hub#163): goal
+			// logic lives ONLY in bais/scripts/goal.mjs; this branch routes
+			// args, resolves the per-directory .bais/goal.toml (root .bais/
+			// is the ecosystem hub — goal.toml lives there), and renders.
+			const loadGoalModule = async (): Promise<any> => {
+				const { pathToFileURL } = await import("node:url");
+				const here = dirname(fileURLToPath(import.meta.url));
+				const candidates = [
+					join(here, "..", "..", "..", "bais", "scripts", "goal.mjs"), // bi/dist/src -> repo/bais
+					join(here, "..", "..", "bais", "scripts", "goal.mjs"), // bi/src dev -> repo/bais
+					join(resolve(process.cwd(), "bais"), "scripts", "goal.mjs"),
+					join(resolve(process.cwd(), "../bais"), "scripts", "goal.mjs"),
+					join(resolve(process.cwd(), "../../bais"), "scripts", "goal.mjs"),
+				];
+				const found = candidates.find((c) => existsSync(c));
+				if (!found) {
+					console.error(`bi bais goal: goal.mjs not found (tried ${candidates.join(", ")})`);
+					process.exit(1);
+				}
+				return (await import(pathToFileURL(found).href)) as any;
+			};
+			const gm = await loadGoalModule();
+			// Nearest hub wins (mirrors resolveIssuesDir in ./bais.js: the
+			// root .bais/ is the ecosystem hub). Read verbs use the first
+			// goal.toml on disk; start-fresh writes into the nearest hub.
+			const goalTomlCandidates = [
+				join(process.cwd(), ".bais", "goal.toml"),
+				join(process.cwd(), "bi", ".bais", "goal.toml"),
+				join(resolve(process.cwd(), ".."), ".bais", "goal.toml"),
+				join(process.cwd(), "bais", ".bais", "goal.toml"),
+			];
+			const hubCandidates = [
+				join(process.cwd(), ".bais"),
+				join(process.cwd(), "bi", ".bais"),
+				join(resolve(process.cwd(), ".."), ".bais"),
+				join(process.cwd(), "bais", ".bais"),
+			];
+			const verb = args[2];
+			const usage = `bi bais goal <start|sketch|commit|status|switch> — per-directory campaign interview (bi#132)`;
+			const loadGoal = (): { file: string; goal: any } => {
+				const file = goalTomlCandidates.find((c) => existsSync(c));
+				if (!file) {
+					console.error(`bi bais goal: no campaign found (tried ${goalTomlCandidates.join(", ")}) — run \`bi bais goal start "<statement>"\` first`);
+					process.exit(1);
+				}
+				return { file, goal: gm.parseGoalToml(readFileSync(file, "utf8")) };
+			};
+			const runInterview = async (g: any, goalFile: string): Promise<void> => {
+				const rl = createInterface({ input: process.stdin });
+				const it = rl[Symbol.asyncIterator]();
+				for (;;) {
+					if (gm.checklistComplete(g)) break;
+					const q = gm.nextQuestion(g);
+					if (gm.checklistComplete(g)) {
+						console.log(q);
+						break; // rounds-cap notice: the rest auto-defaulted above
+					}
+					console.log(q);
+					const box = gm.openBoxes(g)[0];
+					const nxt = await it.next();
+					if (nxt.done) {
+						console.error(`bi bais goal: input closed — interview saved at ${goalFile}, rerun \`bi bais goal start\` to resume`);
+						break;
+					}
+					const line = String(nxt.value ?? "");
+					const t = line.trim().toLowerCase();
+					try {
+						if (t === "defaults") gm.useDefaults(g);
+						else if (t === "waive") gm.waive(g, box);
+						else gm.answer(g, box, line);
+					} catch (e: any) {
+						console.error(`bi bais goal: ${e?.message ?? e} (box still open)`);
+						continue;
+					}
+					writeFileSync(goalFile, gm.renderGoalToml(g));
+				}
+				rl.close();
+				writeFileSync(goalFile, gm.renderGoalToml(g));
+				if (gm.checklistComplete(g)) console.log(`bi bais goal: checklist complete — \`bi bais goal sketch\` to dry-run the proposal`);
+				if (asJson) printJson({ statement: g.statement, complete: gm.checklistComplete(g), open: gm.openBoxes(g) });
+			};
+			if (verb === "start") {
+				const force = hasFlag(args, "--force");
+				const existing = goalTomlCandidates.find((c) => existsSync(c));
+				if (existing && !force) {
+					const { goal: cur } = loadGoal();
+					if (!gm.checklistComplete(cur)) {
+						await runInterview(cur, existing); // open interview: start resumes it
+						return;
+					}
+					console.error(`bi bais goal: campaign already complete at ${existing} — \`bi bais goal switch "<new statement>"\` to restructure, or \`bi bais goal start --force "<statement>"\` to restart`);
+					process.exit(1);
+				}
+				const statement = args[3];
+				if (!statement || statement.startsWith("--")) {
+					console.error(`bi bais goal start needs "<statement>"`);
+					process.exit(1);
+				}
+				const hub = existing ?? hubCandidates.find((h) => existsSync(h));
+				if (!hub) {
+					console.error(`bi bais goal: no .bais hub found — run bais init first`);
+					process.exit(1);
+				}
+				const file = existing ?? join(hub, "goal.toml");
+				const g = gm.newGoal(statement);
+				writeFileSync(file, gm.renderGoalToml(g));
+				await runInterview(g, file);
+				return;
+			}
+			if (verb === "sketch") {
+				const { goal: g } = loadGoal();
+				const res = gm.sketch(g);
+				if (!res.ok) {
+					console.error(`bi bais goal: ${res.error}`);
+					process.exit(1);
+				}
+				if (asJson) printJson({ ok: true, proposal: res.proposal });
+				else {
+					console.log(`proposal (dry run — nothing written; edit, then \`bi bais goal commit --approve\`):`);
+					console.log(JSON.stringify(res.proposal, null, 2));
+				}
+				return;
+			}
+			if (verb === "commit") {
+				// Load-bearing hunk (bi#132/bi#57 red-check target): approval
+				// is an explicit human yes — the --approve flag and nothing
+				// else. Defaulting this to true must trip the dogfood check
+				// "commit refuses without approval".
+				const approved = hasFlag(args, "--approve");
+				const { file, goal: g } = loadGoal();
+				// The sketch verb is the dry run; commit re-derives the
+				// proposal fresh (sketch() side-effects goal.sketch, which
+				// commit() requires — renderGoalToml persists no sketch).
+				// Refusal texts stay scripts-verbatim (see bais/src/cli.ts
+				// for the precedence note).
+				const sk = gm.sketch(g);
+				if (!sk.ok) {
+					console.error(`bi bais goal: ${sk.error}`);
+					process.exit(1);
+				}
+				const res = gm.commit(g, { approved, write: (toml: string) => writeFileSync(file, toml) });
+				if (!res.ok) {
+					console.error(`bi bais goal: ${res.error}`);
+					process.exit(1);
+				}
+				if (asJson) printJson({ ok: true, wrote: res.wrote });
+				else for (const f of res.wrote) console.log(`committed\t${f}`);
+				return;
+			}
+			if (verb === "status") {
+				const { file, goal: g } = loadGoal();
+				const st = gm.status(g);
+				const gate = gm.validateGoal(readFileSync(file, "utf8"));
+				if (asJson) printJson({ file, ...st, errors: gate.errors, warns: gate.warns });
+				else {
+					console.log(`statement\t${st.statement}`);
+					for (const b of Object.keys(st.checklist)) console.log(`box\t${b}\t${st.checklist[b]}`);
+					console.log(`acceptance\t${st.done}/${st.total}`);
+					for (const o of st.open) console.log(`open\t${o}`);
+					console.log(`sketched\t${st.sketched}`);
+					for (const w of gate.warns) console.error(`warn\t${w}`);
+					if (gate.errors.length) {
+						for (const e of gate.errors) console.error(`error\t${e}`);
+						process.exit(1);
+					}
+				}
+				return;
+			}
+			if (verb === "switch") {
+				const newStatement = args[3];
+				if (!newStatement || newStatement.startsWith("--")) {
+					console.error(`bi bais goal switch needs "<new statement>"`);
+					process.exit(1);
+				}
+				const { file, goal: g } = loadGoal();
+				const res = gm.switchGoal(g, newStatement);
+				writeFileSync(file, gm.renderGoalToml(res.fresh));
+				if (asJson) printJson({ archived: res.archived, retire: res.retire, statement: res.fresh.statement });
+				else {
+					console.log(`archived\t${res.archived.statement}`);
+					for (const id of res.retire) console.log(`retire\t${id}`);
+				}
+				await runInterview(res.fresh, file); // restructure flow ends in a fresh interview
+				return;
+			}
+			console.error(usage);
+			process.exit(1);
+		}
+		console.error(`Unknown bais subcommand: ${sub ?? ""} (try: bais list | ready | new | move | renew | reap | check | graph | goal)`);
 		printHelp();
 		process.exit(1);
+	}
+
+	// bi#91: keybindings manager — user-editable ~/.bi/keybindings.json
+	// (`{ "<tui.* id>": "<key>" | [...] }`, BAML-validated). View/remap
+	// here; every prompt modal and /reload consume the same file.
+	if (cmd === "keybindings") {
+		const sub = args[1];
+		const asJson = hasFlag(args, "--json");
+		const kb = await reloadKeybindings();
+		if (sub === "list" || (!sub && !promptAvailable())) {
+			if (asJson) printJson(await renderKeybindingJson());
+			else {
+				const { text, errors } = await renderKeybindingList();
+				console.log(text);
+				for (const e of errors) console.error(`[keybindings] ${e}`);
+				if (kb.errors.length === 0) console.error(`(* = overridden — \`bi keybindings set <id> <keys...>\` to remap, \`bi keybindings\` for the picker)`);
+			}
+			return;
+		}
+		if (sub === "set" || sub === "unset") {
+			const id = args[2];
+			if (!id) { console.error(`usage: bi keybindings set <id> <key...> | bi keybindings unset <id>`); process.exit(1); }
+			// `set <id>` with no keys unbinds (empty list); `unset` removes
+			// the override entirely (back to the library default).
+			const keys = sub === "set" ? args.slice(3) : null;
+			const { entries } = loadKeybindingsFile();
+			const next: KeybindingFileEntry[] = entries.filter((e) => e.id !== id);
+			if (keys !== null) next.push({ id, keys });
+			try {
+				await saveKeybindings(next);
+			} catch (e) {
+				console.error(`[keybindings] ${e instanceof Error ? e.message : e}`);
+				process.exit(1);
+			}
+			await reloadKeybindings();
+			const curRaw = getUserKeybindings()[id];
+			const cur = Array.isArray(curRaw) ? curRaw.join(" ") || "(unbound)" : (curRaw ?? "(default)");
+			const label = keys === null ? cur : keys.length ? keys.join(" ") : "(unbound)";
+			console.error(`[keybindings] ${id} → ${label} (saved — /reload picks it up live)`);
+			return;
+		}
+		if (sub === "reset") {
+			if (resetKeybindings()) console.error(`[keybindings] removed ${getKeybindingsPath()} — library defaults restored`);
+			else console.error(`[keybindings] no file at ${getKeybindingsPath()} — already defaults`);
+			return;
+		}
+		if (!sub && promptAvailable()) {
+			// Interactive manager: pick a binding, then type its keys.
+			const { rows } = await listKeybindingRows();
+			const at = await pickList(
+				"keybindings (esc cancels)",
+				rows.map((r) => ({
+					label: `${r.overridden ? "*" : " "} ${r.id}  ${(r.current_keys.join(" ") || "(unbound)")}`,
+					description: r.description,
+				})),
+			);
+			if (at === null) return;
+			const row = rows[at];
+			const answer = await askText(`keys for ${row.id} (space-separated, empty unbinds, default: ${row.default_keys.join(" ") || "(none)"})`, row.current_keys.join(" "));
+			if (answer === null) return;
+			const keys = answer.trim() === "" ? [] : answer.trim().split(/\s+/);
+			const { entries } = loadKeybindingsFile();
+			const next: KeybindingFileEntry[] = entries.filter((e) => e.id !== row.id);
+			next.push({ id: row.id, keys });
+			try {
+				await saveKeybindings(next);
+			} catch (e) {
+				console.error(`[keybindings] ${e instanceof Error ? e.message : e}`);
+				process.exit(1);
+			}
+			await reloadKeybindings();
+			console.error(`[keybindings] ${row.id} → ${keys.join(" ") || "(unbound)"} (saved — /reload picks it up live)`);
+			return;
+		}
+		console.error(`Unknown keybindings subcommand: ${sub ?? ""} (try: keybindings [list [--json] | set <id> <keys...> | unset <id> | reset])`);
+		printHelp();
+		process.exit(1);
+	}
+
+	// bi#138 hunk-by-hunk review. READ-ONLY by default like dispatch
+	// dry-runs: without --apply nothing is created, moved, or linked —
+	// flags only print what would be filed. Rendering reuses the diff
+	// pipeline (colorizeDiffLines); provenance reuses Files: footprints.
+	if (cmd === "review") {
+		const asJson = hasFlag(args, "--json");
+		const loud = (msg: string): void => { console.error(msg); };
+		try {
+			assertSkepticReady(hasFlag(args, "--skeptic"));
+		} catch (e) {
+			console.error(`bi review: ${e instanceof Error ? e.message : e}`);
+			process.exit(1);
+		}
+		const refArg = args[1] !== undefined && !args[1].startsWith("--") ? args[1] : null;
+		const refLabel = refArg ?? "worktree";
+		let diffText: string;
+		try {
+			diffText = execFileSync("git", gitDiffArgs(refArg), { encoding: "utf8", maxBuffer: 50 * 1024 * 1024, timeout: 30000 });
+		} catch (e) {
+			console.error(`bi review: git diff failed (${e instanceof Error ? e.message : e})`);
+			process.exit(1);
+		}
+		// Provenance: Doing-claimed footprints first (live work owns the
+		// worktree diff), then every other claimed file; --provenance JSON
+		// ({ "<path>": { issue, agent, handoff } }) overrides per file.
+		const { issues } = await loadBaisIssues();
+		const ranked = [...issues.filter((f) => f.issue.status === "Doing"), ...issues.filter((f) => f.issue.status !== "Doing")];
+		const footprints = ranked.map((f) => ({ id: f.issue.id, holder: f.holder, files: parseFileClaims(f.issue.body) }));
+		let overrides: Record<string, Partial<ReviewProvenance>> | undefined;
+		const provPath = getFlag(args, "--provenance");
+		if (provPath !== undefined) {
+			try {
+				overrides = JSON.parse(readFileSync(provPath, "utf8"));
+			} catch (e) {
+				console.error(`bi review: cannot read --provenance ${provPath} (${e instanceof Error ? e.message : e})`);
+				process.exit(1);
+			}
+		}
+		// Untracked files are invisible to `git diff HEAD` — name them loudly
+		// so the queue never implies full coverage. Best-effort: a status
+		// failure degrades to an empty note, never a refused review.
+		let untracked: string[] = [];
+		try {
+			untracked = parseUntrackedFiles(execFileSync("git", ["status", "--porcelain"], { encoding: "utf8", maxBuffer: 10 * 1024 * 1024, timeout: 15000 }));
+		} catch {}
+		const parsed = parseUnifiedDiff(diffText);
+		const queue = buildHunkQueue(parsed, (file) => provenanceForFile(file, footprints, overrides));
+		try {
+			assertQueueCoversDiffOnce(queue, parsed);
+		} catch (e) {
+			console.error(`bi review: internal queue error (${e instanceof Error ? e.message : e})`);
+			process.exit(1);
+		}
+		if (queue.length === 0) {
+			if (asJson) printJson(reviewToJson(refLabel, queue, [], untracked));
+			else {
+				console.log(`(no changes vs ${refLabel} — nothing to review)`);
+				if (untracked.length) console.error(`untracked (not in queue — \`git add -N <file>\` to include): ${untracked.join(", ")}`);
+			}
+			return;
+		}
+		const theme = await activeTheme();
+		const printHunk = async (h: (typeof queue)[number]): Promise<void> => {
+			const p = h.provenance;
+			console.log(`${hunkLabel(h, queue.length)}  [issue ${p.issue ?? "?"}${p.agent ? ` · agent ${p.agent}` : ""}${p.handoff ? ` · handoff ${p.handoff}` : ""}]`);
+			for (const l of await colorizeDiffLines(h.lines, theme)) console.log(l);
+		};
+		let decisions: ReviewDecision[] = [];
+		const decidePath = getFlag(args, "--decide");
+		if (decidePath !== undefined) {
+			let inputs: ReviewDecisionInput[];
+			try {
+				const raw: unknown = JSON.parse(readFileSync(decidePath, "utf8"));
+				if (!Array.isArray(raw)) throw new Error("want a JSON array of { hunk, action, ... }");
+				inputs = raw as ReviewDecisionInput[];
+			} catch (e) {
+				console.error(`bi review: cannot read --decide ${decidePath} (${e instanceof Error ? e.message : e})`);
+				process.exit(1);
+			}
+			try {
+				decisions = applyDecisionInputs(queue, inputs);
+			} catch (e) {
+				console.error(`bi review: ${(e as { reason?: string })?.reason ?? "bad-decision"} — ${e instanceof Error ? e.message : e}`);
+				process.exit(1);
+			}
+			if (!asJson) for (const h of queue) await printHunk(h);
+		} else if (!asJson && promptAvailable() && process.stdin.isTTY && process.stdout.isTTY) {
+			// Navigable queue: per-hunk verdict with back-step; Esc ends.
+			const chosen = new Map<number, ReviewDecisionInput>();
+			let idx = 0;
+			while (idx < queue.length) {
+				const h = queue[idx]!;
+				await printHunk(h);
+				const ans = await askText(`hunk ${h.id}/${queue.length} — [a]pprove [q]uestion [c]hallenge [f]lag [s]kip [b]ack [done]`, chosen.get(h.id)?.action?.[0] ?? "a");
+				if (ans === null || ans.trim().toLowerCase() === "done") break;
+				const verb = ans.trim().toLowerCase();
+				if (verb === "b" || verb === "back") {
+					idx = Math.max(0, idx - 1);
+					chosen.delete(queue[idx]!.id);
+					continue;
+				}
+				if (verb === "a" || verb === "approve" || verb === "") {
+					chosen.set(h.id, { hunk: h.id, action: "approve" });
+					idx++;
+					continue;
+				}
+				if (verb === "s" || verb === "skip") {
+					chosen.set(h.id, { hunk: h.id, action: "skip" });
+					idx++;
+					continue;
+				}
+				if (verb === "q" || verb === "question" || verb === "c" || verb === "challenge" || verb === "f" || verb === "flag") {
+					const action = verb === "q" || verb === "question" ? "question" : verb === "c" || verb === "challenge" ? "challenge" : "flag";
+					const need = action === "question" ? "question" : action === "challenge" ? "proof ref (test or red-check)" : "follow-up title";
+					const got = await askText(`${action} on hunk ${h.id} — ${need} (Esc re-asks)`, "");
+					if (got === null || got.trim() === "") {
+						loud(`${action} needs ${need} — re-asking hunk ${h.id}`);
+						continue;
+					}
+					chosen.set(h.id, action === "question" ? { hunk: h.id, action, text: got } : action === "challenge" ? { hunk: h.id, action, proof: got } : { hunk: h.id, action, title: got });
+					idx++;
+					continue;
+				}
+				loud(`unknown review verb ${JSON.stringify(ans)} — a/q/c/f/s/b/done`);
+			}
+			try {
+				decisions = applyDecisionInputs(queue, [...chosen.values()]);
+			} catch (e) {
+				console.error(`bi review: ${(e as { reason?: string })?.reason ?? "bad-decision"} — ${e instanceof Error ? e.message : e}`);
+				process.exit(1);
+			}
+		} else if (!asJson) {
+			for (const h of queue) await printHunk(h);
+		}
+		const payload = reviewToJson(refLabel, queue, decisions, untracked);
+		if (asJson) {
+			printJson(payload);
+			return;
+		}
+		const count = (a: string): number => decisions.filter((d) => d.action === a).length;
+		console.log(`review ${refLabel}: ${queue.length} hunks — ${count("approve")} approved, ${count("question")} questioned, ${count("challenge")} challenged, ${count("flag")} flagged, ${queue.length - decisions.length} pending`);
+		if (untracked.length) console.error(`untracked (not in queue — \`git add -N <file>\` to include): ${untracked.join(", ")}`);
+		for (const v of payload.verdicts) console.log(`verdict\t${v}`);
+		if (hasFlag(args, "--apply")) {
+			for (const s of payload.flags) {
+				try {
+					const created = await createBaisIssue({ title: s.title, body: s.body, edges: s.linkTo ? [{ kind: "Related", to: s.linkTo }] : [] });
+					console.log(`filed\t${created.issue.id}\t${s.title}`);
+				} catch (e) {
+					console.error(`bi review: cannot file flag for hunk #${s.hunk} (${e instanceof Error ? e.message : e})`);
+					process.exit(1);
+				}
+			}
+		} else {
+			for (const s of payload.flags) console.error(`would-file\t${s.linkTo ? `Related ${s.linkTo}` : "unlinked"}\t${s.title}`);
+		}
+		return;
 	}
 
 	if (cmd?.startsWith("-")) {
