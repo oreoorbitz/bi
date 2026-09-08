@@ -68,6 +68,13 @@ type footerFrameParams struct {
 	TokensIn  int64  `json:"tokensIn"`
 	TokensOut int64  `json:"tokensOut"`
 	CWD       string `json:"cwd"`
+	// bi#188: the real host (bi/src/tui_seam.ts) carries turn/message
+	// counts and the git branch — render_footer_frame's data — rather
+	// than token totals. Additive optional fields; the bi#187 fixture's
+	// token fields keep working unchanged.
+	Turn     *int64 `json:"turn,omitempty"`
+	Messages *int64 `json:"messages,omitempty"`
+	Branch   string `json:"branch,omitempty"`
 }
 
 type pickerItem struct {

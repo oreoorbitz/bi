@@ -367,6 +367,7 @@ func (m *rootModel) handleSeam(ev seamEvent) (tea.Model, tea.Cmd) {
 		case "spinner_start":
 			m.spinning = true
 			m.status = p.Label
+			m.debug.log("agent_event", map[string]any{"kind": p.Kind, "label": p.Label})
 			return m, tea.Batch(next(), m.sp.Tick)
 		case "spinner_stop":
 			m.spinning = false
@@ -396,6 +397,7 @@ func (m *rootModel) handleSeam(ev seamEvent) (tea.Model, tea.Cmd) {
 		}
 		m.tools = append(m.tools, fmt.Sprintf("⚙ %s: %s", p.Name, p.Summary))
 		m.refreshLive()
+		m.debug.log("tool_line", map[string]any{"kind": "start", "id": p.ID, "name": p.Name})
 
 	case "tool/done":
 		var p toolDoneParams
@@ -408,6 +410,7 @@ func (m *rootModel) handleSeam(ev seamEvent) (tea.Model, tea.Cmd) {
 		}
 		m.tools = append(m.tools, fmt.Sprintf("%s %s", mark, p.Line))
 		m.refreshLive()
+		m.debug.log("tool_line", map[string]any{"kind": "done", "id": p.ID, "ok": p.OK})
 
 	case "turn/result":
 		var p turnResultParams
@@ -422,10 +425,20 @@ func (m *rootModel) handleSeam(ev seamEvent) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.footer = p
-		m.debug.log("footer", map[string]any{
+		ev := map[string]any{
 			"provider": p.Provider, "model": p.Model, "thinking": p.Thinking,
 			"tokensIn": p.TokensIn, "tokensOut": p.TokensOut,
-		})
+		}
+		if p.Turn != nil {
+			ev["turn"] = *p.Turn
+		}
+		if p.Messages != nil {
+			ev["messages"] = *p.Messages
+		}
+		if p.Branch != "" {
+			ev["branch"] = p.Branch
+		}
+		m.debug.log("footer", ev)
 
 	case "picker/open":
 		var p pickerOpenParams
@@ -464,8 +477,24 @@ func (m *rootModel) footerView() string {
 		left += statusStyle.Render(m.status) + "  "
 	}
 	f := m.footer
-	right := footerStyle.Render(fmt.Sprintf("%s | %s | thinking:%s | ↑%d ↓%d | %s",
-		f.Provider, f.Model, f.Thinking, f.TokensIn, f.TokensOut, f.CWD))
+	segs := []string{f.Provider, f.Model, "thinking:" + f.Thinking}
+	if f.TokensIn > 0 || f.TokensOut > 0 {
+		segs = append(segs, fmt.Sprintf("↑%d ↓%d", f.TokensIn, f.TokensOut))
+	}
+	// bi#188: host-carried turn/message counts and branch render only
+	// when present — the bi#187 fixture's token footer is unchanged.
+	if f.Turn != nil {
+		seg := fmt.Sprintf("turn:%d", *f.Turn)
+		if f.Messages != nil {
+			seg += fmt.Sprintf(" msgs:%d", *f.Messages)
+		}
+		segs = append(segs, seg)
+	}
+	if f.Branch != "" {
+		segs = append(segs, f.Branch)
+	}
+	segs = append(segs, f.CWD)
+	right := footerStyle.Render(strings.Join(segs, " | "))
 	return footerStyle.Render(left + right) // width-clamped in View
 }
 

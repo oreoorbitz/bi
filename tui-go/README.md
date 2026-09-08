@@ -31,7 +31,12 @@ input-reassembly window (default 250ms; 0 = upstream behavior).
 
 Transport: newline-delimited JSON (one envelope per line), JSON-RPC 2.0
 envelope shape. Host→UI on the seam-in channel; UI→host on the
-back-channel. This is a **draft**: bi#188 formalizes.
+back-channel. **bi#188 landed the host side**: `bi/src/tui_seam.ts` is
+the single writer (typed catalog = `SEAM_CATALOG`; the Go structs here
+hand-mirror it, kept honest by `bi/scripts/seam-parity.mjs`). Behind
+`BI_TUI=go`, `bi run` spawns this binary with the seam on fds 3/4 and
+sources all six channels from the real turn (deltas, tool lines, footer,
+result markdown); drills: `npm run test:seam --prefix bi`.
 
 ### Host → UI (notifications)
 
@@ -62,10 +67,14 @@ committed to scrollback):
 ```
 
 `footer/frame` — the footer as DATA, not rendered bytes (selectors.baml
-`render_footer_frame` equivalent):
+`render_footer_frame` equivalent). `turn`/`messages`/`branch` are
+optional (bi#188: the real host carries turn/message counts and the git
+branch rather than token totals; the fixture's token fields keep
+working):
 
 ```json
 {"jsonrpc":"2.0","method":"footer/frame","params":{"provider":"anthropic","model":"claude-sonnet-4.5","thinking":"high","tokensIn":12987,"tokensOut":643,"cwd":"~/code/x"}}
+{"jsonrpc":"2.0","method":"footer/frame","params":{"provider":"anthropic","model":"claude-haiku-4-5","thinking":"default","tokensIn":0,"tokensOut":0,"cwd":"~/code/x","turn":2,"messages":3,"branch":"main"}}
 ```
 
 ### Host → UI (request, answered on the back-channel)

@@ -1,10 +1,15 @@
 # AGENTS.md — bi/tui-go
 
 > Read `../../AGENTS.md` and `../AGENTS.md` first. This directory is the
-> bi#187 spike: a Go Bubble Tea **v2** TUI shell over a JSON-RPC/NDJSON
-> seam. **Zero changes to `bi/src` or `bi/baml_src`** is the spike's core
-> constraint — keep it that way; bi#188 decides what (if anything) crosses
-> the seam into `bi`.
+> Go Bubble Tea **v2** TUI shell over a JSON-RPC/NDJSON seam, built as
+> the bi#187 spike. **bi#188 has since landed the host side**: behind
+> `BI_TUI=go`, `bi run` spawns this binary from `bi/src/tui_seam.ts`
+> (seam on fds 3/4 — node leaks an open fd 3 into children, so the host
+> MUST pass fds 3/4 explicitly). The spike's "zero changes to bi/src"
+> constraint applied only until bi#188; the seam contract is now
+> `SEAM_CATALOG` in `bi/src/tui_seam.ts`, mirrored by `seam.go` and kept
+> honest by `bi/scripts/seam-parity.mjs` — land catalog and struct
+> changes together.
 
 ## Build / run / drill
 
@@ -100,9 +105,10 @@ is the standing toggle for the split-csi red-check.
 - `main.go` — flags, seam fd/file resolution, `/dev/tty` + raw mode, program wiring
 - `model.go` — the one root Elm model (viewport + textarea + footer + picker + commits)
 - `picker.go` — stacked modal (bubbles/list child model, lipgloss layer)
-- `seam.go` — NDJSON/JSON-RPC codec + message shapes (protocol draft for bi#188)
+- `seam.go` — NDJSON/JSON-RPC codec + message shapes (mirror of `SEAM_CATALOG` in `bi/src/tui_seam.ts`; `bi/scripts/seam-parity.mjs` gates drift)
 - `seqreader.go` — SSH-aware escape-sequence reassembly (`*os.File` pipe)
 - `debuglog.go` — internal-event NDJSON log (drill witness)
 - `fixture/emit.mjs` — plain-node scripted-session emitter (six channels)
 - `drills/main.go` — pty drills: split-csi, paste, sigwinch, session
 - `README.md` — seam message shapes (the bi#188 protocol draft)
+- Host side (bi#188): `bi/src/tui_seam.ts` + `bi/scripts/seam-{parity,run-pty,picker-pty}.mjs` (`npm run test:seam --prefix bi`)

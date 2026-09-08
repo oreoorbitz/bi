@@ -296,6 +296,7 @@ import { footerCwd, gitBranch } from "./footer_info.js";
 import { printMarkdownText } from "./markdown.js";
 import { replayCompactionBlocks } from "./compaction.js";
 import { printCompactionSummary, printSkillBlock } from "./summary-blocks.js";
+import { GoTuiSeam, goTuiRequested, fixtureLlmFn } from "./tui_seam.js";
 
 function printHelp(): void {
 	// BAML is spec: format_help() is bi-renamed pi help (APP_NAME bi, .bi)
@@ -2094,10 +2095,10 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 // `bi run`), so the action log sees each one with zero per-site code.
 // Effect records (edit.write, bais.*) derive from the same call — the
 // executor stays untouched, the wrapper observes.
-function loggingHandler(log: ActionLog | null): (name: string, args: Record<string, unknown>) => Promise<string> {
+function loggingHandler(log: ActionLog | null, seam: GoTuiSeam | null = null): (name: string, args: Record<string, unknown>) => Promise<string> {
 	return async (name: string, args: Record<string, unknown>): Promise<string> => {
 		log?.record("tool.call", `${name} ${safeJson(args).slice(0, 120)}`);
-		const out = await runToolWithStatus(name, args);
+		const out = await runToolWithStatus(name, args, seam);
 		if (name === "write" || name === "edit") log?.record("edit.write", String((args as any)?.path ?? name));
 		if (name === "bais_move") log?.record("bais.move", `${String((args as any)?.id ?? "?")} -> ${String((args as any)?.status ?? "?")}`);
 		if (name === "bais_new") log?.record("bais.new", String((args as any)?.title ?? "").slice(0, 80));
@@ -2105,7 +2106,31 @@ function loggingHandler(log: ActionLog | null): (name: string, args: Record<stri
 	};
 }
 
-async function runToolWithStatus(name: string, args: Record<string, unknown>): Promise<string> {
+// bi#188: ANSI for the seam — the Go shell styles its own lines; BAML
+// shapes the text (theme null), the host strips any residual SGR so only
+// plain data crosses.
+function seamPlain(s: string): string {
+	return s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+}
+
+async function runToolWithStatus(name: string, args: Record<string, unknown>, seam: GoTuiSeam | null = null): Promise<string> {
+	// bi#188: under a live BI_TUI=go seam the Go child owns every terminal
+	// byte — tool start/done cross as tool/start + tool/done data instead
+	// of console.log. A dead seam already warned (named, once); fall back
+	// to the console path below.
+	if (seam?.alive) {
+		const tid = seam.toolStart(name, seamPlain(await format_tool_start_async(name, JSON.stringify(args), { theme: null })));
+		try {
+			const out = await handleTool(name, args);
+			seam.toolDone(tid, true, seamPlain(await format_tool_done_async(name, out, false, { theme: null })));
+			// bi#71 tool diffs are not routed across the seam yet (named
+			// divergence — the Go tool line is one row; see bi#188 NOTES).
+			return out;
+		} catch (e) {
+			seam.toolDone(tid, false, seamPlain(await format_tool_done_async(name, e instanceof Error ? e.message : String(e), true, { theme: null })));
+			throw e;
+		}
+	}
 	const theme = await activeTheme();
 	console.log(await format_tool_start_async(name, JSON.stringify(args), { theme }));
 	try {
@@ -2635,6 +2660,14 @@ async function printWelcomeFrame(backend: ReplBackend, sess: ReplSessionState, f
 // Ctrl-C mid-turn aborts the process (same as `bi run`) — the session file
 // and printed transcript remain.
 async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promise<void> {
+	// bi#188: BI_TUI=go covers the `bi run` turn-render path only — the
+	// interactive REPL (startup modals, slash commands, session pickers,
+	// prompt.ts runModal) is not routed through the Go shell yet. Named
+	// fallback, never a silent swap (bi#55); the pi-tui path below mounts
+	// exactly as without the flag.
+	if (goTuiRequested()) {
+		console.error("[bi] BI_TUI=go: interactive REPL is not routed through the Go shell yet (the flag covers `bi run` turn-render; bi#188) — falling back to pi-tui");
+	}
 	// bi#160: opt-in alt-screen shell (BI_FULLSCREEN=1 on a TTY).
 	// The fullscreen session owns the single terminal: no modal host
 	// lease (a second ProcessTerminal would split stdin), forced
@@ -3353,6 +3386,40 @@ async function main(): Promise<void> {
 			await printMarkdownText(img.text, echoTheme);
 			return;
 		}
+		// bi#188: BI_TUI=go routes the human turn-render path through the
+		// Go Bubble Tea shell (bi/tui-go, bi#187) over the NDJSON/JSON-RPC
+		// seam — tui_seam.ts is the only writer, and the Go process owns
+		// every terminal byte while it lives. Machine modes (--mode
+		// json/rpc), --print, pipes, and image turns stay on the host
+		// path. Spawn failure or a mid-turn crash falls back to pi-tui
+		// with a named warn (bi#55), never a silent swap.
+		let seam: GoTuiSeam | null = null;
+		if (goTuiRequested()) {
+			const m = getFlag(args, "--mode");
+			if (m === "json" || m === "rpc" || hasFlag(args, "--print") || hasFlag(args, "-p")) {
+				console.error("[bi] BI_TUI=go ignored — machine/plain output modes stay on the host path");
+			} else if (!process.stdout.isTTY) {
+				console.error("[bi] BI_TUI=go ignored — stdout is not a TTY (the Go shell renders on /dev/tty)");
+			} else {
+				const started = await GoTuiSeam.start({
+					onDead: (reason) => console.error(`[bi] BI_TUI=go: ${reason} — falling back to pi-tui output`),
+				});
+				if ("error" in started) {
+					console.error(`[bi] BI_TUI=go requested but the Go shell did not start (${started.error}) — falling back to pi-tui`);
+				} else {
+					seam = started.seam;
+				}
+			}
+		}
+		// bi#188 drill seam: BI_LLM_FIXTURE=<json> scripts canned turns
+		// offline (the issue's "scripted prompt fixtures" path — no API
+		// key needed). Drill-only; never set in production.
+		const fixturePath = process.env.BI_LLM_FIXTURE ?? null;
+		const fixtureFn = fixturePath ? await fixtureLlmFn(fixturePath, seam) : null;
+		if (seam) {
+			seam.agentEvent("spinner_start", "Thinking…");
+			seam.footerFrame({ provider, model, thinking: thinkingLevel ?? "default", tokensIn: 0, tokensOut: 0, cwd: footerCwd(), turn: 0, messages: 0, branch: gitBranch() ?? undefined });
+		}
 		let result: Awaited<ReturnType<typeof runAgent>>;
 		try {
 			result = await runAgent(fullPrompt + skillsSection, {
@@ -3367,12 +3434,26 @@ async function main(): Promise<void> {
 				azureDeployment,
 				azureApiVersion,
 				tools: runTools,
-				toolHandler: loggingHandler(turnLog),
+				toolHandler: loggingHandler(turnLog, seam),
 				notify: subscriber?.queue,
 				keeper,
+				...(fixtureFn ? { llmFn: fixtureFn } : {}),
+				// bi#188: live stream across the seam — the same BAML-chunked
+				// incremental path the REPL uses, deltas as plain data.
+				...(seam
+					? {
+							onAssistantText: async (text: string) => {
+								await streamTextIncremental(text, (delta) => {
+									seam.assistantDelta(delta);
+								}, { isCancelled: () => !seam.alive });
+							},
+						}
+					: {}),
 				// bi#97: human modes emit the compaction transcript block;
 				// --mode json stays machine-clean (block data is in messages).
-				...(getFlag(args, "--mode") === "json" ? {} : { compaction: { onCompacted: async (info: { summary: string; foldedTurns: number; tokensBefore: number; tokensAfter: number }) => { await printCompactionSummary({ summary: info.summary, tokensBefore: info.tokensBefore, tokensAfter: info.tokensAfter, foldedTurns: info.foldedTurns, theme: null }); } } }),
+				// bi#188: under a live seam the block would poison the Go
+				// frame — a status event carries the fact instead.
+				...(getFlag(args, "--mode") === "json" ? {} : { compaction: { onCompacted: async (info: { summary: string; foldedTurns: number; tokensBefore: number; tokensAfter: number }) => { if (seam?.alive) { seam.agentEvent("status", `compacted ${info.foldedTurns} turn(s)`); return; } await printCompactionSummary({ summary: info.summary, tokensBefore: info.tokensBefore, tokensAfter: info.tokensAfter, foldedTurns: info.foldedTurns, theme: null }); } } }),
 			});
 			turnLog.record("turn.end", result.failure ? `failed:${result.failure.kind}` : "ok");
 		} finally {
@@ -3389,6 +3470,42 @@ async function main(): Promise<void> {
 				}
 			}
 			if (subscriber) await subscriber.stop();
+		}
+
+		// bi#188: with a live seam the Go shell rendered the whole turn —
+		// stream, tool lines, footer — so the result crosses as turn/result
+		// markdown data and the host prints nothing else to the terminal
+		// until the child has exited. A dead seam already warned (named);
+		// the run falls through to the normal host dump below.
+		if (seam?.alive) {
+			seam.agentEvent("spinner_stop", "");
+			if (result.failure) {
+				seam.turnResult(`**TurnFailure ${result.failure.kind}** (retry_safe=${result.failure.retry_safe})\n\n${result.failure.message}`);
+			} else {
+				let markdown = finalText(result) ?? "";
+				// bi#188 drill fixture: a picker fired mid-stream settles
+				// after the loop (the text turn ends it first) — surface
+				// the choice in the committed markdown so the answer's
+				// arrival at the host is visible in scrollback.
+				const pickerAns = fixtureFn ? await fixtureFn.pickerAnswer() : null;
+				if (pickerAns && typeof pickerAns === "object") markdown += `\n\nfollow-up chosen: ${pickerAns.itemId}`;
+				else if (pickerAns === "cancelled") markdown += "\n\nfollow-up: cancelled";
+				seam.turnResult(markdown);
+			}
+			seam.footerFrame({ provider, model, thinking: thinkingLevel ?? "default", tokensIn: 0, tokensOut: 0, cwd: footerCwd(), turn: result.turns.length, messages: result.messages.length, branch: gitBranch() ?? undefined });
+			const seamExit = await seam.close();
+			if (result.failure) {
+				console.error(`TurnFailure: kind=${result.failure.kind} retry_safe=${result.failure.retry_safe} message=${result.failure.message}`);
+				const guidance = await GuidanceFor_async(result.failure.kind, provider);
+				if (guidance) console.error(guidance);
+				process.exit(1);
+			}
+			console.error(`[bi] go-tui session closed (exit ${seamExit})`);
+			return;
+		}
+		if (seam) {
+			// Crash path: reap quietly — onDead already named the failure.
+			await seam.close();
 		}
 
 		// bi#14 run modes: --mode json emits one JSON RunEvent per line on
