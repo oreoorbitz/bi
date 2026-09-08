@@ -1,12 +1,15 @@
 // bi/scripts/footer-pin.mjs — HostFooter conformance (bi#67 + brand model row
-// + bi#184 row dedup + bi#186 tips slot shape).
+// + bi#184 row dedup + bi#186 tips slot shape + bi#194 CUP-only transport).
 // Captures the byte stream, replays it on a region-aware virtual screen,
 // and asserts (1) pipes get the plain printed footer plus the plain model
-// line with zero escapes, (2) TTY setup reserves the last TWO rows via
-// DECSTBM (frame row N-1, brand model row N), (3) repaints are differential
+// line with zero escapes, (2) TTY setup paints the last TWO rows by
+// absolute CUP with ZERO DECSTBM — bi#194 gave the footer rows one owner
+// and one transport (HostFooter absolute CUP on every repaint); no scroll
+// region exists anywhere in the stack, (3) repaints are differential
 // per row (unchanged rows write zero bytes, changed rows rewrite without
-// clear/reset), (4) both rows survive region scrolling, (5) resize
-// reinstalls, (6) dispose resets the region and erases both rows, and
+// clear/reset), (4) mid-turn bypass output may scroll the footer rows and
+// the post-turn repaint re-pins them by CUP, (5) resize repaints at the
+// new geometry, (6) dispose erases both rows with zero DECSTBM, and
 // (7) the BAML frame is byte-identical to format_repl_footer on wide
 // terminals (the contract the host's pipe fallback relies on).
 // bi#184: the model row is ctx-only — the provider/model · thinking
@@ -14,6 +17,21 @@
 // the right-aligned muted tips slot on the model row; rotation/dispose/
 // hint behavior lives in footer-tips.mjs. Harnesses inject an empty tips
 // corpus so the async BAML corpus load stays out of the byte pins.
+//
+// bi#194 red-check record (bi#57), 2026-09-08 (kimi-tui194) — the removed
+// transport resurrected:
+//   hunk:     `this.write(`\x1b[1;${rows - 2}r`);` re-added to
+//             HostFooter.install (bi/src/tui.ts) after the \x1b[s.
+//   expected: the zero-DECSTBM pins FAIL — the install emits \x1b[1;22r
+//             again.
+//   observed: FAIL: setup writes zero DECSTBM (CUP-only transport, bi#194)
+//             FAIL: transcript tail sits above the re-pinned rows (got
+//             "t29" / "")  — region scroll semantics return, moving the
+//             transcript window
+//             FAIL: resize writes zero DECSTBM (bi#194)
+//             (all three trace to the resurrected region; nothing else
+//             red).
+//   restore:  hunk re-removed → footer-pin: all green.
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -31,10 +49,13 @@ const check = (cond, msg) => {
 	} else console.log(`ok: ${msg}`);
 };
 
-// Region-aware screen: printable runs, \n (scrolls inside DECSTBM),
-// \r, EL 2K, save/restore, CUP row;colH, DECSTBM top;bottom r / reset r.
-// Anything else throws (byte contract stays explicit).
-function replay(bytes) {
+// Region-aware screen: printable runs, \n (scrolls inside DECSTBM when a
+// region is set, else at the screen bottom when `rows` is given), \r,
+// EL 2K, save/restore, CUP row;colH, DECSTBM top;bottom r / reset r.
+// Anything else throws (byte contract stays explicit). bi#194: no bi
+// code path writes DECSTBM anymore — the `r` arm stays so pre-194 byte
+// streams still replay, and the sections pin its absence by regex.
+function replay(bytes, rows = Number.POSITIVE_INFINITY) {
 	const grid = [""];
 	let y = 0;
 	let x = 0;
@@ -48,10 +69,16 @@ function replay(bytes) {
 		const c = bytes[i];
 		if (c === "\n") {
 			x = 0;
-			const bottomIdx = region.bottom === Number.POSITIVE_INFINITY ? -1 : region.bottom - 1;
+			const bottomIdx =
+				region.bottom === Number.POSITIVE_INFINITY
+					? rows === Number.POSITIVE_INFINITY
+						? -1
+						: rows - 1
+					: region.bottom - 1;
 			if (y === bottomIdx) {
 				// Scroll the region up one, clear the freed bottom row.
-				for (let r = region.top - 1; r < bottomIdx; r++) grid[r] = grid[r + 1] ?? "";
+				const topIdx = region.bottom === Number.POSITIVE_INFINITY ? 0 : region.top - 1;
+				for (let r = topIdx; r < bottomIdx; r++) grid[r] = grid[r + 1] ?? "";
 				grid[bottomIdx] = "";
 			} else {
 				y++;
@@ -135,11 +162,12 @@ function harness(rows, tty, tips = { corpus: [] }) {
 	check(h.bytes() === "", "dispose without install is silent");
 }
 
-// 2 — TTY setup: DECSTBM reserves the last two rows, cursor restored.
+// 2 — TTY setup: absolute CUP paints both rows, ZERO DECSTBM (bi#194 —
+// one owner/transport for the footer rows), cursor restored.
 {
 	const h = harness(24, true);
 	h.footer.show(F1, M1, F1);
-	check(h.bytes().includes("\x1b[1;22r"), "setup installs scroll region 1..22");
+	check(!/\x1b\[\d*(;\d*)?r/.test(h.bytes()), "setup writes zero DECSTBM (CUP-only transport, bi#194)");
 	check(h.bytes().includes("\x1b[23;1H"), "setup addresses frame row 23");
 	check(h.bytes().includes("\x1b[24;1H"), "setup addresses model row 24");
 	const screen = replay(h.bytes());
@@ -163,9 +191,12 @@ function harness(rows, tty, tips = { corpus: [] }) {
 	h.clear();
 	h.footer.show(F2, M1, F1);
 	check(!h.bytes().includes("\x1b[2J"), "repaint never full-clears");
-	check(!h.bytes().includes("\x1b[r"), "repaint keeps the region (no reset)");
-	check(h.bytes().includes("\x1b[23;1H"), "frame-only change re-addresses row 23");
-	check(!h.bytes().includes("\x1b[24;1H"), "frame-only change leaves row 24 alone");
+	check(!/\x1b\[\d*(;\d*)?r/.test(h.bytes()), "repaint writes zero DECSTBM (bi#194)");
+	check(h.bytes().includes("\x1b[23;1H"), "frame change re-addresses row 23");
+	// bi#194: a frame-row change is the turn-advance signal — the turn's
+	// bypass output may have scrolled row N away, so the repaint re-pins
+	// BOTH rows even when the model text matches.
+	check(h.bytes().includes(`\x1b[24;1H\x1b[2K${M1}`), "frame change also re-pins row 24 (turn ran, bi#194)");
 	const screen = replay(h.bytes());
 	check(screen.grid[22] === F2, "repainted frame row converges");
 	h.clear();
@@ -176,7 +207,10 @@ function harness(rows, tty, tips = { corpus: [] }) {
 	check(screen2.grid[23] === M2, "repainted model row converges");
 }
 
-// 5 — region scroll: transcript scrolls above both pinned rows.
+// 5 — mid-turn output + re-pin (bi#194): with no scroll region, bypass
+// turn output scrolls the WHOLE screen, footer rows included; the
+// post-turn repaint (the turn counter increments every turn, so the
+// differential always fires) re-pins both rows by absolute CUP.
 {
 	const h = harness(24, true);
 	h.footer.show(F1, M1, F1);
@@ -185,20 +219,26 @@ function harness(rows, tty, tips = { corpus: [] }) {
 	let transcript = "";
 	for (let n = 0; n < 30; n++) transcript += `t${n}\n`;
 	// Transcript (stdout) and footer (stderr) share the terminal: the
-	// install paints both rows first, then output scrolls the region.
-	const screen = replay(install + transcript);
-	check(screen.grid[22] === F1, "frame survives 30 scrolled lines");
-	check(screen.grid[23] === M1, "model row survives 30 scrolled lines");
-	// The last newline scrolled and left the cursor row empty — a real
-	// terminal shows the same: 21 lines plus the empty cursor row.
+	// install paints both rows, output scrolls them away, the post-turn
+	// show() re-pins (frame text changes with the turn count).
+	h.footer.show(F2, M1, F1);
+	const repaint = h.bytes();
+	check(repaint.includes(`\x1b[23;1H\x1b[2K${F2}`), "post-turn repaint re-addresses the frame row");
+	check(repaint.includes(`\x1b[24;1H\x1b[2K${M1}`), "post-turn repaint re-pins the model row too (bi#194)");
+	const screen = replay(install + transcript + repaint, 24);
+	check(screen.grid[22] === F2, "frame row re-pinned after 30 scrolled lines");
+	check(screen.grid[23] === M1, "model row re-pinned after 30 scrolled lines");
+	// The output scrolled the whole screen: the last transcript lines sit
+	// directly above the re-pinned footer rows (t7..t29 on rows 1..22,
+	// t29 overwritten by the re-pinned frame row).
 	check(
-		JSON.stringify(screen.grid.slice(0, 21)) === JSON.stringify(Array.from({ length: 21 }, (_, k) => `t${k + 9}`)) &&
-			screen.grid[21] === "",
-		`transcript window is t9..t29 plus empty cursor row (got ${JSON.stringify(screen.grid[0])}..${JSON.stringify(screen.grid[21])})`,
+		screen.grid[21] === "t28" && screen.grid[20] === "t27",
+		`transcript tail sits above the re-pinned rows (got ${JSON.stringify(screen.grid[20])} / ${JSON.stringify(screen.grid[21])})`,
 	);
 }
 
-// 6 — resize reinstalls the region and repaints even for identical text.
+// 6 — resize repaints at the new geometry even for identical text (no
+// region to reinstall, bi#194).
 {
 	let rows = 24;
 	let out = "";
@@ -209,22 +249,23 @@ function harness(rows, tty, tips = { corpus: [] }) {
 	out = "";
 	rows = 20;
 	footer.show(F1, M1, F1);
-	check(out.includes("\x1b[1;18r"), "resize reinstalls the region");
+	check(!/\x1b\[\d*(;\d*)?r/.test(out), "resize writes zero DECSTBM (bi#194)");
+	check(out.includes("\x1b[19;1H") && out.includes("\x1b[20;1H"), "resize re-addresses both rows at the new geometry");
 	const screen = replay(out);
 	check(screen.grid[18] === F1, "frame re-pins to row 19");
 	check(screen.grid[19] === M1, "model re-pins to the new bottom row");
 }
 
-// 7 — dispose: region reset, both rows erased, transcript intact.
+// 7 — dispose: both rows erased, transcript intact, zero DECSTBM (no
+// region to reset, bi#194).
 {
 	const h = harness(24, true);
 	h.footer.show(F2, M2, F1);
 	h.clear();
 	h.footer.dispose();
-	check(h.bytes().includes("\x1b[r"), "dispose resets the scroll region");
+	check(!/\x1b\[\d*(;\d*)?r/.test(h.bytes()), "dispose writes zero DECSTBM (bi#194)");
 	const screen = replay(h.bytes());
 	check(screen.grid[22] === "" && screen.grid[23] === "", "dispose erases both rows");
-	check(screen.region.bottom === Number.POSITIVE_INFINITY, "region is full after dispose");
 }
 
 // 8 — degenerate screen (rows < 3): plain fallback, no escapes.

@@ -19,6 +19,20 @@
 //   pc-exit        clean exit 0
 // The driver (paint-chain-pty.py) answers kitty query bursts itself —
 // mute ptys are insufficient evidence for paint geometry (bi#179 lesson).
+//
+// bi#194 red-check record (bi#57), 2026-09-08 (kimi-tui194) — the footer
+// re-pin hook (ensureReplTui's term.write wrapper → HostFooter.repin,
+// bi/src/tui.ts) is what keeps rows N-1/N footer-owned now that no
+// DECSTBM region absorbs pi-tui's full-height frame dumps:
+//   hunk:     DECSTBM removed from HostFooter.install WITHOUT the
+//             re-pin hook (the intermediate build during the bi#194
+//             work — equivalent to reverting `liveFooter?.repin()`).
+//   expected: pc-footer FAILs — pi-tui's relative dumps stream blank
+//             padding over rows N-1/N and nothing reasserts them.
+//   observed: `FAIL  pc-footer frame rows pinned —` with GEOM
+//             foot1='' foot2='' (pc-dock/pc-glyph/pc-exit still green —
+//             the failure is specific to the footer rows).
+//   restore:  re-pin hook added → paint-chain drill: green.
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";

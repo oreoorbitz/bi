@@ -265,14 +265,15 @@ check(JSON.stringify(screen2.grid) === JSON.stringify([...B, "bi#04  Delta"]), "
 	check(selBody.trimEnd().split("\n").pop() === divider, "select frame closes with the BAML divider");
 	check(selBody.includes("alpha") && selBody.includes("beta"), "select frame carries the BAML rows");
 
-	// HostFooter narrow TTY (cols 30): region installs, frame pins to N-1,
-	// the model row erases (never model text), replay converges.
+	// HostFooter narrow TTY (cols 30): CUP-only install (zero DECSTBM,
+	// bi#194), frame pins to N-1, the model row erases (never model
+	// text), replay converges.
 	let nout = "";
 	const nfooter = new HostFooter(() => ({ rows: 24, cols: 30 }), () => true, (s) => {
 		nout += s;
 	});
 	nfooter.show("F1", "M1", "F1");
-	check(nout.includes("\x1b[1;22r"), "narrow install still reserves the scroll region");
+	check(!/\x1b\[\d*(;\d*)?r/.test(nout), "narrow install writes zero DECSTBM (bi#194 CUP-only)");
 	check(nout.includes("\x1b[23;1H\x1b[2KF1"), "narrow install sets frame row 23");
 	check(nout.includes("\x1b[24;1H\x1b[2K"), "narrow install erases model row 24");
 	check(!nout.includes("M1"), "narrow install never paints model text");

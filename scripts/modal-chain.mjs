@@ -23,6 +23,19 @@
 // The transport (e2e-pty-spawn.py, same helper the e2e harness uses)
 // answers kitty query bursts itself — mute ptys never reproduced this
 // bug, so the drill must speak kitty replies (acceptance requirement).
+//
+// bi#194 audit (bi#57 red-checks), 2026-09-08 (kimi-tui194) — both
+// runModal steps re-verified STILL LOAD-BEARING before the bi#194
+// transport work; neither is a dead band-aid:
+//   step 1 (dirty-span) removed → first run green by race luck, then 2/2
+//     repeats FAIL: `FAIL  mc-chain trust→picker→prompt survives, exit 0
+//     — code=0 prompts=1` (the remounted bi[0]> never paints — the
+//     exact invisible-remount mechanism; mc-help/mc-kept still green).
+//     Restored → green.
+//   step 2 (raw/resume reset) removed → all three checks FAIL
+//     (mc-chain prompts=1, mc-help, mc-kept; exit 0) — the bi#179
+//     post-picker vanish signature, reproducing the salvage red-check.
+//     Restored → green.
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";

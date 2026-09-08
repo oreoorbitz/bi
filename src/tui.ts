@@ -44,6 +44,15 @@ export interface ReplTuiHost {
 let replTuiHost: ReplTuiHost | null = null;
 let replTuiLeases = 0;
 
+// bi#194: the live HostFooter (at most one per process — cli.ts
+// constructs a single footer for the REPL). Registered by the HostFooter
+// constructor, cleared by its dispose; ensureReplTui's frame hook calls
+// repin() on it after every pi-tui frame so the footer's CUP transport
+// reasserts rows N-1/N (pi-tui's relative full-height dumps stream over
+// them — the pre-194 DECSTBM region absorbed that at the boundary; with
+// the region gone the owner re-pins instead). Null in drills and pipes.
+let liveFooter: { repin(): void } | null = null;
+
 /** True while a REPL/login flow holds the host across modals. */
 export function replTuiLeased(): boolean {
 	return replTuiLeases > 0;
@@ -65,6 +74,18 @@ export function ensureReplTui(logDir: string): ReplTuiHost {
 	if (replTuiHost) return replTuiHost;
 	const term = new ProcessTerminal();
 	const ui: TUI = new TuiMainScreen(term, false, logDir);
+	// bi#194 frame hook: after every pi-tui frame write the live footer
+	// re-pins its rows by absolute CUP (its dumps stream over rows N-1/N
+	// now that no scroll region absorbs them). terminal.write is the
+	// frame choke point — the library's query/control bytes go through
+	// process.stdout directly, so this fires once per frame buffer, not
+	// per control sequence. The footer's own writes target stderr and
+	// never re-enter here.
+	const frameWrite = term.write.bind(term);
+	term.write = (data: string): void => {
+		frameWrite(data);
+		liveFooter?.repin();
+	};
 	// Inert base layer: readline owns the REPL screen, so the host's
 	// own frame is empty — modals composite over it via showOverlay
 	// and hide() repaints back to it (shrink-clear erases modal rows).
@@ -335,8 +356,21 @@ export async function renderSelectList(text: string, cursor: number, width?: num
 }
 // Pinned bottom-row footer (bi#67). BAML owns the frame line
 // (render_footer_frame, width-capped to one row); the host owns the
-// scroll region + repaint. DECSTBM reserves the last row, so turn output
-// scrolls above the footer instead of pushing it away.
+// repaint.
+//
+// bi#194: ONE paint transport owns the footer rows — HostFooter
+// addresses rows N-1/N with absolute CUP on every repaint, and no
+// scroll region exists anywhere in the stack (pi-tui paints relatively
+// and region-free; the pre-194 DECSTBM region interleaved with that
+// relative painting at the rows-2 boundary). pi-tui's relative
+// full-height frame dumps still stream over the footer rows (the region
+// used to absorb them; the overlay margin only shapes the overlay box,
+// not the base-frame dump), so the owner reasserts its rows after every
+// host frame via the ensureReplTui frame hook (repin()). Named
+// residual: mid-turn bypass output (console.log turn text) scrolls the
+// whole screen, footer rows included — the post-turn show() re-pins
+// them (the turn counter increments every turn, so the differential
+// always fires, and a frame-row change re-pins BOTH rows).
 //
 // bi#184: row N-1 (frame) carries provider/model · thinking · counters ·
 // cwd · branch; row N (model line) carries ONLY the catalog ctx window —
@@ -354,11 +388,12 @@ export async function renderSelectList(text: string, cursor: number, width?: num
 //
 // Readline coexistence: repaints happen only between turns (no active
 // question pending), save the cursor, address the footer row absolutely,
-// and restore — readline's in-progress line is never touched. Row N is
-// only ever addressed by HostFooter (region scrolling cannot reach it),
-// which is what makes the differential skip sound. Pipes and degenerate
-// screens fall back to a plain printed line, byte-identical to the
-// pre-footer console.error readout.
+// and restore — readline's in-progress line is never touched. Rows
+// N-1/N carry only HostFooter content: pi-tui frames may stream over
+// them, but the frame hook re-pins after every frame, which is what
+// keeps the differential skip sound. Pipes and degenerate screens fall
+// back to a plain printed line, byte-identical to the pre-footer
+// console.error readout.
 // Width below which the brand model line hides (bi#163 responsive demo via
 // visible(viewport)): narrow terminals keep the footer + transcript rows,
 // never clip chrome to fit. Mirrors the composeFrame narrow-width drill.
@@ -416,6 +451,21 @@ export class HostFooter {
 		// BAML value.
 		this.tipsIntervalMs = tips?.intervalMs ?? 10000;
 		if (!tips) void this.loadTips();
+		liveFooter = this;
+	}
+	// bi#194: reassert both rows after a pi-tui frame (the host's relative
+	// dumps stream over rows N-1/N now that no scroll region absorbs
+	// them). Absolute CUP behind save/restore — the same transport as
+	// every other HostFooter write, so the footer rows keep exactly one
+	// owner. No-op unless installed on a roomful TTY at the installed
+	// geometry (a resize routes through render() instead).
+	repin(): void {
+		if (this.installedRows === 0 || this.lastFrame === null) return;
+		const { rows } = this.dims();
+		if (!this.tty() || rows < 3 || rows !== this.installedRows) return;
+		this.write("\x1b[s");
+		this.paintBody(rows, this.lastFrame, this.lastModel);
+		this.write("\x1b[u");
 	}
 	// Loads the BAML corpus + cadence and the chrome palette override,
 	// then repaints so the slot appears without waiting a full interval.
@@ -442,8 +492,8 @@ export class HostFooter {
 	// hides below MODEL_LINE_MIN_WIDTH via visible(viewport). Fallback is
 	// the plain printed footer + plain model line for pipes (byte-identical
 	// to the old readout plus one line). Differential per row: unchanged
-	// rows on an unchanged screen write zero bytes. A resize reinstalls
-	// the region and repaints even when the text matches.
+	// rows on an unchanged screen write zero bytes. A resize repaints at
+	// the new geometry even when the text matches.
 	show(frame: string, model: string, fallback: string): void {
 		this.lastArgs = { frame, model, fallback };
 		this.render();
@@ -501,7 +551,7 @@ export class HostFooter {
 		if (pad < 1) return row;
 		return row + " ".repeat(pad) + styled;
 	}
-	// Tips rotation timer: started once the region is live on a TTY,
+	// Tips rotation timer: started once the footer is live on a TTY,
 	// cleared by reset/dispose, unref'd so drills and one-shot runs never
 	// hang on it. The guard is the bi#186 no-double-fire pin: repeated
 	// renders never stack intervals. Each tick advances and repaints
@@ -519,16 +569,17 @@ export class HostFooter {
 		if (this.tipTimer) clearInterval(this.tipTimer);
 		this.tipTimer = null;
 	}
-	// Tears down the region and erases both rows; silent when the
-	// region was never installed (pipes stay escape-free).
+	// Tears down the footer and erases both rows; silent when the
+	// footer was never installed (pipes stay escape-free).
 	dispose(): void {
+		if (liveFooter === this) liveFooter = null;
 		this.reset();
 	}
-	// Homes the cursor to the last scroll-region row (directly above
-	// the two pinned footer rows) so the next readline prompt draws as
-	// part of the footer block instead of floating mid-screen. No-op
-	// unless the region is installed — pipes and short screens keep
-	// today's inline prompt byte-identical.
+	// Homes the cursor to the row directly above the two pinned footer
+	// rows so the next readline prompt draws as part of the footer block
+	// instead of floating mid-screen. No-op unless the footer is
+	// installed — pipes and short screens keep today's inline prompt
+	// byte-identical.
 	homeInput(): void {
 		if (this.installedRows === 0) return;
 		const { rows } = this.dims();
@@ -536,10 +587,10 @@ export class HostFooter {
 		this.write(`\x1b[${rows - 2};1H`);
 	}
 	private install(rows: number, frame: string, model: string | null): void {
-		// DECSTBM homes the cursor, so save first; paint both rows,
-		// then restore — the transcript cursor never moves.
+		// Paint both rows behind save/restore — the transcript cursor
+		// never moves. Absolute CUP is the only transport (bi#194: no
+		// scroll region anywhere in the stack).
 		this.write("\x1b[s");
-		this.write(`\x1b[1;${rows - 2}r`);
 		this.paintBody(rows, frame, model);
 		this.write("\x1b[u");
 		this.installedRows = rows;
@@ -548,10 +599,16 @@ export class HostFooter {
 	}
 	private paint(rows: number, frame: string, model: string | null): void {
 		this.write("\x1b[s");
-		// Repaint only changed rows (no clear, no region reset). A hidden
+		// Repaint changed rows (no clear, absolute CUP per row). A hidden
 		// model (narrow viewport) erases row N instead of writing text.
-		if (this.lastFrame !== frame) this.write(`\x1b[${rows - 1};1H\x1b[2K${frame}`);
-		if (this.lastModel !== model) this.write(`\x1b[${rows};1H\x1b[2K${model ?? ""}`);
+		// bi#194: a frame-row change means a turn just ran, and the turn's
+		// bypass output may have scrolled row N away — with no region
+		// protecting it, the post-turn repaint re-pins BOTH rows even when
+		// the model text matches. Model-only changes (tips rotation,
+		// hints) still leave the frame row alone.
+		const frameChanged = this.lastFrame !== frame;
+		if (frameChanged) this.write(`\x1b[${rows - 1};1H\x1b[2K${frame}`);
+		if (frameChanged || this.lastModel !== model) this.write(`\x1b[${rows};1H\x1b[2K${model ?? ""}`);
 		this.write("\x1b[u");
 		this.lastFrame = frame;
 		this.lastModel = model;
@@ -564,7 +621,6 @@ export class HostFooter {
 		this.clearTipsTimer();
 		if (this.installedRows === 0) return;
 		this.write("\x1b[s");
-		this.write("\x1b[r");
 		this.write(`\x1b[${this.installedRows - 1};1H\x1b[2K`);
 		this.write(`\x1b[${this.installedRows};1H\x1b[2K`);
 		this.write("\x1b[u");
