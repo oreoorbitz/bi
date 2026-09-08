@@ -78,6 +78,28 @@ testset "tui" {
         assert.equal(format_status("⠋", "thinking", 300, ""), "⠋ thinking · 300ms · …");
     }
 
+    test "status_event_tail word boundaries" {
+        // Fits: verbatim, no ellipsis.
+        assert.equal(status_event_tail("short text", 60), "short text");
+        // Windowed mid-word: drops the partial word, single leading ….
+        assert.equal(
+            status_event_tail("my honest read: **bi#190** is trivial", 22),
+            "…bi#190** is trivial",
+        );
+        assert.equal(
+            status_event_tail("my honest read: **bi#190** is trivial", 20),
+            "…is trivial",
+        );
+        // Orphaned emphasis at the cut is stripped.
+        assert.equal(status_event_tail("alpha x **beta gamma", 13), "…beta gamma");
+        // Overlong single token: hard cut with ellipsis.
+        assert.equal(status_event_tail("abcdefghijklmnop", 8), "…ijklmnop");
+        // Newlines flatten so the event stays on the status row.
+        assert.equal(status_event_tail("line one\nline two", 60), "line one line two");
+        // Degenerate window.
+        assert.equal(status_event_tail("anything", 0), "");
+    }
+
     test "format_turn_summary shapes" {
         assert.equal(
             format_turn_summary(false, "", 3, 6, 6100),

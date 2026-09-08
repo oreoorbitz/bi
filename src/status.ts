@@ -24,7 +24,7 @@
 // always resets to working + unregisters — states never leak across turns.
 
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import { format_status_label } from "../baml_sdk/index.js";
+import { format_status_label, status_event_tail } from "../baml_sdk/index.js";
 
 export type StatusKind = "working" | "retry" | "compaction" | "branchSummary";
 export const STATUS_KINDS: StatusKind[] = ["working", "retry", "compaction", "branchSummary"];
@@ -201,6 +201,12 @@ export class KindStatus implements StatusSink {
 		this.event = e;
 		if (!this.tty) console.error(`[loop] ${e}`);
 	}
+	// bi#191: frequent event updates (per-chunk stream tails) set the event
+	// without the pipe fallback — one `[loop]` line per chunk would spam
+	// logs. Loop lifecycle events keep onEvent's logging.
+	setEvent(e: string): void {
+		this.event = e;
+	}
 	private elapsed(): number {
 		return Date.now() - this.startMs;
 	}
@@ -223,4 +229,18 @@ export class KindStatus implements StatusSink {
 		this.state = defaultStatusState(this.state.label);
 		this.refresh();
 	}
+}
+
+// bi#191: accumulate stream deltas and mirror them into the status event as
+// a word-boundary tail (BAML status_event_tail). Shared by the cli turn path
+// and the drill so the drill pins the production wiring, not a copy. The
+// draft never touches stderr as raw deltas: appended chunks shared the
+// in-place status row, and wrapped upper rows settled into scrollback as
+// mid-word debris (`…ve`, `…i#190**`).
+export function statusEventTailUpdater(status: KindStatus, maxChars: number): (delta: string) => void {
+	let shown = "";
+	return (delta: string) => {
+		shown += delta;
+		status.setEvent(status_event_tail(shown, maxChars));
+	};
 }

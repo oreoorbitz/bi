@@ -61,6 +61,40 @@ function format_status(spinner: string, label: string, elapsed_ms: int, event: s
     `${spinner} ${label} · ${format_elapsed(elapsed_ms)} · ${ev}`
 }
 
+// bi#191: live status event tail — a trailing window of the streaming
+// assistant text, cut at a word boundary. A raw char cut leaves mid-word
+// fragments (`…ve`) that glue to the status line and persist in scrollback
+// when the row settles; an emphasis marker orphaned by the cut (`**` with
+// no opener) reads as literal junk. Rules:
+//  - text fits the window: verbatim, no ellipsis
+//  - windowed: drop the partial leading word at the first space inside the
+//    window, prepend a single `…` (content was actually dropped)
+//  - no space in the window (one overlong token): hard cut + `…`
+// Newlines flatten to spaces first — the event rides a single-row paint.
+function strip_leading_marks(s: string) -> string {
+    let out = s;
+    while (out.starts_with("*") || out.starts_with("_") || out.starts_with("`")) {
+        out = out.slice(1, out.length())
+    }
+    out
+}
+
+function status_event_tail(text: string, max_chars: int) -> string {
+    let flat = text.replace_all("\n", " ").trim();
+    if (max_chars <= 0) {
+        ""
+    } else if (flat.length() <= max_chars) {
+        flat
+    } else {
+        let window = flat.slice(flat.length() - max_chars, flat.length());
+        let cut = match (window.index_of(" ")) {
+            null => window,
+            let i: int => window.slice(i + 1, window.length()),
+        };
+        `…${strip_leading_marks(cut)}`
+    }
+}
+
 // Final line replacing the status: `✓ done · 3 turns · 6.1s` /
 // `✗ TurnFailure <kind> · 2 turns · 6.1s`. Host passes counts, BAML shapes.
 // The whole line takes the good/bad role so the outcome reads at a glance;

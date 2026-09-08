@@ -12,6 +12,15 @@
 // lines), observing `FAIL stop resets to working` + `FAIL stop releases the
 // sink`, then restoring and re-running green. A passing suite that cannot go
 // red on a removed reset would be camouflage, not coverage.
+//
+// Red-check (bi#57, bi#191 arm): revert statusEventTailUpdater to write raw
+// deltas (`process.stderr.write(delta)` instead of the setEvent tail) and
+// the arm fails `draft head never written raw` + `every event segment
+// within tail window`; restored, green. Observed 2026-09-08:
+//   FAIL draft head never written raw — head leaked
+//   FAIL every event segment within tail window — [132,2,2,6]
+//   FAIL a paint carries the word-boundary tail — …is the most
+//   PROBE 3 FAILURES
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -150,6 +159,58 @@ const fns = { formatStatus: format_status, formatSummary: format_turn_summary };
 	check("compaction spliced history", out !== null && out.messages.length === 2 && out.cut === 5, JSON.stringify(out && { cut: out.cut, n: out.messages.length }));
 	check("compaction wait showed compaction state", kindDuringSummarize === "compaction", kindDuringSummarize);
 	check("compaction restored working", s.kind === "working", s.kind);
+}
+
+// --- bi#191: stream draft rides the status event, never raw stderr ---
+// Replays the cli turn wiring (statusEventTailUpdater per chunk) against a
+// fake 40-col TTY and asserts the settled byte stream carries no raw draft:
+// the draft head falls out of the tail window, every paint's event segment
+// stays within tail+ellipsis, and the row left behind is the BAML summary.
+{
+	const { status_event_tail } = await import(join(ROOT, "..", "dist", "baml_sdk", "index.js"));
+	const { statusEventTailUpdater } = await import(join(ROOT, "..", "dist", "src", "status.js"));
+	const cols = 40;
+	let buf = "";
+	const realWrite = process.stderr.write.bind(process.stderr);
+	const realIsTTY = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+	const realCols = Object.getOwnPropertyDescriptor(process.stderr, "columns");
+	process.stderr.write = (s) => {
+		buf += s;
+		return true;
+	};
+	Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+	Object.defineProperty(process.stderr, "columns", { value: cols, configurable: true });
+	try {
+		const s = new KindStatus("thinking", fns);
+		s.start();
+		const draft = "If you're not sure where to start, my honest read: **bi#190** is trivial, **bi#172** is the most embarrassing self-dogfooding bug.";
+		const onDelta = statusEventTailUpdater(s, 50);
+		for (let i = 0; i < draft.length; i += 30) onDelta(draft.slice(i, i + 30));
+		await new Promise((r) => setTimeout(r, 250)); // a few paints
+		s.stop({ failed: false, detail: "", turns: 1, messages: 2 });
+	} finally {
+		process.stderr.write = realWrite;
+		if (realIsTTY) Object.defineProperty(process.stderr, "isTTY", realIsTTY);
+		if (realCols) Object.defineProperty(process.stderr, "columns", realCols);
+	}
+	const draftHead = "If you're not sure where to start";
+	check("draft head never written raw", !buf.includes(draftHead), buf.includes(draftHead) ? "head leaked" : "");
+	const paintRows = buf.split("\r").map((r) => r.replace("\x1b[2K", "")).filter((r) => r.includes("·"));
+	const segments = paintRows.map((r) => r.slice(r.lastIndexOf("·") + 1).replace(/\n.*$/s, ""));
+	check(
+		"every event segment within tail window",
+		segments.every((seg) => [...seg].length <= 51),
+		JSON.stringify(segments.map((s) => [...s].length)),
+	);
+	check("settled line is the BAML summary", buf.trimEnd().endsWith("✓ done · 1 turn · 2 messages · 250ms") || /✓ done · 1 turn · 2 messages · \d+(\.\d+)?(ms|s)/.test(buf), "");
+	const expectedTail = status_event_tail(
+		"If you're not sure where to start, my honest read: **bi#190** is trivial, **bi#172** is the most embarrassing self-dogfooding bug.",
+		50,
+	);
+	// The 40-col clamp cuts the painted row (`…is the most emb...`), so pin a
+	// short head of the tail that survives truncation, not the whole tail.
+	const tailHead = [...expectedTail].slice(0, 12).join("");
+	check("a paint carries the word-boundary tail", buf.includes(tailHead), tailHead);
 }
 
 const failed = results.filter((r) => !r.ok);

@@ -278,7 +278,7 @@ function bamlErrorMessage(e: unknown): string {
 }
 import { HostTui, HostFooter, renderSelectList, releaseReplTui, retainReplTui, ensureReplTui, runTranscriptSearch, termWidth, composeFrame } from "./tui.js";
 import { FullscreenSession, fullscreenRequested, teeOutputTo } from "./screen-fullscreen.js";
-import { KindStatus } from "./status.js";
+import { KindStatus, statusEventTailUpdater } from "./status.js";
 import { ActionLog, safeJson } from "./actionlog.js";
 import { promptAvailable, askEdit, askText, pickList, pickListWithPreview, type SlashPool } from "./prompt.js";
 import { completePathPrefix, splitSecondWord, unquotePath } from "./paths.js";
@@ -2268,20 +2268,33 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	// slow-turn behavior testable without real provider latency).
 	// bi#97: auto-compaction inside the turn emits its transcript block
 	// (folded turns + reclaimed tokens) with the turn's theme.
-	// bi#168: TTY live stream — each per-turn assistant text surfaces on
-	// stderr while the turn still runs (kimi streaming-ui.ts: draft +
-	// throttled flush + transient render, finalize settles). The settled
+	// bi#168/bi#191: TTY live stream — while the turn runs, the streaming
+	// assistant text surfaces as the status line's event tail (word-boundary
+	// window, BAML status_event_tail) instead of raw stderr deltas, which
+	// wrapped mid-word and settled into scrollback as debris. The settled
 	// stdout transcript below is untouched, so piped output stays
 	// byte-identical single-shot with no control bytes. Abort (bi#16)
 	// flips the guard: partials stop and history is untouched, exactly
 	// as the no-stream path.
 	const streamAlive = process.stdout.isTTY === true;
+	// bi#191: window for the status-line draft tail (status_event_tail) —
+	// sized to fit after `⠁ thinking · 22.3s · ` on an 80-col row.
+	const STATUS_EVENT_TAIL_CHARS = 50;
 	const streamSettled = { current: false };
 	const cancelStream = (): boolean => streamSettled.current || (opts.signal?.aborted ?? false);
 	const turnP = runBiLoop(fullPrompt, { provider: backend.provider, model: backend.model, thinking: backend.thinking, maxTurns: 5, baseUrl: process.env.BI_BASE_URL ?? null, onEvent: (e) => status.onEvent(e), tools: loopTools, toolHandler: loggingHandler(alog), history, compaction: { onCompacted: async (info) => { await printCompactionSummary({ summary: info.summary, tokensBefore: info.tokensBefore, tokensAfter: info.tokensAfter, foldedTurns: info.foldedTurns, theme: turnTheme }); } }, onAssistantText: streamAlive ? async (text) => {
 		if (cancelStream()) return;
-		await streamTextIncremental(text, (delta) => { if (!cancelStream()) process.stderr.write(delta); }, { isCancelled: cancelStream });
-		if (!cancelStream()) process.stderr.write("\n");
+		// bi#191: the draft never touches stderr as raw deltas — appended
+		// chunks shared the in-place status row, and wrapped upper rows
+		// settled into scrollback as mid-word debris (`…ve`, `…i#190**`).
+		// The draft rides the status event instead (statusEventTailUpdater),
+		// width-clamped by the paint path, so the row the turn leaves behind
+		// is only ever the BAML-shaped summary.
+		const onDelta = statusEventTailUpdater(status, STATUS_EVENT_TAIL_CHARS);
+		await streamTextIncremental(text, (delta) => {
+			if (cancelStream()) return;
+			onDelta(delta);
+		}, { isCancelled: cancelStream });
 	} : undefined });
 	type Settled = { done: true; result: Awaited<typeof turnP> } | { done: false };
 	let settled: Settled;
