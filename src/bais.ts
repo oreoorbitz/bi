@@ -8,6 +8,7 @@
 
 import { readdirSync, readFileSync, existsSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { format_issue_index_async, format_skill_index_async } from "../baml_sdk/index.js";
 
 export type BaisIssue = {
 	id: string;
@@ -1017,4 +1018,65 @@ export async function graphBaisIssues(fromId: string, dir?: string): Promise<Bai
 		if (f) out.push(f);
 	}
 	return out;
+}
+
+// Progressive disclosure (hub#206, hermes prompt_builder.py:1191-1219): the
+// prompt carries a compact INDEX rendered by BAML (format_issue_index /
+// format_skill_index in bi/baml_src/issues.baml — one bounded line per
+// entry, hermes' 60-char description rule, sorted so enumeration order
+// never leaks into bytes). Full bodies load on demand as tool results
+// (bais_view/skill_view in tools.ts), never by rebuilding the prompt.
+// BAML owns the render and its baml-test proof; this is the host plumbing:
+// entry extraction from the zero-VM header scan + a session-stable cache.
+
+export type IssueIndexEntry = { id: string; status: string; kind: string; title: string };
+export type SkillIndexEntry = { name: string; description: string };
+
+// Index entries straight from scanBaisHeaders — readdir + line scan, zero
+// BAML VM calls, the same O(file bytes) fast path /issues uses. Unparseable
+// files are skipped rather than fabricating id/status (same never-fabricate
+// rule as loadBaisIssues; `bais check` names them).
+export function issueIndexEntries(dir?: string): IssueIndexEntry[] {
+	return scanBaisHeaders(dir)
+		.headers.filter((h) => h.parseable)
+		.map((h) => ({ id: h.id, status: h.status, kind: h.kind, title: h.title }));
+}
+
+// Byte-stability within a session (hub#206 acceptance): the injected block
+// must not change between turns unless the underlying issues actually
+// changed, or prompt caches miss every turn. Keyed by issues dir; the value
+// is the rendered block plus the scan fingerprint it was rendered from
+// (file count + max mtime — a touch, an add, or a delete all move it). A
+// scan with the same fingerprint reuses the cached block: same entries,
+// same bytes, no VM call. Body-only edits still bump mtime, so a stale
+// block is never served past a real change (titles/status/kind are header
+// fields).
+const issueIndexCache = new Map<string, { fingerprint: string; block: string }>();
+
+export async function renderIssueIndex(dir?: string): Promise<string> {
+	const issuesDir = issuesDirOrDefault(dir);
+	const scan = scanBaisHeaders(issuesDir);
+	let maxMtimeMs = 0;
+	for (const h of scan.headers) {
+		try {
+			maxMtimeMs = Math.max(maxMtimeMs, statSync(h.file).mtimeMs);
+		} catch {}
+	}
+	const fingerprint = `${scan.headers.length}:${maxMtimeMs}`;
+	const cached = issueIndexCache.get(issuesDir);
+	if (cached && cached.fingerprint === fingerprint) return cached.block;
+	const entries = scan.headers
+		.filter((h) => h.parseable)
+		.map((h) => ({ id: h.id, status: h.status, kind: h.kind, title: h.title }));
+	const block = await format_issue_index_async(entries);
+	issueIndexCache.set(issuesDir, { fingerprint, block });
+	return block;
+}
+
+// Skill entries come from skill discovery, which lives in cli.ts/skills.ts
+// (out of this file's scope) — this is only the render path, kept next to
+// renderIssueIndex so both progressive-disclosure blocks are produced the
+// same way. Pure pass-through to BAML: same entries in → same bytes out.
+export async function renderSkillIndex(entries: SkillIndexEntry[]): Promise<string> {
+	return format_skill_index_async(entries);
 }
