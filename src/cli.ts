@@ -588,13 +588,22 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 			return history;
 		}
 		if (t.name === "login") {
-			// The REPL engages on a TTY only, so the hidden prompt works;
-			// piped `bi run "/login x"` surfaces readSecret's clean
-			// refusal instead. Errors stay in-session (no process.exit).
+			// bi#195: bare /login opens the interactive picker (provider
+			// list → hidden key input or OAuth dialog). Suspend readline
+			// around the modals like every other modal slash — the
+			// askWithEditor finally already rebuilt it, and a live
+			// readline echoes every typed byte (the key!) to stdout
+			// (drill: scripts/login-flow.mjs lf-repl-hidden). The REPL
+			// engages on a TTY only, so both prompts work; piped
+			// `bi run "/login…"` surfaces the clean non-TTY refusal
+			// instead. Errors stay in-session (no process.exit).
+			if (raw) raw.suspend();
 			try {
 				await runLogin(["login", ...t.args.split(/\s+/).filter((s) => s.length > 0)]);
 			} catch (e) {
 				console.error(e instanceof Error ? e.message : e);
+			} finally {
+				if (raw) raw.resume();
 			}
 			return history;
 		}

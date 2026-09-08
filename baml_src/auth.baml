@@ -198,6 +198,44 @@ function format_oauth_status(rows: OAuthRow[], now_ms: int) -> string {
     }
 }
 
+// bi#195: one interactive-`/login` picker row. Secret-free like OAuthRow;
+// the host tags kind from getOAuthFlow registration (a registered flow
+// picks the OAuth branch, everything else the hidden key input) and
+// fills source/cred_type/expires from listCredentials + env presence.
+class LoginPickerRow {
+    provider_id: string,
+    kind: string @description("\"api-key\" | \"oauth\" — host tag from getOAuthFlow registration"),
+    source: string @description("\"stored\" | \"env\" | \"none\" — winning chain link, /oauth board policy"),
+    cred_type: string?,
+    auth_env: string?,
+    expires: int? @description("OAuth access-token expiry, epoch millis; null when unknown or non-expiring"),
+}
+
+// Picker-row annotation for interactive /login: the auth branch the pick
+// takes, then the /oauth staleness signal (same OAuthNeedsRefresh window
+// as format_oauth_status — an expired stored oauth reads as needing a
+// refresh, null expiry reads as unknown, never expired).
+function login_picker_annotation(row: LoginPickerRow, now_ms: int) -> string {
+    let stale = if (row.source == "stored" && row.cred_type == "oauth") {
+        match (row.expires) {
+            null => false,
+            let e: int => OAuthNeedsRefresh(e, now_ms),
+        }
+    } else {
+        false
+    };
+    let state = if (stale) {
+        "stored (oauth, expired)"
+    } else if (row.source == "stored") {
+        `stored (${row.cred_type ?? "credential"})`
+    } else if (row.source == "env") {
+        `env (${row.auth_env ?? "API key"})`
+    } else {
+        "not configured"
+    };
+    `${row.kind} · ${state}`
+}
+
 function ResolveAuth(
     provider: string,
     override_key: string?,

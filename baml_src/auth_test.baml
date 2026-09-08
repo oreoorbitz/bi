@@ -86,6 +86,89 @@ testset "oauth status board (bi#29)" {
     }
 }
 
+testset "login picker rows (bi#195)" {
+    test "kind tag leads every annotation" {
+        let key_row = LoginPickerRow {
+            provider_id: "groq",
+            kind: "api-key",
+            source: "none",
+            cred_type: null,
+            auth_env: "GROQ_API_KEY",
+            expires: null,
+        };
+        let oauth_row = LoginPickerRow {
+            provider_id: "xai",
+            kind: "oauth",
+            source: "none",
+            cred_type: null,
+            auth_env: "XAI_API_KEY",
+            expires: null,
+        };
+        assert.equal(login_picker_annotation(key_row, 1700000000000), "api-key · not configured");
+        assert.equal(login_picker_annotation(oauth_row, 1700000000000), "oauth · not configured")
+    }
+
+    test "stored and env states mark already-authenticated rows" {
+        let stored_key = LoginPickerRow {
+            provider_id: "groq",
+            kind: "api-key",
+            source: "stored",
+            cred_type: "api_key",
+            auth_env: "GROQ_API_KEY",
+            expires: null,
+        };
+        let env_row = LoginPickerRow {
+            provider_id: "openai",
+            kind: "api-key",
+            source: "env",
+            cred_type: null,
+            auth_env: "OPENAI_API_KEY",
+            expires: null,
+        };
+        assert.equal(
+            login_picker_annotation(stored_key, 1700000000000),
+            "api-key · stored (api_key)",
+        );
+        assert.equal(
+            login_picker_annotation(env_row, 1700000000000),
+            "api-key · env (OPENAI_API_KEY)",
+        )
+    }
+
+    test "expired stored oauth flags, fresh and unknown do not (bi#102 signal)" {
+        let expired = LoginPickerRow {
+            provider_id: "anthropic",
+            kind: "oauth",
+            source: "stored",
+            cred_type: "oauth",
+            auth_env: "ANTHROPIC_API_KEY",
+            expires: 1700000000000,
+        };
+        let fresh = LoginPickerRow {
+            provider_id: "xai",
+            kind: "oauth",
+            source: "stored",
+            cred_type: "oauth",
+            auth_env: "XAI_API_KEY",
+            expires: 9999999999999,
+        };
+        let unknown = LoginPickerRow {
+            provider_id: "openrouter",
+            kind: "oauth",
+            source: "stored",
+            cred_type: "oauth",
+            auth_env: null,
+            expires: null,
+        };
+        assert.equal(
+            login_picker_annotation(expired, 1800000000000),
+            "oauth · stored (oauth, expired)",
+        );
+        assert.equal(login_picker_annotation(fresh, 1800000000000), "oauth · stored (oauth)");
+        assert.equal(login_picker_annotation(unknown, 1800000000000), "oauth · stored (oauth)")
+    }
+}
+
 testset "auth credential policy (bi#18)" {
     test "valid api_key credential validates" {
         let c = Credential {

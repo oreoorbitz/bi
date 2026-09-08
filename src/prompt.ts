@@ -783,6 +783,47 @@ export async function askText(title: string, initial = ""): Promise<string | nul
 	});
 }
 
+// bi#195: masked single-line input for API keys — the same Input widget
+// and modal envelope as askText (one runModal, Esc resolves null), but
+// render() swaps the buffer for bullets before painting and restores it
+// after, so the real key never reaches the pty byte stream. The modal
+// keeps no history (never persisted, unlike the editor's). Cursor math
+// is untouched: bullets are width-1 and map 1:1 to buffer chars, so
+// super.render's scrolling/cursor columns stay exact. Debug note:
+// BI_TUI_DEBUG's observe-only raw-stdin tap still records typed bytes
+// (it wraps the process, not the widget) — same opt-in exposure as any
+// typing under the tap; the store/echo/history guarantees stand.
+class SecretInput extends Input {
+	render(width: number): string[] {
+		const self = this as unknown as { value: string };
+		const real = self.value;
+		self.value = "•".repeat(real.length);
+		try {
+			return super.render(width);
+		} finally {
+			self.value = real;
+		}
+	}
+}
+
+// Hidden-secret prompt (interactive /login key entry, bi#195). Null
+// means cancelled (Esc): callers store nothing. Empty submit resolves
+// "" — the caller's empty check treats it as cancel too. Pipes and
+// BI_SCREEN=0 never reach here (runModal throws on no TTY; the caller
+// guards with promptAvailable for a named refusal first).
+export async function askSecret(title: string): Promise<string | null> {
+	return runModal<string | null>((ui, root) => {
+		root.addChild(new Text(title));
+		const input = new SecretInput();
+		root.addChild(input);
+		const wait = new Promise<string | null>((resolve) => {
+			input.onSubmit = (value) => resolve(value);
+			input.onEscape = () => resolve(null);
+		});
+		return { wait, focus: input };
+	});
+}
+
 // ANSI never reaches the widget: BAML-shaped rows carry SGR color (and
 // pi-tui emits OSC hyperlinks) that would fight pi-tui's own selection
 // styling. Indices are unaffected — callers map positionally.
