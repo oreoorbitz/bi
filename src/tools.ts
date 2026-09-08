@@ -428,6 +428,70 @@ async function execFind(args: Record<string, unknown>): Promise<string> {
 	return JSON.stringify({ pattern, paths, truncated });
 }
 
+// hub#203: TranscriptDigest construction for the post-turn review fork
+// (baml_src/review.baml ReviewTurn). Host byte-work mirroring hermes'
+// digest pass (background_review.py:280-294): user turns truncated to 300
+// chars, assistant text to 200, tool calls named not echoed. BAML owns
+// what the fork ASKS; the host owns how the digest is built from the live
+// transcript. The output matches the BAML TranscriptDigest class 1:1 —
+// plain data that crosses the bridge as a ReviewTurn argument.
+export interface DigestEntryData {
+	role: string;
+	text: string;
+	tools: string[];
+}
+
+export interface TranscriptDigestData {
+	session_id: string;
+	earlier_summary: string | null;
+	recent: DigestEntryData[];
+	skills_loaded: string[];
+}
+
+export const DIGEST_USER_CAP = 300;
+export const DIGEST_ASSISTANT_CAP = 200;
+
+// Message shapes seen in the live transcript: REPL turns are
+// {role, text}; model turns may carry pi-style content blocks
+// ({type:"text"} / {type:"toolUse", name}). Anything else contributes its
+// role with empty text — never a silent drop of the turn itself.
+export function buildTranscriptDigest(
+	history: readonly unknown[],
+	sessionId: string,
+	opts: { earlierSummary?: string | null; skillsLoaded?: string[] } = {},
+): TranscriptDigestData {
+	const recent: DigestEntryData[] = [];
+	for (const msg of history) {
+		if (typeof msg !== "object" || msg === null) continue;
+		const m = msg as Record<string, unknown>;
+		const role = typeof m.role === "string" ? m.role : "unknown";
+		const cap = role === "user" ? DIGEST_USER_CAP : DIGEST_ASSISTANT_CAP;
+		const tools: string[] = [];
+		let text = "";
+		if (typeof m.text === "string") text = m.text;
+		if (Array.isArray(m.content)) {
+			const texts: string[] = [];
+			for (const b of m.content) {
+				if (typeof b !== "object" || b === null) continue;
+				const block = b as Record<string, unknown>;
+				if (block.type === "text" && typeof block.text === "string") texts.push(block.text);
+				// NB: tool-parity.mjs greps name=== labels as handleTool
+				// dispatch arms — never write that literal here.
+				const toolName = block.name;
+				if (block.type === "toolUse" && typeof toolName === "string") tools.push(toolName);
+			}
+			if (texts.length) text = texts.join("\n");
+		}
+		recent.push({ role, text: text.replace(/\n/g, " ").slice(0, cap), tools });
+	}
+	return {
+		session_id: sessionId,
+		earlier_summary: opts.earlierSummary ?? null,
+		recent,
+		skills_loaded: opts.skillsLoaded ?? [],
+	};
+}
+
 // BAML is spec, host is executor — dispatch table for the agent loop.
 // bais_* tools are first-class here so the LLM can manage .bais.
 export async function handleTool(name: string, args: Record<string, unknown>): Promise<string> {

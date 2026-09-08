@@ -31,8 +31,12 @@ import {
 	assertSkepticReady, hunkLabel,
 	type ReviewDecision, type ReviewDecisionInput, type ReviewProvenance,
 } from "./review.js";
+import {
+	listPending, stageProposal, approveProposal, rejectProposal, ReviewStagingError,
+	type ReviewIO, type StagedProposal,
+} from "./review-turn.js";
 import { createInterface } from "node:readline";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 
 // Machine-consumed JSON MUST go through printJson, never console.log:
 // console.log to a pipe is async, and process.exit() truncates payloads past
@@ -40,7 +44,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 function printJson(obj: unknown): void {
 	writeSync(1, JSON.stringify(obj, null, 2) + "\n");
 }
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // CHANGELOG.md ships at the package root; the running module is
@@ -2926,6 +2930,73 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 	}
 }
 
+// hub#203: real fs IO + store sinks for review-turn.ts. pending/ lives at
+// .bi/review/pending/ (project-local, beside the sessions/skills state).
+// The three sinks are the ONLY host paths from a staged proposal to a
+// store, and review-turn.ts hands them out exclusively from
+// approveProposal after the pending gate — nothing else imports these.
+function reviewTurnPendingDir(): string {
+	return join(process.cwd(), ".bi", "review", "pending");
+}
+
+function reviewProposalSummary(p: StagedProposal): string {
+	if (p.type === "MemoryAdd") return `${String(p.fields.op)}: ${String(p.fields.content).slice(0, 80)}`;
+	if (p.type === "SkillPatch") return `${String(p.fields.action)} ${String(p.fields.skill)}/${String(p.fields.target_file)}`;
+	if (p.type === "IssueProposal") return String(p.fields.title).slice(0, 80);
+	return String(p.fields.reason ?? "").slice(0, 80);
+}
+
+function makeReviewTurnIO(): ReviewIO {
+	const dir = reviewTurnPendingDir();
+	const file = (id: string) => join(dir, `${id}.json`);
+	return {
+		writeProposal(id, json) {
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(file(id), json);
+		},
+		readProposal(id) {
+			return existsSync(file(id)) ? readFileSync(file(id), "utf8") : null;
+		},
+		removeProposal(id) {
+			rmSync(file(id), { force: true });
+		},
+		listProposalIds() {
+			if (!existsSync(dir)) return [];
+			return readdirSync(dir)
+				.filter((f) => f.endsWith(".json"))
+				.map((f) => f.slice(0, -5))
+				.sort();
+		},
+		applyMemory(fields) {
+			const mem = join(homedir(), ".bi", "memory.jsonl");
+			mkdirSync(dirname(mem), { recursive: true });
+			writeFileSync(mem, JSON.stringify({ ...fields, applied_at: new Date().toISOString() }) + "\n", { flag: "a" });
+		},
+		applySkill(fields) {
+			// Jail: a staged proposal's skill/target_file is model output,
+			// never trusted — the write must stay under .bi/skills/<skill>/.
+			const root = resolve(process.cwd(), ".bi", "skills");
+			const skill = String(fields.skill ?? "");
+			const targetFile = String(fields.target_file ?? "");
+			const target = resolve(root, skill, targetFile);
+			if (!skill || !target.startsWith(root + sep)) {
+				throw new ReviewStagingError("skill_jail", `skill patch target ${JSON.stringify(`${skill}/${targetFile}`)} escapes ${root}`);
+			}
+			mkdirSync(dirname(target), { recursive: true });
+			writeFileSync(target, String(fields.content ?? ""));
+		},
+		async applyIssue(fields) {
+			const f = await createBaisIssue({
+				title: String(fields.title ?? ""),
+				kind: String(fields.kind ?? "Feat"),
+				area: fields.area == null ? undefined : String(fields.area),
+				body: `${String(fields.body ?? "")}\n\nProposed by the post-turn review fork (hub#203); approved via \`bi review approve\`. Rationale: ${String(fields.rationale ?? "")}`,
+			});
+			console.error(`filed\t${f.issue.id}`);
+		},
+	};
+}
+
 async function main(): Promise<void> {
 	const args = process.argv.slice(2);
 	const cmd = args[0];
@@ -3835,6 +3906,81 @@ async function main(): Promise<void> {
 		}
 		console.error(`Unknown bais subcommand: ${sub ?? ""} (try: bais list | ready | new | move | renew | reap | check | graph | goal)`);
 		printHelp();
+		process.exit(1);
+	}
+
+	// hub#203: post-turn review staging — the consent surface for the
+	// ReviewTurn fork (baml_src/review.baml). Proposals arrive via
+	// stageProposal (the fork's host path, or `review stage` for
+	// dogfooding) and sit in .bi/review/pending/. ONLY `review approve`
+	// reaches a store (memory → ~/.bi/memory.jsonl, skill → .bi/skills/,
+	// issue → .bais/issues/ via createBaisIssue), and only through
+	// approveProposal's pending gate (src/review-turn.ts). `review reject`
+	// drops a staged proposal without touching any store.
+	if (cmd === "review") {
+		const sub = args[1];
+		const asJson = hasFlag(args, "--json");
+		const io = makeReviewTurnIO();
+		if (sub === "pending") {
+			const { proposals, corrupt } = await listPending(io);
+			if (asJson) printJson({ pending: proposals, corrupt });
+			else {
+				for (const p of proposals) console.log(`${p.id}\t${p.type}\t${reviewProposalSummary(p)}`);
+				for (const c of corrupt) console.error(`corrupt\t${c.id}\t${c.reason}`);
+				if (proposals.length === 0 && corrupt.length === 0) console.log("(no staged review proposals)");
+			}
+			return;
+		}
+		if (sub === "stage") {
+			// Dogfood/admin path INTO pending/ — same validation as the
+			// fork's (actionType + envelope via stageProposal). Staging is
+			// not the protected side; applying is.
+			const jsonArg = args[2];
+			if (!jsonArg) {
+				console.error(`bi review stage needs a JSON fields object (e.g. '{"op":"add","content":"…","old_text":null,"rationale":"…"}')`);
+				process.exit(1);
+			}
+			let fields: unknown;
+			try {
+				fields = JSON.parse(jsonArg);
+			} catch (e) {
+				console.error(`bi review stage: fields are not JSON: ${e instanceof Error ? e.message : e}`);
+				process.exit(1);
+			}
+			try {
+				const r = await stageProposal(fields, {}, io);
+				if (asJson) printJson(r);
+				else if (r.staged) console.log(`staged\t${r.id}`);
+				else console.log(`not staged (NothingToSave): ${r.reason}`);
+			} catch (e) {
+				if (e instanceof ReviewStagingError) {
+					console.error(`bi review stage: ${e.message}`);
+					process.exit(1);
+				}
+				throw e;
+			}
+			return;
+		}
+		if (sub === "approve" || sub === "reject") {
+			const id = args[2];
+			if (!id || id.startsWith("--")) {
+				console.error(`bi review ${sub} needs a proposal id (see \`bi review pending\`)`);
+				process.exit(1);
+			}
+			try {
+				const p = sub === "approve" ? await approveProposal(id, io) : await rejectProposal(id, io);
+				if (asJson) printJson({ ok: true, verb: sub, proposal: p });
+				else console.log(`${sub === "approve" ? "approved" : "rejected"}\t${p.id}\t${p.type}`);
+			} catch (e) {
+				if (e instanceof ReviewStagingError) {
+					console.error(`bi review ${sub}: ${e.message}`);
+					process.exit(1);
+				}
+				throw e;
+			}
+			return;
+		}
+		console.error(`Unknown review subcommand: ${sub ?? ""} (try: review pending | stage | approve <id> | reject <id>)`);
 		process.exit(1);
 	}
 
