@@ -9,7 +9,7 @@ import { getProvider, listProviders } from "./provider.js";
 import { runAgent, runSingleImageTurn } from "./agent.js";
 import { HttpKeeperHub, LeaseKeeper } from "./keeper.js";
 import { HubSubscriber, TerminalNotifier, notifyApprovalRequired, notifyTurnComplete } from "./notify.js";
-import { loadBaisIssues, readyBaisIssues, filterReadyIssues, blastRadii, dispatchPack, parseFileClaims, warnUnknownShared, warnUnknownWithheld, createBaisIssue, moveBaisIssue, linkBaisIssues, checkBaisIssues, graphBaisIssues, scanBaisHeaders, scannedBlockers, loadStagedIssues, parseClaimDuration, renewBaisClaim, reapBaisClaims } from "./bais.js";
+import { loadBaisIssues, readyBaisIssues, filterReadyIssues, blastRadii, dispatchPack, parseFileClaims, isDeclaredFootprint, warnUnknownShared, warnUnknownWithheld, epicWithheldIn, warnEpicWithheld, createBaisIssue, moveBaisIssue, linkBaisIssues, checkBaisIssues, graphBaisIssues, scanBaisHeaders, scannedBlockers, loadStagedIssues, parseClaimDuration, renewBaisClaim, reapBaisClaims } from "./bais.js";
 import { listTools, handleTool, emitToolDiff, setApprovalInteractive, setTrustReader } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { showStagedImage, teardownInlineImages } from "./image-display.js";
@@ -195,7 +195,7 @@ async function argCandidates(cmd: string, names: string[], prefix = ""): Promise
 			case "issues":
 				return [...scanBaisHeaders().headers.map((h) => h.id), "all", "drop"];
 			case "bais":
-				return ["new", "move", "link", ...scanBaisHeaders().headers.map((h) => h.id)];
+				return ["new", "move", "link", "show", ...scanBaisHeaders().headers.map((h) => h.id)];
 			case "help":
 				return names.map((n) => n.replace(/^\//, ""));
 			case "login":
@@ -314,7 +314,8 @@ function printHelp(): void {
                    [--image <path> stages one PNG/JPEG/WebP/GIF for a single-shot image turn]
                    [--azure-resource <r> --azure-deployment <d> [--azure-api-version <v>]]
   bi bais list [--json]
-  bi bais ready [--json] [--order blast-radius]
+  bi bais show <id> [--json]   # full record: body + edges + holder/lease
+  bi bais ready [--json] [--order blast-radius] [--verbose]
   bi bais dispatch --agents N [--json] [--briefs]   # dry-run swarm pack, never mutates
   bi bais goal <start|sketch|commit|status|switch> [--approve]  # per-directory campaign interview (bi#132)
   bi bais new "title" --kind <Kind> [--area <area>] [--status <Status>] [--body <md>] [--blocks <id> --depends-on <id>]
@@ -3661,6 +3662,14 @@ async function main(): Promise<void> {
 				console.error("bi bais list: --order is only supported by `bi bais ready`");
 				process.exit(1);
 			}
+			// bi#197: list takes no positional filter — a trailing id used
+			// to be silently ignored (whole board listed, exit 0). Refuse
+			// loudly; `bi bais show <id>` is the single-issue read path.
+			const positional = args.slice(2).filter((a) => !a.startsWith("--"));
+			if (positional.length > 0) {
+				console.error(`bi bais list takes no positional args (got ${positional.map((a) => JSON.stringify(a)).join(" ")}) — use \`bi bais show <id>\` for a single issue`);
+				process.exit(1);
+			}
 			const { issues: files, failures } = await loadBaisIssues();
 			// bi#122 marker: trailing br=N column (open blast radius).
 			const radii = new Map(blastRadii(files).map((r) => [r.id, r]));
@@ -3670,6 +3679,31 @@ async function main(): Promise<void> {
 				for (const f of files) console.log(`${f.issue.id}\t${f.issue.status}\t${f.issue.kind}\t${f.issue.title}${brCol(f.issue.id)}`);
 				for (const b of failures) console.log(`bad\t${b.file}\t${b.error}`);
 				if (files.length === 0 && failures.length === 0) console.error("(no .bais/issues/*.toml — run bais init or add issues)");
+			}
+			return;
+		}
+		if (sub === "show") {
+			// bi#197: shell parity with the REPL's /issues show — the full
+			// record for one id (body + edges + holder/lease). Unknown ids
+			// fail closed with a named reason, never an empty render.
+			const id = args[2];
+			if (!id || id.startsWith("--")) { console.error("bais show requires <id>"); process.exit(1); }
+			const { issues: files } = await loadBaisIssues();
+			const found = files.find((f) => f.issue.id === id);
+			if (!found) {
+				console.error(`bais show: unknown issue ${JSON.stringify(id)} — \`bi bais list\` lists ids`);
+				process.exit(1);
+			}
+			if (asJson) printJson(found);
+			else {
+				const i = found.issue;
+				console.log(`${i.id}\t${i.status}\t${i.kind}\t${i.title}`);
+				if (i.area != null) console.log(`area:\t${i.area}`);
+				console.log(`holder:\t${found.holder ?? "unclaimed"}\tlease:\t${found.lease ?? "-"}`);
+				if (found.edges.length) for (const e of found.edges) console.log(`edge:\t${e.kind}\t${e.from} -> ${e.to}`);
+				else console.log("edge:\t(none)");
+				console.log("body:");
+				console.log(i.body);
 			}
 			return;
 		}
@@ -3691,9 +3725,20 @@ async function main(): Promise<void> {
 				);
 			}
 			const brCol = (id: string): string => `\tbr=${radii.get(id)?.open_downstream ?? 0}`;
+			// bi#198: --verbose appends the declared footprint per row.
+			// Basenames of the Files: claims; `unknown` when no Files:
+			// line, `-` when the line is bare. Default rows stay
+			// byte-identical; --json is untouched (bodies already ride).
+			const verbose = hasFlag(args, "--verbose");
+			const filesCol = (body: string): string => {
+				if (!isDeclaredFootprint(body)) return "unknown";
+				const claims = parseFileClaims(body);
+				if (!claims.length) return "-";
+				return claims.map((c) => basename(c.replace(/,+$/, ""))).join(",");
+			};
 			if (asJson) printJson({ ready, unparseable: failures });
 			else {
-				for (const f of ready) console.log(`${f.issue.id}\t${f.issue.title}${brCol(f.issue.id)}`);
+				for (const f of ready) console.log(`${f.issue.id}\t${f.issue.title}${brCol(f.issue.id)}${verbose ? `\tfiles: ${filesCol(f.issue.body)}` : ""}`);
 				if (ready.length === 0) console.log("(no ready issues)");
 				if (failures.length) console.error(`[bais] ${failures.length} unparseable file(s) excluded — \`bi bais check\` for details`);
 			}
@@ -3773,6 +3818,10 @@ async function main(): Promise<void> {
 			const withheld = keptUnknown !== undefined ? unpackedUnknowns.slice(0, Math.max(0, unfilled)) : [];
 			const unknownWarnings: string[] = [];
 			if (withheld.length) unknownWarnings.push(warnUnknownWithheld(withheld));
+			// hub#225: epics leave the pack with a named reason (mirror of
+			// bais/src/cli.ts) — same warnings list feeds json + human stderr.
+			const epicsWithheld = epicWithheldIn(issues, leased).map((h) => h.issue_id);
+			if (epicsWithheld.length) unknownWarnings.push(warnEpicWithheld(epicsWithheld));
 			if (keptUnknown !== undefined) {
 				const partners = slots.filter((s) => s.files_state === "declared").map((s) => s.issue.id);
 				if (partners.length) unknownWarnings.push(warnUnknownShared(keptUnknown.issue.id, partners));

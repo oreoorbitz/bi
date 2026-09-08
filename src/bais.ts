@@ -339,7 +339,55 @@ export function filterReadyIssues(all: BaisFile[]): BaisFile[] {
 			blocked.add(e.to);
 		}
 	}
-	return all.filter((f) => f.issue.status === "Open" && !blocked.has(f.issue.id));
+	// RED-CHECK TARGET (bi#57): the `!isEpic(...)` conjunct below (hub#225,
+	// mirrors bais/src/graph.ts readyIssues). Neutering it re-seats epics.
+	return all.filter((f) => f.issue.status === "Open" && !blocked.has(f.issue.id) && !isEpic(f.issue.id, edges));
+}
+
+// Mirror of BAML is_epic / epic_children (hub#223 epic policy, mirrors
+// bais/src/graph.ts): an issue is an epic iff at least one SubtaskOf edge
+// points at it — the edge runs from the subtask (child) to the epic
+// (parent). Derived, never stored. Same hand-mirror contract as
+// filterReadyIssues above — keep the two in step.
+export function isEpic(issueId: string, edges: BaisEdge[]): boolean {
+	return edges.some((e) => e.to === issueId && e.kind === "SubtaskOf");
+}
+export function epicChildren(epicId: string, edges: BaisEdge[]): string[] {
+	return edges.filter((e) => e.to === epicId && e.kind === "SubtaskOf").map((e) => e.from);
+}
+
+// Mirror of bais/src/graph.ts epicWithheldIn (hub#225): every Open +
+// unblocked + unleased epic is withheld from the pack with a named reason.
+// Blocked/leased epics are out for those reasons, never double-counted.
+export type EpicHold = { issue_id: string; children: string[]; reason: "epic" };
+export function epicWithheldIn(all: BaisFile[], leased: string[] = []): EpicHold[] {
+	const byId = new Map(all.map((f) => [f.issue.id, f.issue]));
+	const edges = all.flatMap((f) => f.edges);
+	const blocked = new Set<string>();
+	for (const f of all) {
+		for (const e of f.edges) {
+			if (e.kind !== "Blocks") continue;
+			const blocker = byId.get(e.from);
+			if (!blocker || (blocker.status !== "Done" && blocker.status !== "Dropped")) {
+				blocked.add(e.to);
+			}
+		}
+	}
+	return all
+		.filter(
+			(f) =>
+				f.issue.status === "Open" &&
+				!blocked.has(f.issue.id) &&
+				!leased.includes(f.issue.id) &&
+				isEpic(f.issue.id, edges),
+		)
+		.map((f) => ({ issue_id: f.issue.id, children: epicChildren(f.issue.id, edges), reason: "epic" as const }));
+}
+
+export function warnEpicWithheld(ids: string[]): string {
+	const list = [...ids].map(String);
+	const noun = list.length === 1 ? "epic" : "epics";
+	return `[bais] ${noun} withheld from swipe pack: ${list.join(", ")} (coordinates subtasks from outside the pack — claim a child instead per hub#223)`;
 }
 
 // bais/dist/src/store.js, resolved the same way as the TOML wrapper above:
