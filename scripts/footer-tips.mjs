@@ -4,7 +4,8 @@
 // turn running, repainting the model row only, (3) dispose silences the
 // timer (never double-fires, never fires after dispose), (4) a transient
 // hint preempts the slot and releases back, (5) pipes get neither tips
-// nor hints, (6) default construction loads the BAML corpus async.
+// nor hints, (6) default construction loads the BAML corpus async,
+// (7) bi#169 abort-hint words resolve from BAML (abort_hint_text).
 //
 // Red-check (bi#57): removing clearTipsTimer() from HostFooter.reset
 // (bi/src/tui.ts) fails `dispose silences the rotation timer` — bytes
@@ -116,6 +117,13 @@ function harness(rows, tty, tips) {
 	h.footer.setHint("working");
 	await sleep(80);
 	check(h.bytes() === F1 + "\n" + M1 + "\n", "pipes stay silent on hints and ticks");
+}
+
+// 7 — abort hint words are BAML-shaped (bi#169): the host paints
+// abort_hint_text verbatim into the transient channel.
+{
+	const { abort_hint_text_async } = await import(join(ROOT, "..", "dist", "baml_sdk", "index.js"));
+	check((await abort_hint_text_async()) === "turn aborted — transcript unchanged", "abort hint text comes from BAML");
 }
 
 // 6 — default wiring: no tips arg → async BAML corpus load reveals the slot.

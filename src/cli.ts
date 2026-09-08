@@ -16,7 +16,7 @@ import { showStagedImage, teardownInlineImages } from "./image-display.js";
 import { runAuthStatus, runLogin, runLogout, runOAuthLogin } from "./auth_cli.js";
 import { getOAuthFlow } from "./oauth.js";
 import { listCredentials } from "./auth.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, render_footer_frame_async, render_model_line_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, trust_options_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, format_skill_history_entry_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, setup_theme_options_async, setup_analytics_options_async, format_first_run_theme_step_async, format_first_run_analytics_step_async, format_first_run_done_async, format_setup_skipped_async, format_setup_status_async, branch_row_prefix_async, format_branch_row_async, format_branches_list_async, format_branch_summary_async, format_fork_list_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, format_issue_row_async, format_issue_context_async, render_ready_frame_async, render_welcome_frame_async, format_prompt_label, format_image_placeholder_async, staged_image_label_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, abort_hint_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, render_footer_frame_async, render_model_line_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, trust_options_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, format_skill_history_entry_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, setup_theme_options_async, setup_analytics_options_async, format_first_run_theme_step_async, format_first_run_analytics_step_async, format_first_run_done_async, format_setup_skipped_async, format_setup_status_async, branch_row_prefix_async, format_branch_row_async, format_branches_list_async, format_branch_summary_async, format_fork_list_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, format_issue_row_async, format_issue_context_async, render_ready_frame_async, render_welcome_frame_async, format_prompt_label, format_image_placeholder_async, staged_image_label_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
 import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
 import { readClipboardImage, writeClipboardText, clipboardSupportsImage, extensionForImageMime, sniffImageMime } from "./clipboard.js";
@@ -279,13 +279,13 @@ function bamlErrorMessage(e: unknown): string {
 	const raw = e instanceof Error ? e.message : String(e);
 	return raw.replace(/^baml error: (baml\.errors\.\w+: )?/, "").split("\n")[0];
 }
-import { HostTui, HostFooter, renderSelectList, releaseReplTui, retainReplTui, runTranscriptSearch, termWidth, composeFrame } from "./tui.js";
+import { HostTui, HostFooter, renderSelectList, releaseReplTui, retainReplTui, runTranscriptSearch, termWidth, composeFrame, liveFooterNow } from "./tui.js";
 import { FullscreenSession, fullscreenRequested, teeOutputTo } from "./screen-fullscreen.js";
 import { KindStatus, statusEventTailUpdater } from "./status.js";
 import { ActionLog, safeJson } from "./actionlog.js";
 import { promptAvailable, askEdit, askText, pickList, pickListWithPreview, stageBaseFrame, type SlashPool } from "./prompt.js";
 import { completePathPrefix, splitSecondWord, unquotePath } from "./paths.js";
-import { allThemeNames, customThemesDir, listCustomThemes, mergedThemeList, previewForTheme, validateCustomFile } from "./theme-files.js";
+import { allThemeNames, chromeToolLine, chromeWrap, customThemesDir, listCustomThemes, mergedThemeList, previewForTheme, validateCustomFile } from "./theme-files.js";
 import { getKeybindingsPath, getUserKeybindings, listKeybindingRows, loadKeybindingsFile, reloadKeybindings, renderKeybindingJson, renderKeybindingList, resetKeybindings, saveKeybindings, type KeybindingFileEntry } from "./keybindings.js";
 import { screenModelAvailable, screenPickModel } from "./screen-model.js";
 import { format_status, format_turn_summary, format_turn_error } from "../baml_sdk/index.js";
@@ -294,7 +294,7 @@ import { streamTextIncremental } from "./incremental.js";
 import { editInExternalEditor, editorCommand } from "./editor.js";
 import { footerCwd, gitBranch } from "./footer_info.js";
 import { printMarkdownText } from "./markdown.js";
-import { replayCompactionBlocks } from "./compaction.js";
+import { replayCompactionBlocks, estimateHistoryTokens } from "./compaction.js";
 import { printCompactionSummary, printSkillBlock } from "./summary-blocks.js";
 import { GoTuiSeam, goTuiRequested, fixtureLlmFn } from "./tui_seam.js";
 
@@ -528,6 +528,28 @@ async function buildTree(root: string, maxDepth = 3, cap = 200): Promise<{ rows:
 	};
 	walk(root, "", 0);
 	return { rows, capped };
+}
+
+// bi#193: session-picker rows — the BAML-shaped resume line stays the
+// label (BAML owns the text), and the row's timestamp + id ride the
+// description channel, which the select-list theme dims (text_dim) per
+// row. The trailing ` — <timestamp>` is cut from the label so the meta
+// shows once: it is a known paint-time segment (format_resume_list ends
+// every row with it), never a re-shape. Selected row pops primary via
+// the same theme (prompt.ts chromeSelectList). skipLeading covers the
+// startup picker's "New session" head row (no session behind it).
+function sessionPickerRows(
+	disp: string[],
+	rows: { id: string; timestamp: string }[],
+	skipLeading = 0,
+): { label: string; description?: string }[] {
+	return disp.map((line, i) => {
+		const r = rows[i - skipLeading];
+		if (i < skipLeading || !r) return { label: line };
+		const suffix = ` — ${r.timestamp}`;
+		const label = line.endsWith(suffix) ? line.slice(0, line.length - suffix.length) : line;
+		return { label, description: `${r.timestamp} · ${r.id}` };
+	});
 }
 
 // raw carries the REPL's line-input suspend/resume for pi-tui modals;
@@ -1497,7 +1519,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 					raw.suspend();
 					let pick: number | null;
 					try {
-						pick = await pickList("Resume session (Enter resumes, Esc keeps)", disp.map((label) => ({ label })), at < 0 ? 0 : at);
+						pick = await pickList("Resume session (Enter resumes, Esc keeps)", sessionPickerRows(disp, list), at < 0 ? 0 : at);
 					} finally {
 						raw.resume();
 					}
@@ -1558,7 +1580,7 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 							raw.suspend();
 							let pick: number | null;
 							try {
-								pick = await pickList(`Resume — ${filtered.length} match "${t.args}" (Enter resumes, Esc lists)`, disp.map((label) => ({ label })), 0);
+								pick = await pickList(`Resume — ${filtered.length} match "${t.args}" (Enter resumes, Esc lists)`, sessionPickerRows(disp, filtered), 0);
 							} finally {
 								raw.resume();
 							}
@@ -2132,16 +2154,21 @@ async function runToolWithStatus(name: string, args: Record<string, unknown>, se
 		}
 	}
 	const theme = await activeTheme();
-	console.log(await format_tool_start_async(name, JSON.stringify(args), { theme }));
+	// bi#193: chrome semantic coloring — the tool name pops primary, the
+	// args/result tail (paths, ids) recedes text_dim. Pipes pass paint=false
+	// and keep the BAML line byte-identical; the seam path above already
+	// crossed as plain data.
+	const paint = !!process.stdout.isTTY;
+	console.log(chromeToolLine(await format_tool_start_async(name, JSON.stringify(args), { theme }), name, paint));
 	try {
 		const out = await handleTool(name, args);
-		console.log(await format_tool_done_async(name, out, false, { theme }));
+		console.log(chromeToolLine(await format_tool_done_async(name, out, false, { theme }), name, paint));
 		// bi#71: edit/write results render the BAML-shaped unified diff
 		// inline; anything not diffable adds no lines (output unchanged).
 		await emitToolDiff(name, out);
 		return out;
 	} catch (e) {
-		console.log(await format_tool_done_async(name, e instanceof Error ? e.message : String(e), true, { theme }));
+		console.log(chromeToolLine(await format_tool_done_async(name, e instanceof Error ? e.message : String(e), true, { theme }), name, paint));
 		throw e;
 	}
 }
@@ -2234,6 +2261,8 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	// no kind leaks into the next turn.
 	const status = new KindStatus("thinking", { formatStatus: format_status, formatSummary: format_turn_summary });
 	status.start();
+	// bi#169: a new turn releases any transient abort hint.
+	liveFooterNow()?.setHint(null);
 	// Turn chrome theme, hoisted: every stop/result path below closes
 	// with the same palette (summary good/bad, divider, error lines).
 	const turnTheme = await activeTheme();
@@ -2319,6 +2348,28 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	const STATUS_EVENT_TAIL_CHARS = 50;
 	const streamSettled = { current: false };
 	const cancelStream = (): boolean => streamSettled.current || (opts.signal?.aborted ?? false);
+	// bi#169: live footer repaint while the turn runs. The source
+	// rebuilds the frame with a fresh token estimate and returns null
+	// once the turn settles, releasing the timer by itself — no exit
+	// path needs an explicit clear. Estimates stay TTY-only so pipes
+	// keep today's byte-identical print.
+	{
+		const live = liveFooterNow();
+		if (live) live.setLiveSource(async () => {
+			if (streamSettled.current) return null;
+			const liveUsed = process.stdout.isTTY === true ? estimateHistoryTokens(history) : null;
+			const liveTheme = await activeTheme();
+			const liveThinking = backend.thinking ?? "default";
+			const liveCwd = footerCwd();
+			const liveBranch = gitBranch();
+			const liveTurn = sess?.turn ?? 0;
+			return {
+				frame: await render_footer_frame_async(backend.provider, backend.model, liveThinking, liveTurn, history.length, termWidth(), { theme: liveTheme, cwd: liveCwd, branch: liveBranch, used_tokens: liveUsed }),
+				model: await render_model_line_async(backend.provider, backend.model, liveThinking, termWidth(), { theme: liveTheme }),
+				fallback: await format_repl_footer_async(backend.provider, backend.model, liveThinking, liveTurn, history.length, { theme: liveTheme, cwd: liveCwd, branch: liveBranch, used_tokens: liveUsed }),
+			};
+		});
+	}
 	const turnP = runBiLoop(fullPrompt, { provider: backend.provider, model: backend.model, thinking: backend.thinking, maxTurns: 5, baseUrl: process.env.BI_BASE_URL ?? null, onEvent: (e) => status.onEvent(e), tools: loopTools, toolHandler: loggingHandler(alog), history, compaction: { onCompacted: async (info) => { await printCompactionSummary({ summary: info.summary, tokensBefore: info.tokensBefore, tokensAfter: info.tokensAfter, foldedTurns: info.foldedTurns, theme: turnTheme }); } }, onAssistantText: streamAlive ? async (text) => {
 		if (cancelStream()) return;
 		// bi#191: the draft never touches stderr as raw deltas — appended
@@ -2348,6 +2399,8 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 		if (opts.signal) opts.signal.aborted = true;
 		status.stop({ failed: true, detail: "aborted", turns: 0, messages: history.length, theme: turnTheme });
 		console.error("[bi] turn aborted — transcript unchanged (a late VM result is discarded on arrival)");
+		// bi#169: the pinned footer carries the abort as a transient hint (BAML-shaped words).
+		liveFooterNow()?.setHint(await abort_hint_text_async());
 		alog?.record("turn.end", "aborted");
 		await stderrRule(turnTheme);
 		void turnP.then(
@@ -2619,6 +2672,44 @@ function biVersion(): string {
 	}
 }
 
+// bi#193: welcome-frame chrome. BAML shapes the box PLAIN (theme null)
+// and the host wraps the known segments at paint time through the chrome
+// palette — kimi's welcome read: the border, logo, and title/hint rows
+// pop primary, the label-column values recede text_dim (label names stay
+// plain). chromeWrap is a byte-identical passthrough under BI_THEME=none
+// / NO_COLOR, so the suppressed frame is the plain BAML box exactly.
+// Segment math rides the pinned render_welcome_frame construction
+// (tui.baml): box rows are `│  <inner>│` with the label field padded to
+// 11 cells; anything unrecognized passes through untouched.
+const WELCOME_LABELS = ["Directory:", "Session:", "Model:", "Version:"];
+export function colorWelcomeRow(line: string): string {
+	if (line.startsWith("╭") || line.startsWith("╰")) return chromeWrap("primary", line);
+	// Narrow layout (width < 24): plain truncated lines, no box.
+	if (!line.startsWith("│")) {
+		if (line.includes("Welcome to bi!") || line.startsWith("Type / for commands")) return chromeWrap("primary", line);
+		const model = WELCOME_LABELS.find((l) => line.startsWith(l));
+		if (model) return model + " " + chromeWrap("text_dim", line.slice(model.length + 1));
+		return line;
+	}
+	const inner = line.slice(1, line.endsWith("│") ? -1 : undefined);
+	const content = inner.trimEnd();
+	const pad = inner.slice(content.length);
+	const body = content.startsWith("  ") ? content.slice(2) : content;
+	const label = WELCOME_LABELS.find((l) => body.startsWith(l));
+	if (label) {
+		// Label field is padded to 11 cells by welcome_label; the value
+		// (and only the value) takes text_dim.
+		const field = body.slice(0, 11);
+		const value = body.slice(11);
+		const dimValue = value === "" ? value : chromeWrap("text_dim", value);
+		return `│  ${field}${dimValue}${pad}${line.endsWith("│") ? "│" : ""}`;
+	}
+	if (body.includes("Welcome to bi!") || body.includes("Type / for commands")) {
+		return `│${chromeWrap("primary", content)}${pad}${line.endsWith("│") ? "│" : ""}`;
+	}
+	return line;
+}
+
 // bi#180: welcome entry frame (BAML-shaped render_welcome_frame, kimi
 // welcome.ts:49-107 mirror) with the ready-BAIS frame beneath it.
 // Staged once from repl() AFTER the last startup modal (trust /
@@ -2636,12 +2727,14 @@ async function printWelcomeFrame(backend: ReplBackend, sess: ReplSessionState, f
 	if (fullscreen || !promptAvailable()) return;
 	try {
 		const width = termWidth();
-		const theme = await activeTheme();
+		// bi#193: BAML shapes the box plain; the host colors the named
+		// segments through the chrome palette (colorWelcomeRow above) —
+		// one mechanism, no SGR in BAML literals, escape-free suppression.
 		const [welcome, ready] = await Promise.all([
 			render_welcome_frame_async(
 				{ directory: process.cwd(), session: sessionIdFromFile(sess.file) ?? sess.file, model: backend.model, version: biVersion() },
 				width,
-				{ theme },
+				{ theme: null },
 			),
 			readyBaisIssues(),
 		]);
@@ -2649,7 +2742,7 @@ async function printWelcomeFrame(backend: ReplBackend, sess: ReplSessionState, f
 			ready.map((f) => ({ id: f.issue.id, title: f.issue.title })),
 			width,
 		);
-		stageBaseFrame([...welcome, ...readyLines]);
+		stageBaseFrame([...welcome.map(colorWelcomeRow), ...readyLines]);
 	} catch {
 		// The entry frame is cosmetic — never brick REPL startup.
 	}
@@ -2695,7 +2788,7 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 	if (rows.length > 0) {
 		const text = await format_resume_list_async(rows, null);
 		const disp = ["New session", ...text.split("\n").filter((l) => l.length > 0)];
-		const pick = await pickList("Start (Enter opens, Esc starts new)", disp.map((label) => ({ label })), 0);
+		const pick = await pickList("Start (Enter opens, Esc starts new)", sessionPickerRows(disp, rows, 1), 0);
 		const row = pick === null ? undefined : rows[pick - 1];
 		const loaded = row ? await loadSessionTranscript(row.id) : null;
 		if (loaded) {
@@ -2831,10 +2924,12 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 		const loadTheme = await activeTheme();
 		const loadThinking = backend.thinking ?? "default";
 		reader.editorTheme = loadTheme;
+		// bi#169: load paint carries context% on TTY; pipes stay byte-identical.
+		const loadUsed = process.stdout.isTTY === true ? estimateHistoryTokens(history) : null;
 		footer.show(
-			await render_footer_frame_async(backend.provider, backend.model, loadThinking, sess.turn, history.length, termWidth(), { theme: loadTheme, cwd: footerCwd(), branch: gitBranch() }),
+			await render_footer_frame_async(backend.provider, backend.model, loadThinking, sess.turn, history.length, termWidth(), { theme: loadTheme, cwd: footerCwd(), branch: gitBranch(), used_tokens: loadUsed }),
 			await render_model_line_async(backend.provider, backend.model, loadThinking, termWidth(), { theme: loadTheme }),
-			await format_repl_footer_async(backend.provider, backend.model, loadThinking, sess.turn, history.length, { theme: loadTheme, cwd: footerCwd(), branch: gitBranch() }),
+			await format_repl_footer_async(backend.provider, backend.model, loadThinking, sess.turn, history.length, { theme: loadTheme, cwd: footerCwd(), branch: gitBranch(), used_tokens: loadUsed }),
 		);
 	} catch {
 		// No footer on load — the first turn-end paint installs it.
@@ -2923,19 +3018,22 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 					reader.editorTheme = theme;
 					const cwd = footerCwd();
 					const branch = gitBranch();
-					const fallback = await format_repl_footer_async(backend.provider, backend.model, thinking, sess.turn, history.length, { theme, cwd, branch });
+					// bi#169: context% rides the frame on TTY; pipes pass
+					// null so the printed receipt stays byte-identical.
+					const used = process.stdout.isTTY === true ? estimateHistoryTokens(history) : null;
+					const fallback = await format_repl_footer_async(backend.provider, backend.model, thinking, sess.turn, history.length, { theme, cwd, branch, used_tokens: used });
 					// bi#160: fullscreen routes the same BAML frame into
 					// the dock (footer.show's DECSTBM region would fight
 					// the alt screen); HostFooter stays uninstalled so its
 					// dispose below is a silent no-op.
 					if (fsSession) {
 						fsSession.setFooter([
-							await render_footer_frame_async(backend.provider, backend.model, thinking, sess.turn, history.length, termWidth(), { theme, cwd, branch }),
+							await render_footer_frame_async(backend.provider, backend.model, thinking, sess.turn, history.length, termWidth(), { theme, cwd, branch, used_tokens: used }),
 							await render_model_line_async(backend.provider, backend.model, thinking, termWidth(), { theme }),
 						]);
 					} else {
 						footer.show(
-							await render_footer_frame_async(backend.provider, backend.model, thinking, sess.turn, history.length, termWidth(), { theme, cwd, branch }),
+							await render_footer_frame_async(backend.provider, backend.model, thinking, sess.turn, history.length, termWidth(), { theme, cwd, branch, used_tokens: used }),
 							await render_model_line_async(backend.provider, backend.model, thinking, termWidth(), { theme }),
 							fallback,
 						);
@@ -3545,7 +3643,7 @@ async function main(): Promise<void> {
 			} else if (msg.role === "assistant" && "content" in msg) {
 				for (const b of (msg as any).content) {
 					if (b.type === "text") await printMarkdownText(b.text, runTheme);
-					else if (b.type === "toolUse") console.log(await format_tool_start_async(b.name, JSON.stringify(b.args), { theme: runTheme }));
+					else if (b.type === "toolUse") console.log(chromeToolLine(await format_tool_start_async(b.name, JSON.stringify(b.args), { theme: runTheme }), b.name, !!process.stdout.isTTY));
 				}
 			}
 		}
@@ -3754,8 +3852,11 @@ async function main(): Promise<void> {
 				if (p == null) { console.error(`bais move: --for ${JSON.stringify(forRaw)} needs <n>s|m|h|d`); process.exit(1); }
 				forMs = p;
 			}
+			// Epic/scope gate override (epic policy): operator-confirmed scope.
+			const scopeConfirmed = args.includes("--scope-confirmed");
+			if (scopeConfirmed) console.error(`[bais] scope-confirmed override on ${id} (operator confirmed scope)`);
 			try {
-				const file = await moveBaisIssue(id, status, undefined, as != null ? { as, forMs } : undefined);
+				const file = await moveBaisIssue(id, status, undefined, as != null ? { as, forMs, scopeConfirmed } : undefined);
 				console.log(`${file.issue.id}\t${file.issue.status}`);
 			} catch (e) {
 				console.error(`bais move: ${e instanceof Error ? e.message : e}`);

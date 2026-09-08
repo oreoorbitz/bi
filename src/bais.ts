@@ -570,6 +570,7 @@ export interface BaisClaim {
 	as: string;
 	forMs?: number;
 	nowMs?: number;
+	scopeConfirmed?: boolean;
 }
 
 // Claim mirrors (bais/src/cli.ts): duration grammar, millis-stripped
@@ -607,6 +608,29 @@ export async function moveBaisIssue(id: string, status: string, dir?: string, cl
 			file.holder = null;
 			file.lease = null;
 		} else {
+			// Epic/scope gate (epic policy, mirrors bais/src/cli.ts): a
+			// live claim needs a workable scope. Epics coordinate
+			// subtasks — claim a child instead; unknown footprints cannot
+			// prove clash-freedom — declare Files: first. claim.
+			// scopeConfirmed is the operator override. Graph helpers come
+			// from bais/dist over the file:// interop; an older dist
+			// without them skips the gate rather than bricking claims.
+			if (!claim.scopeConfirmed) {
+				try {
+					const g = await loadBaisGraphModule();
+					if (typeof g?.isEpic === "function" && typeof g?.epicChildren === "function" && typeof g?.isDeclaredFootprint === "function") {
+						const { issues } = await loadBaisIssues(issuesDir);
+						const allEdges = issues.flatMap((f) => f.edges);
+						const kids = g.epicChildren(id, allEdges) as string[];
+						if (kids.length > 0) throw new Error(`${id} is an epic (subtasks: ${kids.join(", ")}) — claim a child, or re-run with --scope-confirmed for a verification close`);
+						const me = issues.find((f) => f.issue.id === id);
+						if (!g.isDeclaredFootprint(me?.issue.body ?? text)) throw new Error(`${id} declares no footprint (no Files: line) — declare Files: first (bi#125), or re-run with --scope-confirmed`);
+					}
+				} catch (e) {
+					if (e instanceof Error && /epic|footprint/.test(e.message)) throw e;
+					// Interop miss (no dist, old dist): gate degrades open.
+				}
+			}
 			file.holder = claim.as;
 			file.lease = toLeaseIso((claim.nowMs ?? Date.now()) + (claim.forMs ?? DEFAULT_CLAIM_MS));
 		}

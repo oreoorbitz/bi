@@ -51,7 +51,12 @@ let replTuiLeases = 0;
 // reasserts rows N-1/N (pi-tui's relative full-height dumps stream over
 // them — the pre-194 DECSTBM region absorbed that at the boundary; with
 // the region gone the owner re-pins instead). Null in drills and pipes.
-let liveFooter: { repin(): void } | null = null;
+let liveFooter: HostFooter | null = null;
+
+/** The installed footer, if any — turns use it for the hint/live channels (bi#169). Null in drills and pipes. */
+export function liveFooterNow(): HostFooter | null {
+	return liveFooter;
+}
 
 /** True while a REPL/login flow holds the host across modals. */
 export function replTuiLeased(): boolean {
@@ -569,6 +574,47 @@ export class HostFooter {
 		if (this.tipTimer) clearInterval(this.tipTimer);
 		this.tipTimer = null;
 	}
+	// Live repaint source (bi#169): while a turn runs, a TTY-only 1s
+	// timer re-renders through the normal differential path so context
+	// pressure moves without waiting for turn end. The source returns
+	// null once the turn settles and the timer releases itself; an
+	// unchanged frame writes zero bytes, and pipes never start the
+	// timer (byte-identical output by construction).
+	private liveSource: (() => Promise<{ frame: string; model: string; fallback: string } | null>) | null = null;
+	private liveTimer: ReturnType<typeof setInterval> | null = null;
+	private liveBusy = false;
+	setLiveSource(src: (() => Promise<{ frame: string; model: string; fallback: string } | null>) | null): void {
+		this.liveSource = src;
+		if (src) this.ensureLiveTimer();
+		else this.clearLiveTimer();
+	}
+	private ensureLiveTimer(): void {
+		if (this.liveTimer || !this.tty()) return;
+		this.liveTimer = setInterval(() => void this.liveTick(), 1000);
+		this.liveTimer.unref();
+	}
+	private clearLiveTimer(): void {
+		if (this.liveTimer) clearInterval(this.liveTimer);
+		this.liveTimer = null;
+		this.liveBusy = false;
+	}
+	private async liveTick(): Promise<void> {
+		const src = this.liveSource;
+		if (!src || this.liveBusy) return;
+		if (!this.tty()) {
+			this.setLiveSource(null);
+			return;
+		}
+		if (this.installedRows === 0) return;
+		this.liveBusy = true;
+		try {
+			const next = await src();
+			if (next === null) this.setLiveSource(null);
+			else this.show(next.frame, next.model, next.fallback);
+		} finally {
+			this.liveBusy = false;
+		}
+	}
 	// Tears down the footer and erases both rows; silent when the
 	// footer was never installed (pipes stay escape-free).
 	dispose(): void {
@@ -619,6 +665,7 @@ export class HostFooter {
 	}
 	private reset(): void {
 		this.clearTipsTimer();
+		this.clearLiveTimer();
 		if (this.installedRows === 0) return;
 		this.write("\x1b[s");
 		this.write(`\x1b[${this.installedRows - 1};1H\x1b[2K`);

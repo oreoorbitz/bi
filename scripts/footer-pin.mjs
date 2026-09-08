@@ -313,6 +313,9 @@ function harness(rows, tty, tips = { corpus: [] }) {
 	check(narrow === "ctx 20…", `narrow caps to one row (got ${JSON.stringify(narrow)})`);
 }
 
+// bi#169: sections 14-15 pin the context% segment (used_tokens known /
+// null-legacy / stale-omit) and the live source (zero-byte unchanged,
+// null-release, pipes never start).
 // 13 — bi#186 tips slot: right-aligned on the model row, textMuted.
 {
 	const savedTheme = process.env.BI_THEME;
@@ -339,6 +342,52 @@ function harness(rows, tty, tips = { corpus: [] }) {
 		if (savedNoColor === undefined) delete process.env.NO_COLOR;
 		else process.env.NO_COLOR = savedNoColor;
 	}
+}
+
+// 14 — context% segment (bi#169): rides the frame when used_tokens is
+// known; null keeps the legacy bytes (the pipe fallback contract).
+{
+	const ctx = await render_footer_frame_async("anthropic", "claude-haiku-4-5", "medium", 1, 1, 200, { theme: null, used_tokens: 50000 });
+	check(ctx === "anthropic/claude-haiku-4-5 · thinking medium · 1 turn · 1 message · context: 25%", `frame carries context: 25% (got ${JSON.stringify(ctx)})`);
+	const legacy = await render_footer_frame_async("anthropic", "claude-haiku-4-5", "medium", 1, 1, 200, { theme: null });
+	check(legacy === "anthropic/claude-haiku-4-5 · thinking medium · 1 turn · 1 message", "null usage keeps the legacy bytes (pipes byte-identical)");
+	const stale = await render_footer_frame_async("anthropic", "nope-xyz", "medium", 1, 1, 200, { theme: null, used_tokens: 50000 });
+	check(stale === "anthropic/nope-xyz · thinking medium · 1 turn · 1 message", "stale model omits the segment, never bricks");
+	const fallback = await format_repl_footer_async("anthropic", "claude-haiku-4-5", "medium", 1, 1, { theme: null, used_tokens: 50000 });
+	check(fallback === ctx, "printed fallback carries the same segment");
+}
+
+// 15 — live source (bi#169): unchanged frames write zero bytes, a null
+// source releases the timer, pipes never start it.
+{
+	const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+	const h = harness(24, true);
+	h.footer.show(F1, M1, F1);
+	h.clear();
+	let calls = 0;
+	h.footer.setLiveSource(async () => {
+		calls++;
+		return calls === 1 ? { frame: F1, model: M1, fallback: F1 } : null;
+	});
+	await sleep(1300);
+	check(calls === 1, `live timer fires while the turn runs (calls=${calls})`);
+	check(h.bytes() === "", "unchanged live frame writes zero bytes");
+	await sleep(1200);
+	check(calls === 2, `second tick returns null (calls=${calls})`);
+	await sleep(1300);
+	check(calls === 2, `null source releases the timer — no third tick (calls stayed ${calls})`);
+	h.footer.dispose();
+	const p = harness(24, false);
+	p.footer.show(F1, M1, F1);
+	p.clear();
+	let pipeCalls = 0;
+	p.footer.setLiveSource(async () => {
+		pipeCalls++;
+		return { frame: F1, model: M1, fallback: F1 };
+	});
+	await sleep(1300);
+	check(pipeCalls === 0 && p.bytes() === "", "pipes never start the live timer");
+	p.footer.dispose();
 }
 
 // 11 — host segment suppliers (footer_info): ~/ collapse, branch oracle.

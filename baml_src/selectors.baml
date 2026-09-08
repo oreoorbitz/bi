@@ -562,6 +562,23 @@ test "cycle refuses empty and single sets" {
     assert.is_true(cycle_model_forward("bogus", ["gpt-4o"]) is null)
 }
 
+// Live context-pressure segment (bi#169): `context: N%` of the
+// catalog window consumed by used_tokens (the host's approximate
+// estimate, compaction bi#97). Unknown usage (null), unknown model
+// (stale id), or a non-positive window all omit the segment — never
+// "NaN%", never a bricked row. Integer division floors the percent.
+function context_segment(used: int?, window: int?) -> string {
+    if let u: int = used {
+        if let w: int = window {
+            if (u < 0 || w <= 0) { "" } else { `context: ${u * 100 / w}%` }
+        } else {
+            ""
+        }
+    } else {
+        ""
+    }
+}
+
 function footer_text(
     provider: string,
     model: string,
@@ -570,6 +587,7 @@ function footer_text(
     messages: int,
     cwd: string? = null,
     branch: string? = null,
+    used_tokens: int? = null,
 ) -> string {
     let tm = if (turns == 1) {
         "1 turn"
@@ -591,7 +609,14 @@ function footer_text(
     } else {
         ""
     };
-    `${provider}/${model} · thinking ${thinking} · ${tm} · ${mm}${cs}${bs}`
+    let xs = match (GetModel(model)) {
+        null => "",
+        let m: Model => {
+            let seg = context_segment(used_tokens, m.context_window);
+            if (seg == "") { "" } else { ` · ${seg}` }
+        },
+    };
+    `${provider}/${model} · thinking ${thinking} · ${tm} · ${mm}${cs}${bs}${xs}`
 }
 
 function format_repl_footer(
@@ -603,9 +628,10 @@ function format_repl_footer(
     theme: string? = null,
     cwd: string? = null,
     branch: string? = null,
+    used_tokens: int? = null,
 ) -> string {
     style_segment(
-        footer_text(provider, model, thinking, turns, messages, cwd = cwd, branch = branch),
+        footer_text(provider, model, thinking, turns, messages, cwd = cwd, branch = branch, used_tokens = used_tokens),
         "dim",
         theme,
     )
@@ -621,7 +647,9 @@ function format_repl_footer(
 // lives exclusively on row 1 (footer_text), so no fact prints twice.
 // Args stay for call-site stability (cli.ts passes provider/thinking;
 // the split is pinned, not the signature). Stale ids render an empty
-// row rather than bricking; bi#169's live context:% lands here next.
+// row rather than bricking. The live context:% segment (bi#169) lives
+// in footer_text (row 1), not here — row 2 keeps the static catalog
+// window only, so no fact prints twice.
 // Width-capped like the footer frame; pipes get the plain text via
 // theme null.
 function model_line_text(provider: string, model: string, thinking: string, width: int) -> string {
@@ -672,9 +700,10 @@ function render_footer_frame(
     theme: string? = null,
     cwd: string? = null,
     branch: string? = null,
+    used_tokens: int? = null,
 ) -> string {
     style_segment(
-        truncate_chars(footer_text(provider, model, thinking, turns, messages, cwd = cwd, branch = branch), width),
+        truncate_chars(footer_text(provider, model, thinking, turns, messages, cwd = cwd, branch = branch, used_tokens = used_tokens), width),
         "dim",
         theme,
     )
@@ -841,6 +870,44 @@ test "footer appends cwd and branch when present" {
         footer_text("xai", "grok-4.6", "high", 2, 5),
         "xai/grok-4.6 · thinking high · 2 turns · 5 messages",
     )
+}
+
+test "footer context segment pins shape and omission (bi#169)" {
+    // claude-haiku-4-5 carries a 200k catalog window: quarter used.
+    assert.equal(context_segment(50000, 200000), "context: 25%");
+    assert.equal(context_segment(0, 200000), "context: 0%");
+    // Floors, never NaN: unknown usage, unknown window, zero window.
+    assert.equal(context_segment(null, 200000), "");
+    assert.equal(context_segment(50000, null), "");
+    assert.equal(context_segment(50000, 0), "");
+    assert.equal(context_segment(-1, 200000), "");
+    // Threaded through the frame; omitted by default (pipes stay byte-identical).
+    assert.equal(
+        footer_text("anthropic", "claude-haiku-4-5", "medium", 1, 1, used_tokens = 50000),
+        "anthropic/claude-haiku-4-5 · thinking medium · 1 turn · 1 message · context: 25%",
+    );
+    assert.equal(
+        footer_text("anthropic", "claude-haiku-4-5", "medium", 1, 1),
+        "anthropic/claude-haiku-4-5 · thinking medium · 1 turn · 1 message",
+    );
+    // Stale model id omits even when usage is known — never bricks.
+    assert.equal(
+        footer_text("anthropic", "nope-xyz", "medium", 1, 1, used_tokens = 50000),
+        "anthropic/nope-xyz · thinking medium · 1 turn · 1 message",
+    );
+    assert.equal(
+        render_footer_frame("anthropic", "claude-haiku-4-5", "medium", 1, 1, 80, used_tokens = 50000),
+        "anthropic/claude-haiku-4-5 · thinking medium · 1 turn · 1 message · context: 25%",
+    )
+}
+
+// Abort hint (bi#169): the transient-hint channel text for a mid-turn
+// abort. BAML-shaped so the host paints it verbatim — the host owns
+// when it shows/clears, BAML owns the words.
+function abort_hint_text() -> string { "turn aborted — transcript unchanged" }
+
+test "abort hint text is BAML-shaped (bi#169)" {
+    assert.equal(abort_hint_text(), "turn aborted — transcript unchanged")
 }
 
 // ---------------------------------------------------------------------------
