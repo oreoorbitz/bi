@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { GetTool_async, ListTools_async, render_tool_diff_async, refuse_bash_blocked_async, refuse_bash_timeout_async, refuse_read_binary_async, refuse_read_outside_root_async, refuse_read_too_large_async, refuse_write_outside_root_async, refuse_write_untrusted_async, refuse_write_too_large_async, edit_missing_text_async, type ToolSpec } from "../baml_sdk/index.js";
+import { GetTool_async, ListTools_async, render_tool_diff_async, refuse_bash_blocked_async, refuse_bash_timeout_async, refuse_read_binary_async, refuse_read_outside_root_async, refuse_read_too_large_async, refuse_write_outside_root_async, refuse_write_untrusted_async, refuse_write_too_large_async, edit_missing_text_async, gate_meta_tool_materialization_async, mine_meta_tools_async, MaterializeRefuse, type MetaToolProposal, type MetaToolSpec, type SessionTrace, type ToolSpec } from "../baml_sdk/index.js";
 import { checkBaisIssues, createBaisIssue, graphBaisIssues, loadBaisIssues, moveBaisIssue, readyBaisIssues } from "./bais.js";
 import { colorizeDiffLines } from "./diff-render.js";
 import { getStoredTrust } from "./trust.js";
@@ -490,6 +490,28 @@ export function buildTranscriptDigest(
 		recent,
 		skills_loaded: opts.skillsLoaded ?? [],
 	};
+}
+
+// hub#207: meta-tools mined from session transcripts (arXiv:2601.22037).
+// BAML owns mining (mine_meta_tools — recurring contiguous tool-call
+// sequences across SessionTrace trajectories, one proposal per distinct
+// sequence) and the materialization gate (hub#200 flip-gate evidence);
+// the host stays a thin pass-through. Materializing yields a plain-data
+// MetaToolSpec — staged for human approval like hub#203 review proposals,
+// never auto-installed. Refusals arrive as named MaterializeRefuse slugs
+// (bi#55) and surface here as thrown errors naming the reason.
+export type { MetaToolProposal, MetaToolSpec, SessionTrace } from "../baml_sdk/index.js";
+
+export async function mineMetaTools(sessions: SessionTrace[], minSupport = 2): Promise<MetaToolProposal[]> {
+	return mine_meta_tools_async(sessions, { min_support: minSupport });
+}
+
+export async function materializeMetaTool(proposal: MetaToolProposal): Promise<MetaToolSpec> {
+	const verdict = await gate_meta_tool_materialization_async(proposal);
+	if (verdict instanceof MaterializeRefuse) {
+		throw new Error(`meta-tool materialization refused: ${verdict.reason}`);
+	}
+	return verdict;
 }
 
 // BAML is spec, host is executor — dispatch table for the agent loop.
