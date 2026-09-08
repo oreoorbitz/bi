@@ -27,6 +27,7 @@ class Credential {
 class CredentialInfo {
     provider_id: string,
     type: string,
+    expires: int? @description("OAuth access-token expiry, epoch millis; null when unknown or non-expiring"),
 }
 
 // A stored credential is usable when its provider is known, its type tag
@@ -80,8 +81,10 @@ class AuthDecision {
 // `bi login --oauth` (bi#22 core) and per-provider flows (bi#23 for
 // anthropic, bi#24 for xai/kimi-coding/openrouter) build on this
 // predicate; the API-key path stays valid meanwhile. Non-catalog flow
-// ids (openai-codex, github-copilot, radius) are intentionally absent:
-// their backends land in bi#15.
+// ids (openai-codex, radius) are intentionally absent: their backends
+// never landed (custom wire, see bi#15). github-copilot stays absent
+// too — its API-key backend landed in bi#15 but the OAuth subscription
+// flow is still pending (a bi#24-style per-provider flow).
 function SupportsOAuth(provider: string) -> bool {
     provider == "anthropic"
         || provider == "xai"
@@ -155,24 +158,40 @@ class OAuthRow {
     source: string,
     cred_type: string?,
     auth_env: string?,
+    expires: int? @description("OAuth access-token expiry, epoch millis; null when unknown or non-expiring"),
 }
 
 // pi's oauth-selector login/logout list, trimmed to bi's line REPL: one
 // row per registry provider, unconfigured rows name their own fix.
-function format_oauth_status(rows: OAuthRow[]) -> string {
+// bi#102: expired oauth rows flag BEFORE a turn fails on them — the
+// staleness decision reuses OAuthNeedsRefresh (same 5-minute window as
+// the turn loop), null expiry reads as unknown, never expired.
+function format_oauth_status(rows: OAuthRow[], now_ms: int) -> string {
     if (rows.length() == 0) {
         "(no providers)"
     } else {
         let out = "";
+        let n = 1;
         for (let r in rows) {
-            let detail = if (r.source == "stored") {
+            let stale = if (r.source == "stored" && r.cred_type == "oauth") {
+                match (r.expires) {
+                    null => false,
+                    let e: int => OAuthNeedsRefresh(e, now_ms),
+                }
+            } else {
+                false
+            };
+            let detail = if (stale) {
+                `stored (oauth, expired — /oauth ${n} refreshes)`
+            } else if (r.source == "stored") {
                 `stored (${r.cred_type ?? "credential"})`
             } else if (r.source == "env") {
                 `env (${r.auth_env ?? "API key"})`
             } else {
                 `not configured (bi login ${r.provider_id})`
             };
-            out = `${out}${r.provider_id}: ${detail}\n`
+            out = `${out}${n}  ${r.provider_id}: ${detail}\n`;
+            n = n + 1
         }
         ;
         out

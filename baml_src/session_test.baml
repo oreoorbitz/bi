@@ -255,11 +255,132 @@ testset "session header + trust (bi namespace)" {
         assert.equal(format_trust_status("/work", "session"), "trust /work: session")
     }
 
+    test "first-run options mirror the theme catalog and the safe analytics default" {
+        let themes = setup_theme_options();
+        assert.equal(
+            themes.map((o) -> {
+                o.value
+            }),
+            ["default", "light", "none"],
+        );
+        assert.is_true(
+            themes.every((o) -> {
+                o.label.length() > 0 && o.description.length() > 0
+            }),
+        );
+        let analytics = setup_analytics_options();
+        assert.equal(
+            analytics.map((o) -> {
+                o.value
+            }),
+            ["share", "keep"],
+        )
+    }
+
+    test "first-run copy names the detected theme and the no-telemetry fact" {
+        let step = format_first_run_theme_step("light");
+        assert.contains(step, "Pick a theme");
+        assert.contains(step, "light");
+        assert.contains(step, "won't ask again");
+        assert.contains(format_first_run_analytics_step(), "anonymous");
+        assert.contains(format_first_run_analytics_step(), "no telemetry");
+        assert.contains(format_first_run_done("light", false), "theme light");
+        assert.contains(format_first_run_done("light", false), "don't share");
+        assert.contains(format_first_run_done("default", true), "share anonymous usage data");
+        assert.contains(format_setup_skipped(), "won't ask again")
+    }
+
+    test "analytics answers never guess consent" {
+        assert.is_true(parse_analytics_answer("y") == true);
+        assert.is_true(parse_analytics_answer("share") == true);
+        assert.is_true(parse_analytics_answer("n") == false);
+        assert.is_true(parse_analytics_answer("don't") == false);
+        assert.is_true(parse_analytics_answer("maybe") is null);
+        assert.is_true(parse_analytics_answer("") is null)
+    }
+
+    test "setup status shows recorded choices, undecided reads honest" {
+        let decided = format_setup_status("light", false, true);
+        assert.contains(decided, "theme = light");
+        assert.contains(decided, "don't share");
+        assert.contains(decided, "setup = done");
+        let shared = format_setup_status("default", true, true);
+        assert.contains(shared, "share");
+        let fresh = format_setup_status("default", null, false);
+        assert.contains(fresh, "undecided");
+        assert.contains(fresh, "no telemetry");
+        assert.contains(fresh, "setup = pending")
+    }
+
+    test "branch gutters draw connectors and continuing lines" {
+        assert.equal(branch_row_prefix(0, true, []), "");
+        assert.equal(branch_row_prefix(1, true, []), "└─ ");
+        assert.equal(branch_row_prefix(1, false, []), "├─ ");
+        assert.equal(branch_row_prefix(2, true, [true]), "│  └─ ");
+        assert.equal(branch_row_prefix(2, false, [false]), "   ├─ ");
+        assert.equal(branch_row_prefix(2, false, [true]), "│  ├─ ");
+        assert.equal(branch_row_prefix(3, true, [true, false]), "│     └─ ")
+    }
+
+    test "branch rows mark current, name labels, count turns" {
+        let cur = format_branch_row("bbb", null, 3, true, "├─ ");
+        assert.contains(cur, "* ├─ bbb — 3 turns");
+        let one = format_branch_row("aaa", "First", 1, false, "");
+        assert.contains(one, "  aaa — \"First\" — 1 turn");
+        let list = format_branches_list([one, cur]);
+        assert.contains(list, "aaa");
+        assert.contains(list, "bbb");
+        assert.equal(
+            format_branches_list([]),
+            "no saved sessions — /fork or /clone to grow branches",
+        )
+    }
+
+    test "branch summary names from, kept count, and new id" {
+        let fork = format_branch_summary("forked", "aaa", 5, "bbb");
+        assert.contains(fork, "[branch]");
+        assert.contains(fork, "forked aaa → bbb");
+        assert.contains(fork, "5 messages kept");
+        let one = format_branch_summary("switched", "aaa", 1, "bbb");
+        assert.contains(one, "1 message kept");
+        assert.contains(format_branch_summary("cloned", "aaa", 0, "ccc"), "0 messages kept")
+    }
+
+    test "fork picker numbers user messages, flattens and caps rows" {
+        let one = format_fork_row(1, 3, "retry from here");
+        assert.contains(one, "1 Message 1 of 3 — retry from here");
+        let multi = format_fork_row(2, 2, "line one\nline two");
+        assert.contains(multi, "2 Message 2 of 2 — line one line two");
+        // 88-char input self-checked, so the cap length below is honest.
+        let long_text = "aaaaaaaaaa put some words here to pad this out past eighty chars total xxxxxxxxxxxxxxxxx";
+        assert.equal(long_text.length(), 88);
+        let capped = format_fork_row(1, 1, long_text);
+        assert.contains(capped, "…");
+        assert.equal(capped.length(), 101);
+        let list = format_fork_list(["first", "second"]);
+        assert.contains(list, "1 Message 1 of 2 — first");
+        assert.contains(list, "2 Message 2 of 2 — second");
+        assert.equal(format_fork_list([]), "no messages to fork from")
+    }
+
     test "trust options cover the three decisions in order" {
         let opts = trust_options();
-        assert.equal(opts.map((o) -> { o.decision }), ["allow", "session", "deny"]);
-        assert.is_true(opts.every((o) -> { o.label.length() > 0 && o.description.length() > 0 }));
+        assert.equal(
+            opts.map((o) -> {
+                o.decision
+            }),
+            ["allow", "session", "deny"],
+        );
+        assert.is_true(
+            opts.every((o) -> {
+                o.label.length() > 0 && o.description.length() > 0
+            }),
+        );
         // The modal's decisions are exactly the parser's vocabulary.
-        assert.is_true(opts.every((o) -> { parse_trust_answer(o.decision) == o.decision }))
+        assert.is_true(
+            opts.every((o) -> {
+                parse_trust_answer(o.decision) == o.decision
+            }),
+        )
     }
 }

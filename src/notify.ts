@@ -21,7 +21,7 @@
 
 import { get as httpGet, type ClientRequest, type IncomingMessage } from "node:http";
 import { get as httpsGet } from "node:https";
-import { shape_notification } from "../baml_sdk/index.js";
+import { shape_notification, format_terminal_notification } from "../baml_sdk/index.js";
 
 export interface HubEvent {
 	seq: number;
@@ -406,4 +406,185 @@ export class HubSubscriber {
 		}, delay);
 		if (typeof (this.timer as any).unref === "function") (this.timer as any).unref();
 	}
+}
+
+// ── bi#171: user-facing terminal notifications ──────────────────────
+// Split mirrors the hub half above: BAML shapes the *text* (notify.baml
+// `format_terminal_notification` — sanitize + join + 240-char bound),
+// the host owns the *bytes* (OSC 9 / BEL / tmux DCS) and the gates
+// (enabled / unfocused / TTY). Nothing above this line changes: the
+// agent-facing prompt-context lines keep their exact shape.
+// Grounded in kimi-code terminal-notification.ts (read-only): OSC 9 on
+// the allow-list, bare BEL elsewhere, tmux DCS wrap with ESC doubling,
+// control-char sanitize, per-key dedupe with an enabled/unfocused gate.
+// Two deliberate divergences: the `notifications` settings key defaults
+// to unset = disabled (zero bytes, byte-identical to today), and focus
+// is unknown (bi has no ?1004h tracking) so `unfocused` emits —
+// page rather than stay silent when we cannot prove focus.
+
+export const TERMINAL_ESC = "\u001B";
+export const TERMINAL_BEL = "\u0007";
+export const TERMINAL_ST = "\\";
+export const MAX_TERMINAL_NOTIFICATION_MESSAGE_LENGTH = 240;
+
+export interface TerminalNotification {
+	readonly title: string;
+	readonly body?: string | undefined;
+}
+
+export interface TerminalNotifyBuildOptions {
+	readonly supportsOsc9: boolean;
+	readonly insideTmux: boolean;
+}
+
+export interface TerminalNotifyGate {
+	readonly enabled: boolean;
+	readonly condition: "unfocused" | "always";
+	readonly focused?: boolean;
+}
+
+export interface TerminalNotifySink {
+	readonly isTTY?: boolean;
+	write(s: string): void;
+}
+
+// Allow-list mirrored from kimi: BEL is safe everywhere, OSC 9 only
+// where a desktop notification is known to render (else escape garbage
+// prints on screen). Kitty/Ghostty report via TERM, the rest via
+// TERM_PROGRAM.
+export function supportsOsc9Notification(env: NodeJS.ProcessEnv = process.env): boolean {
+	const termProgram = env["TERM_PROGRAM"] ?? "";
+	if (
+		termProgram === "iTerm.app" ||
+		termProgram === "WezTerm" ||
+		termProgram === "ghostty" ||
+		termProgram === "WarpTerminal"
+	) {
+		return true;
+	}
+	const term = env["TERM"] ?? "";
+	if (term === "xterm-kitty" || term === "xterm-ghostty") return true;
+	return false;
+}
+
+export function isInsideTmux(env: NodeJS.ProcessEnv = process.env): boolean {
+	const tmux = env["TMUX"] ?? "";
+	return tmux.length > 0;
+}
+
+// BAML-shaped text: sanitize + "title: body" + 240-char bound. All user
+// text (model output, session paths) crosses this before bytes exist.
+export function formatTerminalNotification(title: string, body?: string): string {
+	return format_terminal_notification(title, body ?? null);
+}
+
+// Pure sequence builder (kimi's buildTerminalNotificationSequences).
+// Takes BAML-shaped text, never raw user input: BEL/ESC were stripped
+// at shaping time so the payload cannot forge or escape the OSC.
+// - supportsOsc9: single OSC 9 desktop-notification sequence.
+// - else: bare BEL (single byte, passes through tmux unchanged).
+// - insideTmux + OSC 9: tmux DCS passthrough with ESC doubling, else
+//   tmux swallows the OSC.
+export function buildTerminalNotificationSequences(
+	message: string,
+	options: TerminalNotifyBuildOptions,
+): string[] {
+	if (message.length === 0) return [];
+	if (!options.supportsOsc9) {
+		return [TERMINAL_BEL];
+	}
+	const osc9 = `${TERMINAL_ESC}]9;${message}${TERMINAL_BEL}`;
+	if (options.insideTmux) {
+		const escaped = osc9.split(TERMINAL_ESC).join(TERMINAL_ESC + TERMINAL_ESC);
+		return [`${TERMINAL_ESC}Ptmux;${escaped}${TERMINAL_ESC}${TERMINAL_ST}`];
+	}
+	return [osc9];
+}
+
+// `notifications` settings key → gate. Unset, "off", or anything the
+// validator would reject resolves disabled: a typo'd value fails
+// silent (zero bytes), never blasts escapes at the terminal.
+export function terminalNotifyGate(setting: string | null | undefined): TerminalNotifyGate {
+	if (setting === "always") return { enabled: true, condition: "always" };
+	if (setting === "unfocused") return { enabled: true, condition: "unfocused" };
+	return { enabled: false, condition: "unfocused" };
+}
+
+// Per-key dedupe + gate + TTY sink. Returns true only when bytes were
+// written. Pipes and non-TTY sessions emit nothing (the sink's isTTY
+// is the check — default stream is stderr, where bi writes turns).
+export class TerminalNotifier {
+	private seen = new Set<string>();
+
+	notifyOnce(
+		key: string,
+		notification: TerminalNotification,
+		gate: TerminalNotifyGate,
+		opts: {
+			supportsOsc9?: boolean;
+			insideTmux?: boolean;
+			focused?: boolean;
+			stream?: TerminalNotifySink;
+		} = {},
+	): boolean {
+		if (!gate.enabled) return false;
+		if (this.seen.has(key)) return false;
+		this.seen.add(key);
+		if (gate.condition === "unfocused" && (opts.focused ?? gate.focused ?? false)) return false;
+		const stream = opts.stream ?? process.stderr;
+		if (!stream.isTTY) return false;
+		const message = formatTerminalNotification(notification.title, notification.body);
+		const sequences = buildTerminalNotificationSequences(message, {
+			supportsOsc9: opts.supportsOsc9 ?? supportsOsc9Notification(),
+			insideTmux: opts.insideTmux ?? isInsideTmux(),
+		});
+		for (const seq of sequences) stream.write(seq);
+		return sequences.length > 0;
+	}
+}
+
+// Exactly-once turn-complete page ("bi turn complete"). Keyed per
+// session + turn: /new and /resume reset the counter, so a bare turn
+// number would dedupe a fresh session's early turns into silence.
+export function notifyTurnComplete(
+	notifier: TerminalNotifier,
+	turn: number,
+	opts: {
+		session?: string;
+		setting?: string | null;
+		focused?: boolean;
+		supportsOsc9?: boolean;
+		insideTmux?: boolean;
+		stream?: TerminalNotifySink;
+	} = {},
+): boolean {
+	return notifier.notifyOnce(
+		`turn:${opts.session ?? "-"}:${turn}`,
+		{ title: "bi turn complete" },
+		terminalNotifyGate(opts.setting ?? null),
+		opts,
+	);
+}
+
+// Approval-reuse helper (per-tool approval issue): same OSC/tmux logic
+// under an `approval:<id>` key. Not wired to any prompt yet — exported
+// so the approval surface reuses it without duplicating bytes.
+export function notifyApprovalRequired(
+	notifier: TerminalNotifier,
+	id: string,
+	toolName: string,
+	opts: {
+		setting?: string | null;
+		focused?: boolean;
+		supportsOsc9?: boolean;
+		insideTmux?: boolean;
+		stream?: TerminalNotifySink;
+	} = {},
+): boolean {
+	return notifier.notifyOnce(
+		`approval:${id}`,
+		{ title: "bi approval required", body: toolName },
+		terminalNotifyGate(opts.setting ?? null),
+		opts,
+	);
 }

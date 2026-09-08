@@ -186,6 +186,115 @@ test "branch prompt names the branch and reuses sections" {
     assert.is_true(p.index_of("user: try another approach") != null)
 }
 
+// Transcript marker (bi#97): the splice leaves this user turn in history,
+// so the session file carries the compaction record and /resume can replay
+// the block. BAML owns format + parse; the host owns token measurement
+// (estimateHistoryTokens) and emission (printCompactionSummary). The legacy
+// marker ("... folded in):\n...") carries no token counts — it parses with
+// null tokens and replays as plain text, never invented numbers.
+class CompactionMarker {
+    folded_turns: int,
+    tokens_before: int?,
+    tokens_after: int?,
+    summary: string,
+}
+
+function format_compaction_marker(
+    folded_turns: int,
+    tokens_before: int,
+    tokens_after: int,
+    summary: string,
+) -> string {
+    `Session summary (compacted, ${folded_turns} earlier turns folded in, ${tokens_before}→${tokens_after} tokens):\n${summary}`
+}
+
+function parse_uint_digits(s: string) -> int? {
+    if (s.length() == 0) {
+        null
+    } else {
+        let v = 0;
+        let ok = true;
+        for (let c in s.chars()) {
+            match ("0123456789".index_of(c)) {
+                null => {
+                    ok = false
+                },
+                let d: int => {
+                    v = v * 10 + d
+                },
+            }
+        }
+        ;
+        if (ok) {
+            v
+        } else {
+            null
+        }
+    }
+}
+
+function parse_compaction_marker(text: string) -> CompactionMarker? {
+    let open = "Session summary (compacted, ";
+    if (!text.starts_with(open)) {
+        null
+    } else {
+        let r = text.slice(open.length(), text.length());
+        match (r.index_of(" earlier turns folded in")) {
+            null => null,
+            let q1: int => {
+                match (parse_uint_digits(r.slice(0, q1))) {
+                    null => null,
+                    let folded: int => {
+                        let r2 = r.slice(q1 + " earlier turns folded in".length(), r.length());
+                        if (r2.starts_with("):\n")) {
+                            CompactionMarker {
+                                folded_turns: folded,
+                                tokens_before: null,
+                                tokens_after: null,
+                                summary: r2.slice(3, r2.length()),
+                            }
+                        } else if (r2.starts_with(", ")) {
+                            let r3 = r2.slice(2, r2.length());
+                            match (r3.index_of("→")) {
+                                null => null,
+                                let qa: int => {
+                                    match (parse_uint_digits(r3.slice(0, qa))) {
+                                        null => null,
+                                        let before: int => {
+                                            let r4 = r3.slice(qa + "→".length(), r3.length());
+                                            match (r4.index_of(" tokens):\n")) {
+                                                null => null,
+                                                let qb: int => {
+                                                    match (parse_uint_digits(r4.slice(0, qb))) {
+                                                        null => null,
+                                                        let after: int => {
+                                                            CompactionMarker {
+                                                                folded_turns: folded,
+                                                                tokens_before: before,
+                                                                tokens_after: after,
+                                                                summary: r4.slice(
+                                                                    qb + " tokens):\n".length(),
+                                                                    r4.length(),
+                                                                ),
+                                                            }
+                                                        },
+                                                    }
+                                                },
+                                            }
+                                        },
+                                    }
+                                },
+                            }
+                        } else {
+                            null
+                        }
+                    },
+                }
+            },
+        }
+    }
+}
+
 test "summary schema round-trips through construction" {
     let s = CompactionSummary {
         goal: "fix login",
@@ -201,4 +310,51 @@ test "summary schema round-trips through construction" {
     assert.equal(b.summary.goal, "fix login");
     assert.equal(b.read_files.length(), 1);
     assert.equal(b.branch_id, "branch-7")
+}
+
+test "marker formats, parses, and round-trips" {
+    let m = format_compaction_marker(7, 48000, 12000, "did stuff");
+    assert.equal(
+        m,
+        "Session summary (compacted, 7 earlier turns folded in, 48000→12000 tokens):\ndid stuff",
+    );
+    match (parse_compaction_marker(m)) {
+        null => assert.is_true(false),
+        let p: CompactionMarker => {
+            assert.equal(p.folded_turns, 7);
+            assert.equal(p.tokens_before ?? -1, 48000);
+            assert.equal(p.tokens_after ?? -1, 12000);
+            assert.equal(p.summary, "did stuff")
+        },
+    };
+    // Multiline summaries ride along verbatim.
+    match (parse_compaction_marker(format_compaction_marker(1, 100, 90, "a\nb"))) {
+        null => assert.is_true(false),
+        let p: CompactionMarker => assert.equal(p.summary, "a\nb"),
+    }
+}
+
+test "marker rejects non-markers and legacy parses tokenless" {
+    assert.is_true(parse_compaction_marker("user: hello") is null);
+    assert.is_true(
+        parse_compaction_marker("Session summary (compacted, x earlier turns folded in):\ny") is null,
+    );
+    assert.is_true(
+        parse_compaction_marker("Session summary (compacted, 7 earlier turns folded in, 48x→12 tokens):\ny") is null,
+    );
+    assert.is_true(
+        parse_compaction_marker("Session summary (compacted, 7 earlier turns folded in, 48000→12000 tokens) y") is null,
+    );
+    match (parse_compaction_marker("Session summary (compacted, 7 earlier turns folded in):\ndid stuff")) {
+        null => assert.is_true(false),
+        let p: CompactionMarker => {
+            assert.equal(p.folded_turns, 7);
+            assert.is_true(p.tokens_before is null);
+            assert.is_true(p.tokens_after is null);
+            assert.equal(p.summary, "did stuff")
+        },
+    };
+    assert.is_true(parse_uint_digits("") is null);
+    assert.is_true(parse_uint_digits("12a") is null);
+    assert.equal(parse_uint_digits("007") ?? -1, 7)
 }

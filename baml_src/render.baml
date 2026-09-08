@@ -143,7 +143,9 @@ function render_markdown_text(text: string, theme: string? = null) -> string {
                 in_block = false
             };
             let lang = line.slice(3, line.length()).trim();
-            if (lang.length() > 0 && in_fence) {
+            if (lang.length() > 0 && in_fence && is_mermaid_fence(lang)) {
+                style_segment("··· mermaid (diagram not rendered on this terminal)", "dim", theme)
+            } else if (lang.length() > 0 && in_fence) {
                 style_segment(`··· ${lang}`, "dim", theme)
             } else {
                 style_segment("···", "dim", theme)
@@ -166,6 +168,44 @@ function render_markdown_text(text: string, theme: string? = null) -> string {
         out.slice(0, out.length() - 1)
     } else {
         out
+    }
+}
+
+// SGR text attributes for the TTY markdown theme fns (bi#165). BAML
+// 0.17.0 has no \xHH string escapes (bi#76), so the ESC byte and the
+// reset suffix are both sliced off a style_segment probe — byte 0 of
+// any wrapped string is ESC and style_segment always appends the same
+// 4-byte reset. Attr codes are SGR parameters (theme-independent);
+// the theme only gates WHEN styling applies, same contract as
+// style_segment: null/unknown/none degrade to plain text.
+function text_attr(text: string, attr: string, theme_name: string?) -> string {
+    match (theme_name) {
+        null => text,
+        let name: string => {
+            if (name == "none" || get_theme(name) is null) {
+                text
+            } else {
+                let probe = style_segment("", "good", "default");
+                let esc = probe.slice(0, 1);
+                let reset = probe.slice(probe.length() - 4, probe.length());
+                let code = if (attr == "bold") {
+                    `${esc}[1m`
+                } else if (attr == "italic") {
+                    `${esc}[3m`
+                } else if (attr == "underline") {
+                    `${esc}[4m`
+                } else if (attr == "strikethrough") {
+                    `${esc}[9m`
+                } else {
+                    ""
+                };
+                if (code == "") {
+                    text
+                } else {
+                    `${code}${text}${reset}`
+                }
+            }
+        },
     }
 }
 
@@ -571,6 +611,25 @@ test "themed segments wrap, plain stays byte-clean" {
     assert.is_true(!render_markdown_text("# T\n```py\nx\n```", theme = "default").includes("```"))
 }
 
+test "text_attr wraps SGR attrs, degrades to plain" {
+    // Bold wraps "hi" (2) in a 4-char SGR open + 4-byte reset = 10,
+    // with no raw bytes typed here (same bi#76 length-pin trick as
+    // style_segment).
+    assert.equal(text_attr("hi", "bold", "default").length(), 10);
+    assert.contains(text_attr("hi", "bold", "default"), "[1m");
+    assert.contains(text_attr("hi", "italic", "default"), "[3m");
+    assert.contains(text_attr("hi", "underline", "default"), "[4m");
+    assert.contains(text_attr("hi", "strikethrough", "default"), "[9m");
+    // The reset suffix matches style_segment's probe-derived reset.
+    let probe = style_segment("", "good", "default");
+    let reset = probe.slice(probe.length() - 4, probe.length());
+    assert.equal(text_attr("hi", "bold", "default").slice(6, 10), reset);
+    assert.equal(text_attr("hi", "bold", null), "hi");
+    assert.equal(text_attr("hi", "bold", "none"), "hi");
+    assert.equal(text_attr("hi", "bold", "bogus"), "hi");
+    assert.equal(text_attr("hi", "bogus-attr", "default"), "hi")
+}
+
 test "tool status lines name call and outcome" {
     assert.equal(
         format_tool_start("bash", "{\"cmd\":\"ls -la /tmp\"}"),
@@ -952,4 +1011,360 @@ test "render_tool_diff omits oversized sides without the LCS table" {
     assert.equal(v.lines.at(3) ?? "", "+line0");
     assert.equal(v.lines.length(), 104);
     assert.equal(v.lines.at(103) ?? "", "(… 210 more lines)")
+}
+
+// ── bi#27 remainder: summary blocks, skill blocks, mermaid, working-state, images ──
+// pi renders branch/compaction/skill transcript blocks collapsed (one line +
+// expand hint) or expanded (header + markdown body). BAML owns the shaped
+// text; the host prints collapsed lines with console.log and expanded bodies
+// through the markdown path (see src/summary-blocks.ts). The expand hint is
+// host keybinding text, so it arrives as a parameter — BAML never invents it.
+// Theme null/none (pipes) stays byte-clean via style_segment passthrough.
+
+// Branch block (bi#88): names the parent id, kept message count, and new id
+// in both arms — the transcript records the branch point either way.
+function format_branch_block(
+    summary: string,
+    from_id: string,
+    new_id: string,
+    kept_messages: int,
+    expanded: bool,
+    expand_hint: string,
+    theme: string? = null,
+) -> string {
+    let head = `[branch] ${new_id} from ${from_id} · ${kept_messages} messages`;
+    if (expanded) {
+        `${style_segment(head, "accent", theme)}\n**Branch Summary**\n\n${summary}`
+    } else {
+        `${style_segment(head, "accent", theme)} (${expand_hint} to expand)`
+    }
+}
+
+// Compaction block (bi#97): folded-turn count, token range, and reclaimed
+// tokens in both arms — the transcript shows a compaction happened and what
+// it kept. Reclaimed clamps at zero: estimate noise can leave the post-cut
+// total above the pre-cut one, and a negative "reclaimed" would lie.
+function format_compaction_block(
+    summary: string,
+    tokens_before: int,
+    tokens_after: int,
+    folded_turns: int,
+    expanded: bool,
+    expand_hint: string,
+    theme: string? = null,
+) -> string {
+    let raw = tokens_before - tokens_after;
+    let reclaimed = if (raw < 0) {
+        0
+    } else {
+        raw
+    };
+    let head = `[compaction] compacted ${tokens_before}→${tokens_after} tokens · ${folded_turns} turns folded · ${reclaimed} reclaimed`;
+    if (expanded) {
+        `${style_segment(head, "accent", theme)}\n**Compacted ${tokens_before}→${tokens_after} tokens (${reclaimed} reclaimed)**\n\n${summary}`
+    } else {
+        `${style_segment(head, "accent", theme)} (${expand_hint} to expand)`
+    }
+}
+
+class SkillBlock {
+    name: string,
+    location: string,
+    content: string,
+    user_message: string?,
+}
+
+// pi's skill envelope exactly: `<skill name=".." location="..">\n..\n</skill>`
+// with an optional trailing `\n\n<user message>`. Anything else is not a
+// skill block (null) — the transcript prints such text as plain markdown.
+function parse_skill_block(text: string) -> SkillBlock? {
+    let open = "<skill name=\"";
+    if (!text.starts_with(open)) {
+        null
+    } else {
+        let r1 = text.slice(open.length(), text.length());
+        match (r1.index_of("\" location=\"")) {
+            null => null,
+            let q1: int => {
+                let name = r1.slice(0, q1);
+                let r2 = r1.slice(q1 + "\" location=\"".length(), r1.length());
+                match (r2.index_of("\">\n")) {
+                    null => null,
+                    let q2: int => {
+                        let location = r2.slice(0, q2);
+                        let r3 = r2.slice(q2 + "\">\n".length(), r2.length());
+                        match (r3.index_of("\n</skill>")) {
+                            null => null,
+                            let q3: int => {
+                                let content = r3.slice(0, q3);
+                                let tail = r3.slice(q3 + "\n</skill>".length(), r3.length());
+                                if (name == "" || location == "") {
+                                    null
+                                } else if (tail == "") {
+                                    SkillBlock {
+                                        name: name,
+                                        location: location,
+                                        content: content,
+                                        user_message: null,
+                                    }
+                                } else if (tail.starts_with("\n\n")) {
+                                    let msg = tail.slice(2, tail.length()).trim();
+                                    if (msg == "") {
+                                        SkillBlock {
+                                            name: name,
+                                            location: location,
+                                            content: content,
+                                            user_message: null,
+                                        }
+                                    } else {
+                                        SkillBlock {
+                                            name: name,
+                                            location: location,
+                                            content: content,
+                                            user_message: msg,
+                                        }
+                                    }
+                                } else {
+                                    null
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+        }
+    }
+}
+
+// Skill block (bi#98): collapsed names the skill, expanded adds its content;
+// a trailing user message rides along verbatim in both arms when present.
+function format_skill_block(
+    name: string,
+    content: string,
+    user_message: string?,
+    expanded: bool,
+    expand_hint: string,
+    theme: string? = null,
+) -> string {
+    let head = `[skill] ${name}`;
+    let tail = match (user_message) {
+        null => "",
+        let m: string => `\n${m}`,
+    };
+    if (expanded) {
+        `${style_segment(head, "accent", theme)}\n**${name}**\n\n${content}${tail}`
+    } else {
+        `${style_segment(head, "accent", theme)} (${expand_hint} to expand)${tail}`
+    }
+}
+
+// First whitespace-delimited token of a fence info string ("mermaid graph"
+// -> "mermaid"). pi lowercases; BAML 0.17.0 has no case conversion, so the
+// three casings authors actually write compare explicitly below.
+function fence_first_token(lang: string) -> string {
+    let t = lang.trim();
+    match (t.index_of(" ")) {
+        null => t,
+        let i: int => t.slice(0, i),
+    }
+}
+
+function is_mermaid_fence(lang: string) -> bool {
+    let tok = fence_first_token(lang);
+    // Tabs separate info words too; a tab inside the token disqualifies the
+    // fence rather than silently matching a prefix.
+    match (tok.index_of("\t")) {
+        null => tok == "mermaid" || tok == "Mermaid" || tok == "MERMAID",
+        let tab: int => false,
+    }
+}
+
+// Mermaid degrade (bi#99): no diagram renderer is vendored, so mermaid fences
+// degrade to labeled raw text — the opener names the gap, the body stays
+// byte-clean. width caps raw rows (truncate_chars + …); width <= 0 skips the
+// cap. Non-mermaid fences never reach here — the markdown walker filters.
+function shape_mermaid_block(code: string, width: int, theme: string? = null) -> string[] {
+    let opener = style_segment("··· mermaid (diagram not rendered on this terminal)", "dim", theme);
+    let closer = style_segment("···", "dim", theme);
+    let out = [opener];
+    for (let line in split_diff_lines(code)) {
+        if (width > 0 && line.length() > width) {
+            out.push(truncate_chars(line, width))
+        } else {
+            out.push(line)
+        }
+    }
+    out.push(closer);
+    out
+}
+
+// Working-state labels (bi#96): BAML owns the text, the host owns the tick.
+// The cancel hint is host keybinding text (null omits it). kind "working"
+// carries the caller's own label through; unknown kinds pass through as the
+// raw kind — never an invented label, never empty.
+function format_status_label(
+    kind: string,
+    label: string,
+    attempt: int,
+    max_attempts: int,
+    delay_secs: int,
+    reason: string,
+    cancel_hint: string? = null,
+) -> string {
+    let hint = match (cancel_hint) {
+        null => "",
+        let h: string => ` (${h} to cancel)`,
+    };
+    if (kind == "working") {
+        `${label}${hint}`
+    } else if (kind == "retry") {
+        `Retrying (${attempt}/${max_attempts}) in ${delay_secs}s...${hint}`
+    } else if (kind == "compaction") {
+        if (reason == "manual") {
+            `Compacting context...${hint}`
+        } else if (reason == "overflow") {
+            `Context overflow detected, auto-compacting...${hint}`
+        } else {
+            `Auto-compacting...${hint}`
+        }
+    } else if (kind == "branchSummary") {
+        `Summarizing branch...${hint}`
+    } else {
+        `${kind}${hint}`
+    }
+}
+
+// Transcript image fallback (bi#70, display leg only): when the terminal has
+// no graphics protocol (or stdout is a pipe) the transcript shows this dim
+// placeholder instead of raw bytes. Protocol detection + emission are byte
+// work in src/image-display.ts; the clipboard input path stays bi#32's.
+function format_image_placeholder(label: string, theme: string? = null) -> string {
+    style_segment(`[image: ${label}]`, "dim", theme)
+}
+
+test "branch block names parent, kept count, and new id" {
+    let shut = format_branch_block("kept the plan", "s1", "s2", 12, false, "enter", theme = null);
+    assert.equal(shut, "[branch] s2 from s1 · 12 messages (enter to expand)");
+    let open = format_branch_block("kept the plan", "s1", "s2", 12, true, "enter", theme = null);
+    assert.equal(open, "[branch] s2 from s1 · 12 messages\n**Branch Summary**\n\nkept the plan");
+    assert.contains(
+        format_branch_block("s", "a", "b", 1, true, "enter", theme = "default"),
+        "Branch Summary",
+    )
+}
+
+test "compaction block carries tokens, folded turns, and reclaimed" {
+    let shut = format_compaction_block("did stuff", 48000, 12000, 7, false, "enter", theme = null);
+    assert.equal(
+        shut,
+        "[compaction] compacted 48000→12000 tokens · 7 turns folded · 36000 reclaimed (enter to expand)",
+    );
+    let open = format_compaction_block("did stuff", 48000, 12000, 7, true, "enter", theme = null);
+    assert.equal(
+        open,
+        "[compaction] compacted 48000→12000 tokens · 7 turns folded · 36000 reclaimed\n**Compacted 48000→12000 tokens (36000 reclaimed)**\n\ndid stuff",
+    );
+    // Estimate noise never prints a negative reclaimed count.
+    assert.is_true(
+        (
+            format_compaction_block("s", 100, 200, 1, false, "enter", theme = null).index_of(
+                "0 reclaimed",
+            )
+        )
+            != null,
+    )
+}
+
+test "skill blocks parse the pi envelope and shape both arms" {
+    match (parse_skill_block("plain text")) {
+        null => assert.is_true(true),
+        let b: SkillBlock => assert.is_true(false),
+    }
+    match (parse_skill_block("<skill name=\"n\" location=\"l\">\nbody here\n</skill>")) {
+        null => assert.is_true(false),
+        let b: SkillBlock => {
+            assert.equal(b.name, "n");
+            assert.equal(b.location, "l");
+            assert.equal(b.content, "body here");
+            assert.is_true(b.user_message is null)
+        },
+    }
+    match (parse_skill_block("<skill name=\"n\" location=\"l\">\nbody\n</skill>\n\nhello")) {
+        null => assert.is_true(false),
+        let b: SkillBlock => assert.equal(b.user_message ?? "", "hello"),
+    }
+    assert.is_true(parse_skill_block("<skill name=\"\" location=\"l\">\nbody\n</skill>") is null);
+    assert.is_true(
+        parse_skill_block("<skill name=\"n\" location=\"l\">\nbody\n</skill> trailing") is null,
+    );
+    assert.equal(
+        format_skill_block("n", "body", null, false, "enter", theme = null),
+        "[skill] n (enter to expand)",
+    );
+    assert.equal(
+        format_skill_block("n", "body", "hello", true, "enter", theme = null),
+        "[skill] n\n**n**\n\nbody\nhello",
+    )
+}
+
+test "mermaid fences detect and degrade labeled" {
+    assert.is_true(is_mermaid_fence("mermaid"));
+    assert.is_true(is_mermaid_fence("mermaid graph TD"));
+    assert.is_true(is_mermaid_fence("Mermaid"));
+    assert.is_true(!is_mermaid_fence("ts"));
+    assert.is_true(!is_mermaid_fence(""));
+    assert.is_true(!is_mermaid_fence("mermaidish"));
+    assert.equal(
+        shape_mermaid_block("graph TD\nA-->B\n", 0, theme = null),
+        ["··· mermaid (diagram not rendered on this terminal)", "graph TD", "A-->B", "···"],
+    );
+    assert.equal(shape_mermaid_block("0123456789", 4, theme = null).at(1) ?? "", "0123…");
+    assert.equal(shape_mermaid_block("", 0, theme = null).length(), 2);
+    // The pipe-path walker labels mermaid openers; other fences unchanged.
+    assert.equal(
+        render_markdown_text("```mermaid\ngraph TD\n```", theme = null),
+        "··· mermaid (diagram not rendered on this terminal)\ngraph TD\n···",
+    );
+    assert.equal(render_markdown_text("```ts\nx\n```", theme = null), "··· ts\nx\n···")
+}
+
+test "working-state labels mirror pi wording" {
+    assert.equal(
+        format_status_label("working", "thinking", 0, 0, 0, "", cancel_hint = null),
+        "thinking",
+    );
+    assert.equal(
+        format_status_label("retry", "", 2, 5, 9, "", cancel_hint = "ctrl-c"),
+        "Retrying (2/5) in 9s... (ctrl-c to cancel)",
+    );
+    assert.equal(
+        format_status_label("retry", "", 1, 3, 2, "", cancel_hint = null),
+        "Retrying (1/3) in 2s...",
+    );
+    assert.equal(
+        format_status_label("compaction", "", 0, 0, 0, "manual", cancel_hint = "ctrl-c"),
+        "Compacting context... (ctrl-c to cancel)",
+    );
+    assert.equal(
+        format_status_label("compaction", "", 0, 0, 0, "threshold", cancel_hint = null),
+        "Auto-compacting...",
+    );
+    assert.equal(
+        format_status_label("compaction", "", 0, 0, 0, "overflow", cancel_hint = null),
+        "Context overflow detected, auto-compacting...",
+    );
+    assert.equal(
+        format_status_label("branchSummary", "", 0, 0, 0, "", cancel_hint = null),
+        "Summarizing branch...",
+    );
+    assert.equal(format_status_label("mystery", "", 0, 0, 0, "", cancel_hint = null), "mystery")
+}
+
+test "image placeholder is dim-styled, byte-clean unthemed" {
+    assert.equal(format_image_placeholder("cat.png", theme = null), "[image: cat.png]");
+    assert.contains(format_image_placeholder("cat.png", theme = "default"), "[image: cat.png]");
+    assert.is_true(
+        format_image_placeholder("cat.png", theme = "default").length()
+            > "[image: cat.png]".length(),
+    )
 }

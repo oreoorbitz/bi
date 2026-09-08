@@ -82,3 +82,51 @@ function GenerateImage(
         let f: ai.errors.Failure => classify_failure(f),
     }
 }
+
+// bi#32 paste policy — the clipboard formats bi accepts without
+// transcoding (pi converts BMP/TIFF via Photon; bi has no WASM dep, so
+// unsupported bytes are rejected). Mirrors sniffImageMime in
+// src/clipboard.ts: the host sniffs magic bytes, BAML owns the
+// allowlist + staged-file extension so both stay in one place.
+function paste_supported_mimes() -> string[] {
+    ["image/png", "image/jpeg", "image/webp", "image/gif"]
+}
+
+function paste_mime_supported(mime: string) -> bool {
+    let hit = false;
+    for (let m in paste_supported_mimes()) {
+        if (m == mime) {
+            hit = true
+        }
+    }
+    hit
+}
+
+function paste_extension(mime: string) -> string? {
+    if (mime == "image/png") {
+        "png"
+    } else if (mime == "image/jpeg") {
+        "jpg"
+    } else if (mime == "image/webp") {
+        "webp"
+    } else if (mime == "image/gif") {
+        "gif"
+    } else {
+        null
+    }
+}
+
+// bi#70 transcript echo — the label shown for a staged image part.
+// BAML owns text shaping (the host owns detection + emission in
+// src/image-display.ts): basename of the staged path so the placeholder
+// stays short and never leaks directory prefixes. Last non-empty
+// slash-segment wins, so trailing slashes and empty paths degrade to "".
+function staged_image_label(path: string) -> string {
+    let label = "";
+    for (let p in path.split("/")) {
+        if (p.length() > 0) {
+            label = p
+        }
+    }
+    label
+}

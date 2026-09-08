@@ -2,12 +2,16 @@
 // Widened iteratively: Stage 1 text only → Stage 2 reasoning/toolUse →
 // Stage 3 media (image blocks) via ai.content.Media + baml.media.Image.
 //
-// Known gap (proposal 10): host-constructed Media via toHistory (image)
-// round-trips to host as AssistantMessage with Media, but passing that
-// history to SendTurn/StreamTurn fails with `TypeMismatch: Value of type
-// 'media' does not match union [Image, Audio, Video, Pdf]` — same handle-
-// union class as proposals 04/08/09. Workaround is SendTurnWithImage which
-// keeps Media construction and Journal assembly inside one BAML call.
+// Known gap (proposal 10, bi#06): host-constructed Media via toHistory
+// (image) round-trips to host as AssistantMessage with Media, but passing
+// that history to SendTurn/StreamTurn fails with `TypeMismatch: Value of
+// type 'media' does not match union [Image, Audio, Video, Pdf]` — same
+// handle-union class as proposals 04/08/09. The supported path is
+// splitMediaTurns + SendTurnWithMedia: image blocks cross FFI as plain
+// MediaSpec strings and the VM builds the Media blocks in the same call
+// that invokes the model (turn.baml's MediaSpec boundary). toHistory's
+// image branch is kept for direct/single-shot callers; the agent loop
+// splits first so Media never sits in host history.
 
 import { ToolSpec as BamlToolSpec, ai, baml, CreateMediaBlock_async, CreateMediaBlockFromUrl_async } from "../baml_sdk/index.js";
 
@@ -47,6 +51,49 @@ async function toAssistantContent(blocks: readonly AssistantContent[]): Promise<
 		else out.push(await toMediaBlock(b as any));
 	}
 	return out;
+}
+
+// bi#06: pull image blocks out of host history before toHistory.
+// Media built on the host cannot re-enter the VM (proposal 10 union-alias
+// gap), so the agent loop splits image blocks into plain MediaSpec data
+// (source/data/mimeType strings, which cross FFI intact) and sends them
+// via SendTurnWithMedia_async alongside the media-free history. Pure and
+// synchronous — no SDK calls. Image-only assistant turns drop out of the
+// history (their clientId becomes mediaClientId); mixed turns keep their
+// non-image blocks in place. Order of media follows turn order.
+export interface MediaSpecData {
+	source: "base64" | "url";
+	data: string;
+	mimeType?: string | null;
+}
+
+export interface SplitMedia {
+	history: ConversationTurn[];
+	media: MediaSpecData[];
+	mediaClientId: string;
+}
+
+export function splitMediaTurns(turns: readonly ConversationTurn[]): SplitMedia {
+	const history: ConversationTurn[] = [];
+	const media: MediaSpecData[] = [];
+	let mediaClientId = "test-client";
+	for (const turn of turns) {
+		const content = (turn as any).content;
+		if (turn.role !== "assistant" || !Array.isArray(content)) {
+			history.push(turn);
+			continue;
+		}
+		const rest: AssistantContent[] = [];
+		const before = media.length;
+		for (const b of content as readonly AssistantContent[]) {
+			if (b.type === "image") media.push({ source: "base64", data: b.base64, mimeType: b.mimeType });
+			else if (b.type === "imageUrl") media.push({ source: "url", data: b.url, mimeType: b.mimeType ?? null });
+			else rest.push(b);
+		}
+		if (media.length > before && (turn as any).clientId) mediaClientId = (turn as any).clientId;
+		if (rest.length > 0) history.push({ role: "assistant", content: rest, clientId: (turn as any).clientId });
+	}
+	return { history, media, mediaClientId };
 }
 
 export async function toHistory(turns: readonly ConversationTurn[]): Promise<ai.events.Event[]> {

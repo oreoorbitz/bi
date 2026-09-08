@@ -9,6 +9,7 @@ class UserSettings {
     default_provider: string?,
     default_model: string?,
     default_thinking: string?,
+    notifications: string?,
     enabled_models: string[]?,
 }
 
@@ -21,11 +22,14 @@ function builtin_default_model() -> string {
 }
 
 function setting_keys() -> string[] {
-    ["default_provider", "default_model", "default_thinking"]
+    ["default_provider", "default_model", "default_thinking", "notifications"]
 }
 
 function is_setting_key(key: string) -> bool {
-    key == "default_provider" || key == "default_model" || key == "default_thinking"
+    key == "default_provider"
+        || key == "default_model"
+        || key == "default_thinking"
+        || key == "notifications"
 }
 
 // Whole-record validation: unknown provider/model/thinking each name
@@ -69,6 +73,14 @@ function validate_settings(s: UserSettings) -> string[] {
         let t: string => {
             if (!is_valid_thinking_level(t)) {
                 errors.push(`unknown thinking level "${t}" — bare /thinking lists the levels`)
+            }
+        },
+    }
+    match (s.notifications) {
+        null => {},
+        let n: string => {
+            if (!is_valid_notifications_mode(n)) {
+                errors.push(`unknown notifications "${n}" — use off, unfocused, or always`)
             }
         },
     }
@@ -137,6 +149,8 @@ function format_settings_list(s: UserSettings) -> string {
             s.default_provider ?? "(unset)"
         } else if (key == "default_model") {
             s.default_model ?? "(unset)"
+        } else if (key == "notifications") {
+            s.notifications ?? "(unset)"
         } else {
             s.default_thinking ?? "(unset)"
         };
@@ -169,6 +183,7 @@ function empty_settings() -> UserSettings {
         default_provider: null,
         default_model: null,
         default_thinking: null,
+        notifications: null,
         enabled_models: null,
     }
 }
@@ -185,6 +200,7 @@ test "flags beat stored settings beat builtins" {
         default_provider: "xai",
         default_model: "grok-4.6",
         default_thinking: "high",
+        notifications: null,
         enabled_models: null,
     };
     let stored = resolve_backend(null, null, null, s);
@@ -202,6 +218,7 @@ test "mismatched provider/model fails instead of misrouting" {
         default_provider: "xai",
         default_model: "muse-spark-1.3",
         default_thinking: null,
+        notifications: null,
         enabled_models: null,
     };
     assert.equal(validate_settings(s).length(), 1);
@@ -226,6 +243,7 @@ test "unknown values name the fix" {
         default_provider: "bogus",
         default_model: "nope",
         default_thinking: "ultra",
+        notifications: null,
         enabled_models: null,
     };
     let errors = validate_settings(s);
@@ -241,9 +259,35 @@ test "settings list shows unsets" {
         default_provider: "meta",
         default_model: null,
         default_thinking: null,
+        notifications: null,
         enabled_models: null,
     };
     assert.contains(format_settings_list(s), "default_provider = meta")
+}
+
+test "notifications validates modes and lists unset" {
+    assert.equal(validate_settings(empty_settings()).length(), 0);
+    assert.contains(format_settings_list(empty_settings()), "notifications = (unset)");
+    let bad = UserSettings {
+        default_provider: null,
+        default_model: null,
+        default_thinking: null,
+        notifications: "loud",
+        enabled_models: null,
+    };
+    let errors = validate_settings(bad);
+    assert.equal(errors.length(), 1);
+    assert.contains(errors.at(0) ?? "", "off, unfocused, or always");
+    for (let mode in ["off", "unfocused", "always"]) {
+        let good = UserSettings {
+            default_provider: null,
+            default_model: null,
+            default_thinking: null,
+            notifications: mode,
+            enabled_models: null,
+        };
+        assert.equal(validate_settings(good).length(), 0)
+    }
 }
 
 test "enabled_models validates ids and lists the set" {
@@ -251,6 +295,7 @@ test "enabled_models validates ids and lists the set" {
         default_provider: null,
         default_model: null,
         default_thinking: null,
+        notifications: null,
         enabled_models: ["grok-4.6", "muse-spark-1.3"],
     };
     assert.equal(validate_settings(good).length(), 0);
@@ -259,6 +304,7 @@ test "enabled_models validates ids and lists the set" {
         default_provider: null,
         default_model: null,
         default_thinking: null,
+        notifications: null,
         enabled_models: ["grok-4.6", "nope"],
     };
     let errors = validate_settings(bad);
@@ -268,6 +314,7 @@ test "enabled_models validates ids and lists the set" {
         default_provider: null,
         default_model: null,
         default_thinking: null,
+        notifications: null,
         enabled_models: [],
     };
     assert.contains(format_settings_list(none), "enabled_models = (none)")

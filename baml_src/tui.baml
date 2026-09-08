@@ -190,6 +190,132 @@ function render_ready_frame(rows: ReadyRow[], width: int) -> string[] {
     out
 }
 
+// bi#181: rounded editor box shapes (kimi custom-editor.ts:792-857
+// mirror). The prompt label lives IN the top border; the input glyph is
+// a bare `>` spliced at column 2 by the host (its render post-process
+// guards the cursor cell — only literal spaces are overwritten).
+function dash_run(n: int) -> string {
+    let out = "";
+    for (let i = 0; i < n; i += 1) {
+        out = `${out}─`
+    }
+    out
+}
+
+function format_prompt_label(turn: int) -> string {
+    `bi[${turn}]>`
+}
+
+function prompt_glyph() -> string {
+    ">"
+}
+
+function editor_side_border() -> string {
+    "│"
+}
+
+// Top border with the label spliced one space after the left corner.
+// Falls back to a plain dash run when the label cannot fit (narrow
+// terminal), and to bare corners at degenerate widths (kimi's
+// length-1 guard).
+function render_editor_top_border(label: string, width: int) -> string {
+    if (width <= 1) {
+        "╭"
+    } else {
+        let inner = width - 2;
+        let tag = ` ${label} `;
+        if (tag.length() + 1 <= inner) {
+            `╭${tag}${dash_run(inner - tag.length())}╮`
+        } else {
+            `╭${dash_run(inner)}╮`
+        }
+    }
+}
+
+function render_editor_bottom_border(width: int) -> string {
+    if (width <= 1) {
+        "╰"
+    } else {
+        `╰${dash_run(width - 2)}╯`
+    }
+}
+
+// bi#180: welcome entry frame (kimi welcome.ts:49-107 mirror) — a
+// rounded primary-bordered box with logo, bold title, dim hint, and an
+// aligned label column, rendered INSIDE repl() after the last startup
+// modal hides. Narrow terminals (< 24 cols, kimi precedent) drop the
+// box entirely. Theme roles: accent for border/logo/title (kimi
+// primary), dim for hint/labels (kimi textDim) — bi#185 palette tokens
+// swap here when they land.
+class WelcomeInfo {
+    directory: string,
+    session: string,
+    model: string,
+    version: string,
+}
+
+function pad_end(text: string, n: int) -> string {
+    let out = text;
+    while (out.length() < n) {
+        out = `${out} `
+    }
+    out
+}
+
+// One label row's content: padded name column (dim) + fitted value.
+function welcome_label(name: string, value: string, text_w: int, theme: string?) -> string {
+    let name_f = style_segment(pad_end(name, 11), "dim", theme);
+    let value_f = pad_end(truncate_chars(value, text_w), text_w);
+    `${name_f}${value_f}`
+}
+
+// One content row: │ + 2-pad + pre-fitted content + right-fill + │
+// (kimi: innerWidth = safeWidth - 4, rightPad = innerWidth - vis).
+function welcome_row(content: string, visible: int, inner: int) -> string {
+    `│  ${content}${pad_end("", inner - visible)}│`
+}
+
+function render_welcome_frame(info: WelcomeInfo, width: int, theme: string? = null) -> string[] {
+    let title = "Welcome to bi!";
+    let hint = "Type / for commands · /help for help";
+    if (width < 24) {
+        // Truncate plain, style after — never cut inside an SGR span.
+        [
+            style_segment(truncate_chars(title, width), "accent", theme),
+            style_segment(truncate_chars(hint, width), "dim", theme),
+            truncate_chars(`Model: ${info.model}`, width),
+        ]
+    } else {
+        let inner = width - 4;
+        let logo_w = 7;
+        // Field width for the label values (and the text column right of
+        // the logo): the label column is the widest fixed content
+        // (11 cells), so values get inner - 11 and the logo rows
+        // right-fill the difference — every row is exactly `inner`
+        // visible cells by construction; all width math is plain-text,
+        // styling wraps pre-fitted fields and never shifts a column.
+        let text_w = inner - 11;
+        let logo0 = style_segment(pad_end("▐█▛█▛█▌", logo_w), "accent", theme);
+        let logo1 = style_segment(pad_end("▐█████▌", logo_w), "accent", theme);
+        let title_f = style_segment(pad_end(truncate_chars(title, text_w), text_w), "accent", theme);
+        let hint_f = style_segment(pad_end(truncate_chars(hint, text_w), text_w), "dim", theme);
+        let blank = pad_end("", inner);
+        [
+            style_segment(`╭${dash_run(width - 2)}╮`, "accent", theme),
+            `│  ${blank}│`,
+            welcome_row(`${logo0}  ${title_f}`, logo_w + 2 + text_w, inner),
+            welcome_row(`${logo1}  ${hint_f}`, logo_w + 2 + text_w, inner),
+            `│  ${blank}│`,
+            welcome_row(welcome_label("Directory:", info.directory, text_w, theme), 11 + text_w, inner),
+            welcome_row(welcome_label("Session:", info.session, text_w, theme), 11 + text_w, inner),
+            welcome_row(welcome_label("Model:", info.model, text_w, theme), 11 + text_w, inner),
+            welcome_row(welcome_label("Version:", info.version, text_w, theme), 11 + text_w, inner),
+            `│  ${blank}│`,
+            style_segment(`╰${dash_run(width - 2)}╯`, "accent", theme),
+        ]
+    }
+}
+
 interface Component {
     function render(self, width: int) -> string[] throws never
     function handle_input(self, data: string) -> void throws never

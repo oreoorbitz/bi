@@ -167,6 +167,48 @@ function all_model_ids() -> string[] {
     out
 }
 
+// bi#90: Ctrl+P cycling over the scoped set (pi's
+// AgentSession.cycleModel forward over _scopedModels, else the available
+// snapshot). Pure stepping policy: the ordered walk is catalog order
+// filtered by the enablement set (null = all), the step lands on the next
+// id with wrap. Null means "refuse" — the host says why loudly (empty vs
+// single sets need different hints and only the host knows the wording).
+// DIVERGENCE from pi: an unknown/disabled current starts AT walk[0]; pi
+// treats it as index 0 and advances to walk[1].
+function cycle_model_forward(current_id: string, enabled: string[]?) -> string? {
+    // The walk is id-based, but advisory rows duplicate bare ids across
+    // providers (openai + azure-openai-responses both list gpt-4o): dedupe
+    // first-wins, matching GetModel resolution, so a duplicated id still
+    // counts as one step and a single-id set still refuses.
+    let walk: string[] = [];
+    for (let p in ListProviders()) {
+        for (let m in ListModels(p.id)) {
+            if (is_model_enabled(enabled, m.id) && !walk.includes(m.id)) {
+                walk.push(m.id)
+            }
+        }
+    }
+    if (walk.length() <= 1) {
+        null
+    } else {
+        let at = -1;
+        let i = 0;
+        for (let id in walk) {
+            if (id == current_id) {
+                at = i
+            }
+            i = i + 1
+        }
+        if (at == -1) {
+            walk.at(0)
+        } else if (at + 1 >= walk.length()) {
+            walk.at(0)
+        } else {
+            walk.at(at + 1)
+        }
+    }
+}
+
 // /scoped-models board: the deviation from the default, not the whole
 // catalog. Null reads as all-enabled with the catalog size for context.
 function format_scoped_models(enabled: string[]?) -> string {
@@ -217,9 +259,309 @@ function resolve_model_ref(ref: string) -> Model? {
     }
 }
 
-// One-line REPL readout after every turn: backend identity + session
-// counters. Token/context usage is pi-only: bi never captures usage
-// (turn.baml returns text, not token counts), so counters stand in.
+// bi#85: fuzzy search in selectors, ported from pi's model-search.ts +
+// session-selector-search.ts via the pi-tui fuzzy semantics (in-order
+// subsequence, case-insensitive, lower score = better). BAML owns the
+// search-text builders and the ranking; the host owns the filter row
+// (prompt.ts FilterList) and passes per-row texts. Deliberate
+// divergence: pi's alnum/digit swap fallback (gpt5 ~ 5gpt) is skipped —
+// no regex in BAML, and the catalog has no such ids. Scores are pi's ×
+// 10 in ints (BAML int/int truncates, so no float penalties).
+function model_search_text(id: string, provider: string, name: string? = null) -> string {
+    let suffix = if let n: string = name {
+        ` ${n}`
+    } else {
+        ""
+    };
+    `${id} ${provider} ${provider}/${id} ${provider} ${id}${suffix}`
+}
+
+// The /model selector shape: provider leads, so an exact
+// provider-prefixed query ranks the true row before proxy-provider ids
+// like openrouter/openai/gpt-5 (pi's comment, verbatim intent).
+function model_selector_search_text(id: string, provider: string, name: string? = null) -> string {
+    let suffix = if let n: string = name {
+        ` ${n}`
+    } else {
+        ""
+    };
+    `${provider} ${provider}/${id} ${provider} ${id}${suffix}`
+}
+
+function is_search_boundary(ch: string) -> bool {
+    ch == " " || ch == "-" || ch == "_" || ch == "." || ch == "/" || ch == ":"
+}
+
+function split_query_tokens(query: string) -> string[] {
+    let out: string[] = [];
+    for (let w in query.to_lower_case().split(" ")) {
+        for (let s in w.split("/")) {
+            for (let t in s.split("\t")) {
+                if (t.length() > 0) {
+                    out.push(t)
+                }
+            }
+        }
+    }
+    out
+}
+
+// Single-token subsequence score, null when the token cannot match.
+// Exact equality takes the -1000 bonus; otherwise each matched char
+// pays its position (late penalty), gaps pay ×20 per skipped char,
+// consecutive runs earn back ×50 per char, word-boundary starts earn
+// -100. Empty token vacuously matches at 0.
+function fuzzy_score(query: string, text: string) -> int? {
+    let q = query.to_lower_case();
+    let t = text.to_lower_case();
+    let qcs = q.chars();
+    let tcs = t.chars();
+    if (qcs.length() == 0) {
+        0
+    } else if (qcs.length() > tcs.length()) {
+        null
+    } else if (q == t) {
+        -1000
+    } else {
+        let score = 0;
+        let qi = 0;
+        let ti = 0;
+        let last = -1;
+        let consec = 0;
+        let miss = false;
+        while (qi < qcs.length() && !miss) {
+            let qc = qcs.at(qi) ?? "";
+            let found = false;
+            while (ti < tcs.length() && !found) {
+                if ((tcs.at(ti) ?? "") == qc) {
+                    if (last == ti - 1) {
+                        consec = consec + 1;
+                        score = score - consec * 50
+                    } else {
+                        consec = 0;
+                        if (last >= 0) {
+                            score = score + (ti - last - 1) * 20
+                        }
+                    }
+                    if (ti == 0 || is_search_boundary(tcs.at(ti - 1) ?? "")) {
+                        score = score - 100
+                    }
+                    score = score + ti;
+                    last = ti;
+                    found = true
+                }
+                ti = ti + 1
+            }
+            if (!found) {
+                miss = true
+            } else {
+                qi = qi + 1
+            }
+        }
+        if (miss) {
+            null
+        } else {
+            score
+        }
+    }
+}
+
+function contains_index(xs: int[], v: int) -> bool {
+    let hit = false;
+    for (let x in xs) {
+        if (x == v) {
+            hit = true
+        }
+    }
+    hit
+}
+
+// Ranked original indices for the query over per-row search texts:
+// every whitespace/slash token must fuzzy-match (scores sum), misses
+// drop out, ties keep catalog order. Blank queries list ALL indices in
+// order (the empty-filter and pipe paths share this); zero texts rank
+// to empty, never error.
+function rank_selector_rows(query: string, texts: string[]) -> int[] {
+    let tokens = split_query_tokens(query);
+    let n = texts.length();
+    if (tokens.length() == 0) {
+        let all: int[] = [];
+        let i = 0;
+        while (i < n) {
+            all.push(i);
+            i = i + 1
+        }
+        all
+    } else {
+        let hits: bool[] = [];
+        let totals: int[] = [];
+        for (let text in texts) {
+            let total = 0;
+            let miss = false;
+            for (let tok in tokens) {
+                match (fuzzy_score(tok, text)) {
+                    null => {
+                        miss = true
+                    },
+                    let s: int => {
+                        total = total + s
+                    },
+                }
+            }
+            hits.push(!miss);
+            totals.push(total)
+        }
+        let matches = 0;
+        for (let h in hits) {
+            if (h) {
+                matches = matches + 1
+            }
+        }
+        let out: int[] = [];
+        let emitted = 0;
+        while (emitted < matches) {
+            let best = -1;
+            let best_score = 0;
+            let i = 0;
+            while (i < n) {
+                if ((hits.at(i) ?? false) && !contains_index(out, i)) {
+                    let s = totals.at(i) ?? 0;
+                    if (best == -1 || s < best_score) {
+                        best = i;
+                        best_score = s
+                    }
+                }
+                i = i + 1
+            }
+            out.push(best);
+            emitted = emitted + 1
+        }
+        out
+    }
+}
+
+test "model search texts mirror pi's builders" {
+    assert.equal(
+        model_search_text("grok-4.6", "xai", name = "Grok 4.6"),
+        "grok-4.6 xai xai/grok-4.6 xai grok-4.6 Grok 4.6",
+    );
+    assert.equal(
+        model_selector_search_text("grok-4.6", "xai", name = "Grok 4.6"),
+        "xai xai/grok-4.6 xai grok-4.6 Grok 4.6",
+    );
+    // No name: no trailing space.
+    assert.equal(model_search_text("gpt-5", "openai"), "gpt-5 openai openai/gpt-5 openai gpt-5");
+    // Selector shape never leads with the bare id (the proxy ranking
+    // property below depends on it).
+    assert.is_true(model_selector_search_text("gpt-5", "openai").starts_with("openai "))
+}
+
+test "fuzzy score matches, misses, and folds case" {
+    assert.is_true(fuzzy_score("zzz", "grok-4.6") is null);
+    assert.is_true(fuzzy_score("kg", "grok") is null);
+    assert.is_true(fuzzy_score("grok-4.6-extra", "grok") is null);
+    assert.equal(fuzzy_score("", "grok-4.6"), 0);
+    assert.equal(fuzzy_score("xai", "xai"), -1000);
+    match (fuzzy_score("XAI", "xai xai/grok-4.6 xai grok-4.6")) {
+        null => assert.is_true(false),
+        let s: int => assert.is_true(s < 0),
+    }
+    // Consecutive + early beats gappy + late for the same token.
+    match (fuzzy_score("gro", "grok-4.6")) {
+        null => assert.is_true(false),
+        let tight: int => {
+            match (fuzzy_score("gro", "xxgxxrxxo")) {
+                null => assert.is_true(false),
+                let loose: int => assert.is_true(tight < loose),
+            }
+        },
+    }
+}
+
+test "rank lists all on blank, drops misses, keeps order on ties" {
+    let texts = [
+        "xai xai/grok-4.6 xai grok-4.6",
+        "anthropic anthropic/claude-haiku-4-5 anthropic claude-haiku-4-5",
+    ];
+    assert.equal(rank_selector_rows("", texts), [0, 1]);
+    assert.equal(rank_selector_rows("   ", texts), [0, 1]);
+    assert.equal(rank_selector_rows("grok", texts), [0]);
+    assert.equal(rank_selector_rows("zzz", texts), []);
+    assert.equal(rank_selector_rows("ab", ["ab", "ab"]), [0, 1]);
+    assert.equal(rank_selector_rows("q", []), [])
+}
+
+test "provider-prefixed query ranks the true row before the proxy" {
+    // pi's getModelSelectorSearchText comment: the /model selector must
+    // rank exact provider-prefixed queries before proxy-provider ids
+    // like openrouter/openai/gpt-5.
+    let texts = [
+        model_selector_search_text("gpt-5", "openai"),
+        model_selector_search_text("openai/gpt-5", "openrouter"),
+    ];
+    assert.equal(rank_selector_rows("openai/gpt", texts), [0, 1]);
+    assert.equal(rank_selector_rows("xai/grok", texts), [])
+}
+
+test "cycle advances and wraps within the full catalog" {
+    assert.equal(cycle_model_forward("claude-haiku-4-5", null), "claude-sonnet-4-5");
+    assert.equal(cycle_model_forward("gemini-2.0-flash", null), "gemini-2.5-pro");
+    // Full walk returns to the head: step from the second id until
+    // claude-haiku-4-5 recurs (cap 200 — the catalog holds ~80 unique
+    // ids; advisory duplicates like gpt-4o/glm-5.3 count once). Order-free:
+    // ListAllModels and the provider walk disagree at the tail, so no tail
+    // id is pinned here.
+    let cur = "claude-sonnet-4-5";
+    let steps = 0;
+    let done = false;
+    while (steps < 200 && !done) {
+        match (cycle_model_forward(cur, null)) {
+            null => {
+                cur = "REFUSED";
+                done = true
+            },
+            let nx: string => {
+                cur = nx;
+                steps = steps + 1;
+                if (nx == "claude-haiku-4-5") {
+                    done = true
+                }
+            },
+        }
+    }
+    assert.equal(cur, "claude-haiku-4-5");
+    assert.is_true(steps > 50)
+}
+
+test "cycle honors the enabled set" {
+    let enabled = ["gemini-2.0-flash", "claude-haiku-4-5"];
+    assert.equal(cycle_model_forward("gemini-2.0-flash", enabled), "claude-haiku-4-5");
+    assert.equal(cycle_model_forward("claude-haiku-4-5", enabled), "gemini-2.0-flash");
+    // Unknown ids in the set are skipped, never stepped onto.
+    assert.equal(
+        cycle_model_forward("gemini-2.0-flash", ["gemini-2.0-flash", "bogus", "claude-haiku-4-5"]),
+        "claude-haiku-4-5",
+    )
+}
+
+test "cycle dedupes advisory ids first-wins" {
+    // gpt-4o is listed under both openai and azure-openai-responses: one
+    // step, not two, and the openai order leads.
+    assert.equal(cycle_model_forward("gpt-4o-mini", ["gpt-4o", "gpt-4o-mini"]), "gpt-4o");
+    assert.equal(cycle_model_forward("gpt-4o", ["gpt-4o", "gpt-4o-mini"]), "gpt-4o-mini")
+}
+
+test "cycle starts at the set head for unknown or disabled current" {
+    assert.equal(cycle_model_forward("bogus", ["gpt-4o-mini", "gpt-4o"]), "gpt-4o-mini");
+    assert.equal(cycle_model_forward("claude-haiku-4-5", ["gpt-4o-mini", "gpt-4o"]), "gpt-4o-mini")
+}
+
+test "cycle refuses empty and single sets" {
+    assert.is_true(cycle_model_forward("gemini-2.0-flash", []) is null);
+    assert.is_true(cycle_model_forward("gpt-4o", ["gpt-4o"]) is null);
+    assert.is_true(cycle_model_forward("bogus", ["gpt-4o"]) is null)
+}
+
 function footer_text(
     provider: string,
     model: string,
@@ -239,8 +581,16 @@ function footer_text(
     } else {
         `${messages} messages`
     };
-    let cs = if let c: string = cwd { ` · ${c}` } else { "" };
-    let bs = if let b: string = branch { ` · ${b}` } else { "" };
+    let cs = if let c: string = cwd {
+        ` · ${c}`
+    } else {
+        ""
+    };
+    let bs = if let b: string = branch {
+        ` · ${b}`
+    } else {
+        ""
+    };
     `${provider}/${model} · thinking ${thinking} · ${tm} · ${mm}${cs}${bs}`
 }
 
@@ -254,7 +604,11 @@ function format_repl_footer(
     cwd: string? = null,
     branch: string? = null,
 ) -> string {
-    style_segment(footer_text(provider, model, thinking, turns, messages, cwd = cwd, branch = branch), "dim", theme)
+    style_segment(
+        footer_text(provider, model, thinking, turns, messages, cwd = cwd, branch = branch),
+        "dim",
+        theme,
+    )
 }
 
 // Pinned-footer frame (bi#67): the readout width-capped to one terminal
@@ -262,6 +616,52 @@ function format_repl_footer(
 // the scroll region). Truncation runs on the PLAIN text, styling wraps
 // after — visible width is exact. Wide terminals are byte-identical to
 // format_repl_footer with the same theme.
+// Model line for the pinned second footer row (bi#184): row 2 carries
+// ONLY the catalog ctx window — the provider/model · thinking prefix
+// lives exclusively on row 1 (footer_text), so no fact prints twice.
+// Args stay for call-site stability (cli.ts passes provider/thinking;
+// the split is pinned, not the signature). Stale ids render an empty
+// row rather than bricking; bi#169's live context:% lands here next.
+// Width-capped like the footer frame; pipes get the plain text via
+// theme null.
+function model_line_text(provider: string, model: string, thinking: string, width: int) -> string {
+    let ctx = match (GetModel(model)) {
+        null => "",
+        let m: Model => `ctx ${m.context_window / 1000}k`,
+    };
+    truncate_chars(ctx, width)
+}
+
+function render_model_line(
+    provider: string,
+    model: string,
+    thinking: string,
+    width: int,
+    theme: string? = null,
+) -> string {
+    style_segment(model_line_text(provider, model, thinking, width), "brand", theme)
+}
+
+test "model line carries ctx only, no repeated prefix" {
+    let line = model_line_text("anthropic", "claude-haiku-4-5", "medium", 200);
+    assert.equal(line, "ctx 200k");
+    // Stale id: empty row, never bricks.
+    assert.equal(model_line_text("anthropic", "nope-xyz", "medium", 200), "");
+    // Narrow caps to one row like the footer frame.
+    assert.equal(model_line_text("anthropic", "claude-haiku-4-5", "medium", 6), "ctx 20…");
+    // Brand wrap adds the 18-byte truecolor code + 4-byte reset.
+    let styled = render_model_line("anthropic", "claude-haiku-4-5", "medium", 200, theme = "default");
+    assert.equal(styled.length(), line.length() + 22);
+    assert.equal(
+        render_model_line("anthropic", "claude-haiku-4-5", "medium", 200, theme = null),
+        line,
+    );
+    assert.equal(
+        render_model_line("anthropic", "claude-haiku-4-5", "medium", 200, theme = "none"),
+        line,
+    )
+}
+
 function render_footer_frame(
     provider: string,
     model: string,
@@ -273,7 +673,11 @@ function render_footer_frame(
     cwd: string? = null,
     branch: string? = null,
 ) -> string {
-    style_segment(truncate_chars(footer_text(provider, model, thinking, turns, messages, cwd = cwd, branch = branch), width), "dim", theme)
+    style_segment(
+        truncate_chars(footer_text(provider, model, thinking, turns, messages, cwd = cwd, branch = branch), width),
+        "dim",
+        theme,
+    )
 }
 
 test "thinking levels are pi's seven in order" {
@@ -437,4 +841,62 @@ test "footer appends cwd and branch when present" {
         footer_text("xai", "grok-4.6", "high", 2, 5),
         "xai/grok-4.6 · thinking high · 2 turns · 5 messages",
     )
+}
+
+// ---------------------------------------------------------------------------
+// bi#186: rotating footer tips — BAML owns the corpus + rotation policy as
+// literal data; the host (HostFooter) owns the 10s timer, right-alignment,
+// and muted styling. The seed corpus teaches bi's actual surface
+// (BAIS-first workflow included), mirroring kimi's constant/tips.ts.
+function footer_tips() -> string[] {
+    [
+        "/issues to stage BAIS work",
+        "/bais new to file an issue",
+        "@ to complete paths",
+        "shift+enter: newline",
+        "/model to switch backends",
+        "! to run a shell command",
+    ]
+}
+
+// Rotation cadence as data (kimi TIP_ROTATE_INTERVAL_MS mirror).
+function tip_rotate_interval_ms() -> int {
+    10000
+}
+
+// Rotation index wraps over the corpus; tick n pairs tips[n] with
+// tips[n+1] (both mod len), so a full cycle shows every tip in both
+// slots. Negative ticks wrap too (host counters never go negative, but
+// the policy stays total).
+function tip_index(tick: int) -> int {
+    let n = footer_tips().length();
+    let t = tick % n;
+    if (t < 0) {
+        t + n
+    } else {
+        t
+    }
+}
+
+// Slot text for one tick at a slot width: the pair when it fits, the
+// single tip on narrow terminals (truncated past that), empty when the
+// slot is gone. `width` is the SLOT width — the host measures the
+// columns left after the row's left content, never the full row.
+function tips_slot_text(tick: int, width: int) -> string {
+    if (width <= 0) {
+        ""
+    } else {
+        let tips = footer_tips();
+        let i = tip_index(tick);
+        let first = tips.at(i) ?? "";
+        let second = tips.at((i + 1) % tips.length()) ?? "";
+        let pair = `${first} | ${second}`;
+        if (pair.length() <= width) {
+            pair
+        } else if (first.length() <= width) {
+            first
+        } else {
+            truncate_chars(first, width)
+        }
+    }
 }

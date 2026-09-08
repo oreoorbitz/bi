@@ -5,9 +5,9 @@
 import { CreateMixedTurn_async, CreateTextTurn_async, CreateToolUseTurn_async, TurnFailure, ai } from "../baml_sdk/index.js";
 import { resolveAuth } from "./auth.js";
 import { GetModel_async, RefreshModels_async, thinking_config_for_level_async, ModelSupportsReasoning_async } from "../baml_sdk/index.js";
-import { toHistory, type ConversationTurn } from "./conversation.js";
+import { toHistory, splitMediaTurns, type ConversationTurn } from "./conversation.js";
 import { maybeCompactHistory, type CompactionOptions } from "./compaction.js";
-import { SendTurn_async, SendTurnWithImage_async, ModelSupportsImage_async } from "../baml_sdk/index.js";
+import { SendTurn_async, SendTurnWithImage_async, SendTurnWithMedia_async, ModelSupportsImage_async, MediaSpec } from "../baml_sdk/index.js";
 import { toToolSpecs, type ToolSpec } from "./conversation.js";
 import { callWithRetry } from "./retry.js";
 import type { NotificationDrain } from "./notify.js";
@@ -65,7 +65,12 @@ function defaultLlmFn(options: AgentOptions): LlmFn {
 		const resolved = await resolveAuth(provider, options.apiKey);
 		if ("failure" in resolved) return resolved.failure;
 		const auth = resolved.auth;
-		const h = await toHistory(history);
+		// bi#06: image blocks cannot sit in host history — a host-held
+		// Media re-enters the VM as the ai.MediaPart union alias and fails
+		// inbound validation (proposal 10). Split them into plain specs;
+		// media-free history converts as before.
+		const split = splitMediaTurns(history);
+		const h = await toHistory(split.history);
 		const t = toToolSpecs(tools);
 		// bi#28: thinking only reaches models that reason — a budget on a
 		// non-reasoning model would 400, so the BAML guard decides.
@@ -80,8 +85,24 @@ function defaultLlmFn(options: AgentOptions): LlmFn {
 		// Retry at the dispatch choke point (bi#16) — the per-provider
 		// send/stream fns wrap their own calls too, but every agent turn
 		// flows through here.
+		if (split.media.length === 0) {
+			return callWithRetry(provider, () =>
+				SendTurn_async(provider, options.model, auth.key, text, h, t, {
+					base_url: options.baseUrl ?? null,
+					temperature: options.temperature ?? null,
+					thinking,
+					azure_resource: options.azureResource ?? null,
+					azure_deployment: options.azureDeployment ?? null,
+					azure_api_version: options.azureApiVersion ?? null,
+				}),
+			);
+		}
+		const specs = split.media.map(
+			(m) => new MediaSpec({ source: m.source, data: m.data, mime_type: m.mimeType ?? null }),
+		);
 		return callWithRetry(provider, () =>
-			SendTurn_async(provider, options.model, auth.key, text, h, t, {
+			SendTurnWithMedia_async(provider, options.model, auth.key, text, h, specs, t, {
+				media_client_id: split.mediaClientId,
 				base_url: options.baseUrl ?? null,
 				temperature: options.temperature ?? null,
 				thinking,
@@ -142,7 +163,7 @@ export async function runSingleImageTurn(
 
 export async function runAgent(
 	prompt: string,
-	options: AgentOptions & { tools?: ToolSpec[]; toolHandler?: ToolHandler; history?: ConversationTurn[]; llmFn?: LlmFn; compaction?: CompactionOptions },
+	options: AgentOptions & { tools?: ToolSpec[]; toolHandler?: ToolHandler; history?: ConversationTurn[]; llmFn?: LlmFn; compaction?: CompactionOptions; onAssistantText?: (text: string, turnIndex: number) => void | Promise<void> },
 ): Promise<AgentResult> {
 	// Wire to Provider/Models refresh — mirrors pi's `await models.refreshModels({allowNetwork:false})`
 	// that validates the provider/model before the first turn. For bi's static catalog this
@@ -216,6 +237,10 @@ export async function runAgent(
 			// Complete — add final assistant message with text
 			const text = result.terminal_text() ?? "";
 			history = [...history, { role: "assistant", text, clientId: `${options.provider ?? "anthropic"}/${options.model}` }];
+			// bi#168: surface per-turn text while the loop still runs so
+			// the REPL can stream it; awaited to keep tool start/done
+			// line ordering deterministic.
+			if (text) await options.onAssistantText?.(text, turns.length);
 			turns.push({ turn: result, toolResults: [] });
 			await maybeCompact();
 			return { messages: history, turns };
@@ -233,6 +258,9 @@ export async function runAgent(
 				? { role: "assistant", text, clientId: `${options.provider ?? "anthropic"}/${options.model}` }
 				: { role: "assistant", content: assistantContent, clientId: `${options.provider ?? "anthropic"}/${options.model}` };
 		history = [...history, assistantTurn];
+		// bi#168: tool-use turns carry visible text too — stream it in
+		// loop order, before the tool start/done lines below.
+		if (text) await options.onAssistantText?.(text, turns.length);
 
 		// Execute tools
 		const toolResults: { id: string; name: string; output: string }[] = [];

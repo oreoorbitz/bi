@@ -1,8 +1,9 @@
 // bi/baml_src/input.baml — input chrome policy (bi#32, slice 1).
 // BAML owns skip rules, tree shaping, and attachment fencing; the host
-// owns FS walking, $EDITOR spawning, and staging. Image paste waits on
-// the turn image pipeline (SendTurnWithImage has no host callers yet);
-// custom hotkeys wait on a raw-mode input layer readline cannot give.
+// owns FS walking, $EDITOR spawning, and staging. Image paste stages via
+// /paste and reaches the turn one-per-turn through SendTurnWithImage
+// (paste mime policy lives in image.baml); custom hotkeys wait on the
+// bi#69 verdict (homegrown keys.ts rejected — wire atop pi-tui).
 
 class TreeEntry {
     path: string,

@@ -22,6 +22,11 @@
 //   picker-select        bi#117.1  /model arrows+Enter resolves a backend.
 //   picker-cancel        bi#117.2  /resume Esc keeps the list; next prompt
 //                                  proves stdin clean.
+//   resume-filter-type   bi#100    /resume filters as you type; verb
+//                                  multi-match picks from filtered rows.
+//   help-skills-note     bi#107    /help names the skills-only divergence.
+//   issues-staged        bi#112    staged marks + staged view.
+//   issues-drop-clears   bi#112    drop all clears set and marks.
 //   ctrld-eof            bi#117    Ctrl-D on empty exits 0 with EOF kept msg.
 //   live-smoke           bi#118.3  gated on BI_E2E_LIVE_KEY, else SKIP.
 //
@@ -33,9 +38,13 @@
 // sends are [burstGate, offsetMs, bytes] — fired offsetMs after the
 // burstGate-th query burst is seen (never race boot/focus); ~1200ms
 // offsets cover the settle cap plus SSH-gated drain with margin.
+// Burst 1 is always the scenario's own first modal: on fresh sandboxes
+// runSession drains the bi#93 first-run setup burst first (hub#177) and
+// shifts every gate one later, so scenarios pass with and without
+// skipSetup — never gate around setup by hand.
 // Run: npm run test:e2e. Live: BI_E2E_LIVE_KEY=<key> npm run test:e2e.
 import { spawn, execFile } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,13 +76,17 @@ function check(name, cond, extra = "") {
 // (sessions/history/settings/trust all land here). Sessions seed only
 // on request — otherwise the startup picker (bi#100) would hijack
 // burst 1 of every scenario.
-function makeSandbox(seedSessions = false) {
+function makeSandbox(seedSessions = false, skipSetup = false) {
 	const home = mkdtempSync(join(tmpdir(), "bi-e2e-"));
 	const sess = join(home, ".bi", "sessions");
 	mkdirSync(sess, { recursive: true });
 	// Pre-trust the launching cwd: otherwise the first boot stops at the
 	// project-trust modal and scripted keys land in the wrong widget.
 	writeFileSync(join(home, ".bi", "trust.json"), JSON.stringify({ [process.cwd()]: "allow" }) + "\n");
+	// bi#93 first-run setup marker: skips setup entirely (opt-in per
+	// scenario). Default fresh sandboxes run setup and runSession drains
+	// it (hub#177) — scenarios never handle the setup burst themselves.
+	if (skipSetup) writeFileSync(join(home, ".bi", "settings.json"), JSON.stringify({ setup_done: true }) + "\n");
 	if (seedSessions) {
 		for (const id of ["aa11bb22", "cc33dd44"]) {
 			writeFileSync(
@@ -98,9 +111,22 @@ function makeSandbox(seedSessions = false) {
 // home: reuse a previous scenario's sandbox (bi#121 two-boot proof).
 // The sandbox is returned on every result; reused homes skip seeding
 // (trust + sessions already in place).
-function runSession({ sends, replyDelayMs = 0, timeoutMs = 30000, extraEnv = {}, seedSessions = false, home = null }) {
+function runSession({ sends, replyDelayMs = 0, timeoutMs = 30000, extraEnv = {}, seedSessions = false, skipSetup = false, home = null }) {
 	return new Promise((resolve) => {
-		home = home ?? makeSandbox(seedSessions);
+		// hub#177: a fresh sandbox boots into bi#93 first-run setup (theme
+		// pickList) before anything else, so raw burst 1 belongs to setup,
+		// not the scenario. The trigger is sandbox state — settings.json
+		// absent + pty TTY + no BI_AGENT_DIR — all controlled here, so the
+		// drain is deterministic, never sniffed: one Esc skips the theme
+		// step (still persists setup_done, so no analytics step follows —
+		// exactly one setup burst), and every scenario gate shifts one
+		// later. Reused homes already ran setup; skipSetup homes never do.
+		// Red-check (bi#57): dropping the drain send below re-hijacks
+		// burst 1 — fresh-sandbox scenarios fail with the setup picker on
+		// screen and their keys typed into it (verified, not assumed).
+		const drainSetup = home === null && !skipSetup;
+		home = home ?? makeSandbox(seedSessions, skipSetup);
+		const gated = [...(drainSetup ? [[1, 1200, K_ESC]] : []), ...sends.map(([gate, ms, bytes]) => [gate + (drainSetup ? 1 : 0), ms, bytes])];
 		const env = { ...process.env, HOME: home, TERM: "xterm-kitty", ...extraEnv };
 		delete env.BI_TUI_DEBUG;
 		const child = spawn("python3", [join(HERE, "e2e-pty-spawn.py"), String(replyDelayMs), String(Math.ceil(timeoutMs / 1000)), "node", CLI], {
@@ -109,7 +135,7 @@ function runSession({ sends, replyDelayMs = 0, timeoutMs = 30000, extraEnv = {},
 		});
 		let out = "";
 		const t0 = Date.now();
-		const pending = sends.map(([gate, ms, bytes]) => ({ gate, ms, at: 0, bytes, fired: false }));
+		const pending = gated.map(([gate, ms, bytes]) => ({ gate, ms, at: 0, bytes, fired: false }));
 		const burstsSeen = () => out.split("[?u").length - 1;
 		const fire = (s) => {
 			s.fired = true;
@@ -142,11 +168,11 @@ function runSession({ sends, replyDelayMs = 0, timeoutMs = 30000, extraEnv = {},
 				writeFileSync(p, out);
 			} catch {}
 			if (code === 3) console.log(`   (transcript kept at ${p})`);
-			resolve({ out, code, timedOut: code === 3, stderr, transcript: p, home });
+			resolve({ out, code, timedOut: code === 3, stderr, transcript: p, home, setupDrained: drainSetup });
 		});
 		child.on("error", (e) => {
 			clearInterval(watchdog);
-			resolve({ out, code: null, timedOut: true, stderr: String(e) });
+			resolve({ out, code: null, timedOut: true, stderr: String(e), setupDrained: drainSetup });
 		});
 	});
 }
@@ -229,6 +255,108 @@ async function sPickerCancel() {
 	check(`${tag} exits (no timeout)`, !timedOut);
 	check(`${tag} picker opened over seeded sessions`, out.includes("aa11bb22"));
 	check(`${tag} Esc keeps the list, next prompt clean`, queryBursts(out) >= 3 && out.includes("session kept"), `bursts=${queryBursts(out)}`);
+	assertNoLeak(tag, out);
+}
+
+async function sResumeFilterType() {
+	const tag = "resume-filter-type";
+	// bi#100: bare /resume filters as you type (FilterList over the
+	// display rows); the verb multi-match path picks from the filtered
+	// rows instead of printing display-only numbers. Red-check (bi#57):
+	// reverting the `} else if` to a bare `if` (fall-through) fails this
+	// scenario with `no cc33dd44 resume` + timeout — the bare pick opens
+	// a stray `3 match ""` picker and later sends pile into its filter.
+	const { out, timedOut } = await runSession({
+		seedSessions: true,
+		skipSetup: true, // burst 1 is the startup picker, not first-run setup
+		sends: [
+			[1, 1500, K_ESC], // dismiss the startup picker (fresh mint)
+			[2, 1200, "/resume\r"], // bare picker over aa11bb22 + cc33dd44
+			[3, 1500, "cc33\r"], // filter narrows to cc33dd44, Enter resumes it
+			[4, 1200, "/resume tmp\r"], // cwd matches both: filtered pick
+			[5, 1500, "\r"], // Enter resumes the top filtered row
+			[6, 1200, "/quit\r"],
+		],
+	});
+	check(`${tag} exits (no timeout)`, !timedOut);
+	check(`${tag} typed filter resumes the narrowed row`, out.includes("[bi] resumed cc33dd44"), "no cc33dd44 resume");
+	check(`${tag} verb multi-match picks instead of listing`, /\[bi\] resumed (aa11bb22|cc33dd44)/.test(out));
+	check(`${tag} no display-only-numbers hint on TTY`, !out.includes("numbers above are display-only"), "hint leaked");
+	check(`${tag} clean quit`, out.includes("session kept"));
+	assertNoLeak(tag, out);
+}
+
+async function sHelpSkillsNote() {
+	const tag = "help-skills-note";
+	// bi#107: /help explains the deliberate divergence — no third-party
+	// extension surface, skills are the only surface. Red-check (bi#57):
+	// dropping the footer line fails the `explains` check below.
+	const { out, timedOut } = await runSession({
+		skipSetup: true,
+		sends: [
+			[1, 1200, "/help\r"],
+			[2, 1200, "/quit\r"],
+		],
+	});
+	check(`${tag} exits (no timeout)`, !timedOut);
+	check(`${tag} lists slash commands`, out.includes("slash commands:"));
+	check(`${tag} explains skills-only surface`, out.includes("extensions: none by design"));
+	check(`${tag} clean quit`, out.includes("session kept"));
+	assertNoLeak(tag, out);
+}
+
+async function sIssuesStaged() {
+	const tag = "issues-staged";
+	// bi#112: staged rows carry their mark in bare listings and
+	// /issues staged lists exactly the working set (id + title +
+	// neighbor count). Staging is memory-only, so a real repo id is a
+	// safe fixture (no writes); staging by id needs no prior listing
+	// and no modal. Short chain (one picker) — long multi-picker
+	// chains desync on burst inflation (prompt redraws add bursts).
+	// Red-check (bi#57): dropping the ` [staged]` suffix in cli.ts
+	// fails the `mark` check while the view checks stay green.
+	const { out, timedOut } = await runSession({
+		skipSetup: true,
+		sends: [
+			[1, 1200, "/issues bi#26\r"], // stage by id: no modal (bi#26 is Open, so the bare list carries it)
+			[2, 1200, "/issues staged\r"], // the staged view: no modal
+			[3, 1500, "/issues\r"], // bare list picker: staged row marked
+			[4, 1500, K_ESC], // Esc keeps the list
+			[5, 1200, "/quit\r"],
+		],
+	});
+	check(`${tag} exits (no timeout)`, !timedOut);
+	check(`${tag} stages bi#26`, out.includes("[bi] staged bi#26"));
+	check(`${tag} staged view carries neighbor counts`, /\(\d+ neighbors?\)/.test(out));
+	check(`${tag} bare list marks the staged row`, out.includes(" [staged]"));
+	check(`${tag} clean quit`, out.includes("session kept"));
+	assertNoLeak(tag, out);
+}
+
+async function sIssuesDropClears() {
+	const tag = "issues-drop-clears";
+	// bi#112: dropping all clears both the set and the marks. Same
+	// one-picker discipline as issues-staged: stage by id, drop all,
+	// then the bare list must carry no mark (the set was non-empty
+	// before the drop, so the bare list proves the marks cleared).
+	const { out, timedOut } = await runSession({
+		skipSetup: true,
+		sends: [
+			[1, 1200, "/issues bi#26\r"], // stage by id: no modal
+			[2, 1200, "/issues staged\r"], // view proves the set non-empty pre-drop: no modal
+			[3, 1200, "/issues drop all\r"],
+			[4, 1500, "/issues\r"], // bare list picker: no marks left
+			[5, 1500, K_ESC], // Esc keeps the list
+			[6, 1200, "/quit\r"],
+		],
+	});
+	check(`${tag} exits (no timeout)`, !timedOut);
+	check(`${tag} stages bi#26 first`, out.includes("[bi] staged bi#26"));
+	check(`${tag} staged view shows the set pre-drop`, out.includes("bi#26 [Open/Feat]"));
+	check(`${tag} drop all confirms`, /dropped 1 staged issue\(s\)/.test(out));
+	const afterDrop = out.slice(out.lastIndexOf("dropped"));
+	check(`${tag} no marks survive the drop`, !afterDrop.includes(" [staged]"));
+	check(`${tag} clean quit`, out.includes("session kept"));
 	assertNoLeak(tag, out);
 }
 
@@ -332,7 +460,12 @@ async function sSettingsTheme() {
 
 async function sSettingsEsc() {
 	const tag = "settings-esc";
+	// hub#177: the abort must persist nothing — but a fresh boot's setup
+	// dismissal persists setup_done before burst 1, so "writes nothing" is
+	// only observable setup-free. skipSetup seeds exactly {setup_done:true}
+	// and the abort must leave it byte-identical in intent (parsed equal).
 	const { out, home, timedOut } = await runSession({
+		skipSetup: true,
 		sends: [
 			[1, 1200, "/settings\r"],
 			[2, 1200, K_ESC], // abort: lists, writes nothing
@@ -341,7 +474,8 @@ async function sSettingsEsc() {
 	});
 	check(`${tag} exits (no timeout)`, !timedOut);
 	check(`${tag} Esc falls back to the list`, out.includes("default_provider") || out.includes("default-model") || /default_\w+/.test(out));
-	check(`${tag} abort writes nothing`, !existsSync(join(home, ".bi", "settings.json")));
+	const disk = JSON.parse(readFileSync(join(home, ".bi", "settings.json"), "utf8"));
+	check(`${tag} abort leaves the seeded settings untouched`, Object.keys(disk).join(",") === "setup_done" && disk.setup_done === true, JSON.stringify(disk));
 	check(`${tag} clean quit`, out.includes("session kept"));
 	assertNoLeak(tag, out);
 }
@@ -415,6 +549,10 @@ const ALL = {
 	"prompt-cancel": sPromptCancel,
 	"picker-select": sPickerSelect,
 	"picker-cancel": sPickerCancel,
+	"resume-filter-type": sResumeFilterType,
+	"help-skills-note": sHelpSkillsNote,
+	"issues-staged": sIssuesStaged,
+	"issues-drop-clears": sIssuesDropClears,
 	"startup-picker-select": sStartupPickerSelect,
 	"startup-picker-new": sStartupPickerNew,
 	"settings-backend": sSettingsBackend,

@@ -6,28 +6,83 @@ testset "oauth status board (bi#29)" {
                 source: "stored",
                 cred_type: "oauth",
                 auth_env: "ANTHROPIC_API_KEY",
+                expires: 9999999999999,
             },
             OAuthRow {
                 provider_id: "openai",
                 source: "env",
                 cred_type: null,
                 auth_env: "OPENAI_API_KEY",
+                expires: null,
             },
             OAuthRow {
                 provider_id: "xai",
                 source: "none",
                 cred_type: null,
                 auth_env: "XAI_API_KEY",
+                expires: null,
             },
         ];
-        let out = format_oauth_status(rows);
+        let out = format_oauth_status(rows, 1700000000000);
         assert.contains(out, "anthropic: stored (oauth)");
         assert.contains(out, "openai: env (OPENAI_API_KEY)");
         assert.contains(out, "xai: not configured (bi login xai)")
     }
 
+    test "rows are numbered for /oauth numeric pick (bi#102)" {
+        let rows = [
+            OAuthRow {
+                provider_id: "anthropic",
+                source: "stored",
+                cred_type: "oauth",
+                auth_env: "ANTHROPIC_API_KEY",
+                expires: 9999999999999,
+            },
+            OAuthRow {
+                provider_id: "xai",
+                source: "none",
+                cred_type: null,
+                auth_env: "XAI_API_KEY",
+                expires: null,
+            },
+        ];
+        let out = format_oauth_status(rows, 1700000000000);
+        assert.contains(out, "1  anthropic: stored (oauth)");
+        assert.contains(out, "2  xai: not configured (bi login xai)")
+    }
+
+    test "expired oauth rows flag before a turn fails (bi#102)" {
+        let rows = [
+            OAuthRow {
+                provider_id: "anthropic",
+                source: "stored",
+                cred_type: "oauth",
+                auth_env: "ANTHROPIC_API_KEY",
+                expires: 1700000000000,
+            },
+            OAuthRow {
+                provider_id: "xai",
+                source: "stored",
+                cred_type: "oauth",
+                auth_env: "XAI_API_KEY",
+                expires: null,
+            },
+            OAuthRow {
+                provider_id: "groq",
+                source: "stored",
+                cred_type: "api_key",
+                auth_env: null,
+                expires: null,
+            },
+        ];
+        let out = format_oauth_status(rows, 1800000000000);
+        assert.contains(out, "1  anthropic: stored (oauth, expired — /oauth 1 refreshes)");
+        assert.contains(out, "2  xai: stored (oauth)");
+        assert.contains(out, "3  groq: stored (api_key)")
+    }
+
     test "empty registry is explicit" {
-        assert.equal(format_oauth_status([]), "(no providers)")
+        assert.equal(format_oauth_status([], 1700000000000), "(no providers)")
     }
 }
 

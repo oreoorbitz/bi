@@ -13,9 +13,10 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
-const { makeSlashProvider, promptAvailable, PromptEditor, DynamicBorder, visualWidth, truncateVisual, makeBorderedLoader } = await import(
+const { makeSlashProvider, promptAvailable, PromptEditor, inlineSlashTokenAt, FilterList, rowSearchTexts, DynamicBorder, visualWidth, truncateVisual, makeBorderedLoader } = await import(
 	join(ROOT, "..", "dist", "src", "prompt.js")
 );
+const { rank_selector_rows } = await import(join(ROOT, "..", "dist", "baml_sdk", "index.js"));
 
 let failures = 0;
 const check = (cond, msg) => {
@@ -134,6 +135,270 @@ check(truncateVisual("\x1b[31mhello world\x1b[0m", 8) === "hello w…", "ansi cl
 	check(JSON.stringify(kinds(frames.false)) === JSON.stringify(["DynamicBorder", "Loader", "Spacer", "DynamicBorder"]), "plain loader frame shape");
 	// Loader ctor starts its tick interval — stop both or the suite hangs.
 	for (const root of Object.values(frames)) for (const c of root.children) c.stop?.();
+}
+
+// 7 — bi#69 FilterList: filter-as-you-type atop stock widgets, headless.
+// Rows resolve to ORIGINAL indices (callers map positionally); typing
+// narrows, Enter confirms the filtered top row, Esc cancels, clearing
+// restores the kept selection, empty query lists all.
+// Red-check (bi#57): delete the `this.filter.handleInput(data)` forward
+// in FilterList.handleInput and these fail as `filter narrows as you
+// type` / `enter confirms the filtered row's original index` (typing
+// stops reaching the filter); restore for green.
+{
+	const mk = (resolved) => {
+		const items = ["grok-4.6", "claude-haiku-4-5", "gpt-5"].map((label) => ({ value: label, label }));
+		const all = items.map((item, i) => ({ item, orig: i, haystack: labelHaystack(item.label) }));
+		return new FilterList(all, 0, (q) => (q.length === 0 ? all : all.filter((r) => r.haystack.includes(q.toLowerCase()))), (o) => resolved.push(o));
+	};
+	const labelHaystack = (s) => s.toLowerCase();
+	// Typing narrows; Enter confirms the ORIGINAL index.
+	{
+		const resolved = [];
+		const fl = mk(resolved);
+		check(JSON.stringify(fl.visibleOriginals()) === "[0,1,2]", "empty query lists all");
+		fl.handleInput("g");
+		check(fl.getFilterValue() === "g", "typing reaches the filter row");
+		check(JSON.stringify(fl.visibleOriginals()) === "[0,2]", "filter narrows as you type");
+		fl.handleInput("\r");
+		check(JSON.stringify(resolved) === "[0]", "enter confirms the filtered row's original index");
+	}
+	// Esc cancels to null; arrows never touch the filter text.
+	{
+		const resolved = [];
+		const fl = mk(resolved);
+		fl.handleInput("c");
+		check(JSON.stringify(fl.visibleOriginals()) === "[1]", "second row narrows on its letter");
+		fl.handleInput("\x1b[A");
+		check(fl.getFilterValue() === "c", "arrows are not filter text");
+		fl.handleInput("\x1b");
+		check(JSON.stringify(resolved) === "[null]", "esc cancels the pick");
+	}
+	// Clearing restores the kept selection; no-match Enter is a no-op.
+	{
+		const resolved = [];
+		const fl = mk(resolved);
+		fl.handleInput("\x1b[B");
+		fl.handleInput("\x7f");
+		check(fl.getFilterValue() === "", "backspace on empty filter stays empty");
+		check(JSON.stringify(fl.visibleOriginals()) === "[0,1,2]", "empty query restores all rows");
+		fl.handleInput("zzz");
+		check(JSON.stringify(fl.visibleOriginals()) === "[]", "no match lists none");
+		fl.handleInput("\r");
+		check(resolved.length === 0, "enter on empty matches nothing");
+	}
+}
+
+// 8 — bi#85 host wiring: haystack defaults + BAML rank delegation.
+// rowSearchTexts prefers the per-row override (/model search texts),
+// else cleaned label + description (/resume display lines need no
+// caller change). rank_selector_rows is the pickList rank core: empty
+// lists all, provider-prefixed ranks first, pipes never reach it
+// (pickList only runs behind promptAvailable).
+// Red-check (bi#57): point rowSearchTexts at the raw label (skip the
+// override) and `override wins` fails; make the BAML rank return []
+// and `baml rank narrows` fails. Restore for green.
+{
+	check(
+		JSON.stringify(rowSearchTexts([{ label: "grok-4.6", description: "xai · 200 ctx", searchText: "xai xai/grok-4.6" }])) === JSON.stringify(["xai xai/grok-4.6"]),
+		"override wins",
+	);
+	check(
+		JSON.stringify(rowSearchTexts([{ label: "1  abc123 my task" }])) === JSON.stringify(["1  abc123 my task"]),
+		"label-only rows pass through",
+	);
+	check(
+		JSON.stringify(rowSearchTexts([{ label: "\x1b[31mgrok\x1b[0m", description: "xai" }])) === JSON.stringify(["grok xai"]),
+		"ansi cleaned from the default haystack",
+	);
+	const texts = ["xai xai/grok-4.6 xai grok-4.6 Grok 4.6", "openrouter openrouter/openai/gpt-5 openrouter openai/gpt-5"];
+	check(JSON.stringify(rank_selector_rows("", texts)) === "[0,1]", "baml rank lists all on empty");
+	check(JSON.stringify(rank_selector_rows("xai/grok", texts)) === "[0]", "baml rank narrows to the provider row");
+}
+
+// 9 — bi#154 paste-burst guard: rapid multi-line pastes on terminals
+// without bracketed-paste markers must not self-submit. Thresholds
+// (8 chars / 8ms interval / 30ms active idle / 120ms enter-suppress)
+// are asserted at the unit level with fake timestamps; the editor
+// level drives PromptEditor.handleInput headless (single-char feeds
+// arrive <8ms apart in a tight loop, so Date.now() needs no mocks).
+// Red-check (bi#57): route burst-Enter to super.handleInput (drop the
+// insertTextAtCursor newline branch) and `burst Enter inserts newline`
+// fails with `submit:line1...`; drop the onPlainChar feed and both
+// burst cases fail (counter never trips). Restore for green.
+{
+	const { PasteBurst } = await import(join(ROOT, "..", "dist", "src", "paste-burst.js"));
+	// Unit: exact threshold boundary with fake timestamps.
+	{
+		const p = new PasteBurst();
+		let t = 1000;
+		for (let i = 0; i < 7; i++) { p.onPlainChar(t); t += 2; }
+		check(p.shouldInsertNewlineInsteadOfSubmit(t) === false, "burst: 7 rapid chars do not trip the guard");
+		p.onPlainChar(t);
+		check(p.shouldInsertNewlineInsteadOfSubmit(t + 1) === true, "burst: 8th rapid char trips the guard");
+		check(p.shouldInsertNewlineInsteadOfSubmit(t + 200) === false, "burst: suppress window expires after 120ms");
+	}
+	// Unit: slow cadence never trips, even past 8 chars.
+	{
+		const p = new PasteBurst();
+		let t = 2000;
+		for (let i = 0; i < 12; i++) { p.onPlainChar(t); t += 50; }
+		check(p.shouldInsertNewlineInsteadOfSubmit(t) === false, "burst: 12 slow chars stay a submit");
+	}
+	// Unit: a control key resets the run (kimi handleInput behavior).
+	{
+		const p = new PasteBurst();
+		let t = 3000;
+		for (let i = 0; i < 7; i++) { p.onPlainChar(t); t += 2; }
+		p.reset();
+		p.onPlainChar(t);
+		check(p.shouldInsertNewlineInsteadOfSubmit(t + 1) === false, "burst: reset breaks the run");
+	}
+	// Editor: simulated 20-char burst + Enter inserts \n, no submit.
+	{
+		const ed = new PromptEditor({}, { borderColor: (s) => s, selectList: {} });
+		const submitted = [];
+		ed.onSubmit = (t) => submitted.push(t);
+		for (const ch of "line1-line2-line3-4567") ed.handleInput(ch);
+		ed.handleInput("\r");
+		check(submitted.length === 0, "burst Enter inserts newline instead of submitting");
+		check(ed.getText().includes("\n"), `burst newline lands in the buffer (got ${JSON.stringify(ed.getText())})`);
+		// The trailing-newline window: a second fast Enter also newlines.
+		ed.handleInput("\r");
+		check(submitted.length === 0, "burst trailing Enter still newlines inside the suppress window");
+	}
+	// Editor: normal-speed typing + Enter still submits.
+	{
+		const ed = new PromptEditor({}, { borderColor: (s) => s, selectList: {} });
+		const submitted = [];
+		ed.onSubmit = (t) => submitted.push(t);
+		for (const ch of "hi!") ed.handleInput(ch);
+		ed.handleInput("\r");
+		check(submitted.join() === "hi!", `typed Enter still submits (got ${JSON.stringify(submitted)})`);
+	}
+	// Editor: a multi-char chunk (bracketed-paste shape) never feeds the
+	// counter — only single printable chars do — so Enter still submits.
+	{
+		const ed = new PromptEditor({}, { borderColor: (s) => s, selectList: {} });
+		const submitted = [];
+		ed.onSubmit = (t) => submitted.push(t);
+		ed.handleInput("pasted-line1\npasted-line2-chunk");
+		ed.handleInput("\r");
+		check(submitted.length === 1, "chunked paste path unaffected by the burst guard");
+	}
+	// Editor: autocomplete-open Enter is untouched (list owns Enter).
+	{
+		const ed = new PromptEditor({}, { borderColor: (s) => s, selectList: {} });
+		ed.isShowingAutocomplete = () => true;
+		const submitted = [];
+		ed.onSubmit = (t) => submitted.push(t);
+		for (const ch of "0123456789abcdef") ed.handleInput(ch);
+		ed.handleInput("\r");
+		check(submitted.length === 1, "autocomplete-open Enter still reaches super (submit path intact)");
+	}
+}
+
+// 10 — bi#155 inline slash/skill completion mid-prompt. The trigger
+// detector is pure (token after whitespace, or opening a later line;
+// prose slashes never match); the provider reuses BAML complete_slash
+// against the skills-only pool; inline accepts keep the slash plus a
+// trailing space so argument completion follows; first-word behavior
+// is byte-identical and the bi#115 stale guard covers inline accepts.
+// Enter-without-submit is verified by recording what reaches stock:
+// inline-token Enter arrives as Tab (apply, no submit), every other
+// open-list Enter arrives unchanged.
+// Red-check (bi#57): drop the inline branch in getSuggestions and the
+// `mid-line trigger` / `later-line trigger` cases fail (null); force
+// the Enter translation off and `inline Enter translates to Tab` fails
+// (records \r). Restore for green.
+{
+	const liveSkills = [{ name: "review" }];
+	const ipool = {
+		names: () => ["model", "move", "trust", ...liveSkills.map((s) => s.name)],
+		skillNames: () => liveSkills.map((s) => s.name),
+		describe: (n) => (n === "review" ? "Review code" : null),
+		argPool: async () => [],
+	};
+	const iprovider = makeSlashProvider(ipool);
+	// Detector: triggers.
+	check(inlineSlashTokenAt(["hello /re"], 0, 9) === "/re", "inline detector fires after whitespace");
+	check(inlineSlashTokenAt(["hello /"], 0, 7) === "/", "inline detector fires on the bare slash");
+	check(inlineSlashTokenAt(["first", "/re"], 1, 3) === "/re", "inline detector fires at a later line start");
+	check(inlineSlashTokenAt(["first", "x /skill:re"], 1, 11) === "/skill:re", "inline token keeps the colon shape");
+	check(inlineSlashTokenAt(["hello /repaused "], 0, 16) === null, "cursor past the token end does not trigger");
+	// Detector: prose slashes never trigger.
+	check(inlineSlashTokenAt(["src/foo"], 0, 7) === null, "path slash does not trigger");
+	check(inlineSlashTokenAt(["1/2"], 0, 3) === null, "fraction slash does not trigger");
+	check(inlineSlashTokenAt(["/mo"], 0, 3) === null, "first-word slash is not inline (provider path unchanged)");
+	check(inlineSlashTokenAt(["hello"], 0, 5) === null, "plain prose does not trigger");
+	// Provider: mid-line + later-line triggers list skills only.
+	{
+		const s = await iprovider.getSuggestions(["hello /re"], 0, 9, { signal: AbortSignal.abort() });
+		check(s !== null && s.prefix === "/re", "mid-line trigger returns the inline prefix");
+		check(s !== null && s.items.map((i) => i.value).join(",") === "/review", `mid-line lists skills only (got ${JSON.stringify(s && s.items)})`);
+		check(s !== null && s.items[0].description === "Review code", "inline descriptions attach");
+		const l = await iprovider.getSuggestions(["first", "/re"], 1, 3, { signal: AbortSignal.abort() });
+		check(l !== null && l.items.map((i) => i.value).join(",") === "/review", "later-line trigger lists skills only");
+		// Later-line "/" is the inline (skills-only) menu, not the
+		// first-word menu: no skill matches "m", so builtins stay out.
+		check((await iprovider.getSuggestions(["first", "/m"], 1, 2, { signal: AbortSignal.abort() })) === null, "later-line slash excludes first-word builtins");
+		const n = await iprovider.getSuggestions(["hello /re paused"], 0, 9, { signal: AbortSignal.abort() });
+		check(n !== null && n.prefix === "/re", "cursor-inside-token still triggers with trailing prose");
+	}
+	// Provider: prose slashes + first-word path unchanged.
+	check((await iprovider.getSuggestions(["src/foo"], 0, 7, { signal: AbortSignal.abort() })) === null, "provider ignores path slashes");
+	check((await iprovider.getSuggestions(["1/2"], 0, 3, { signal: AbortSignal.abort() })) === null, "provider ignores fraction slashes");
+	{
+		const s = await iprovider.getSuggestions(["/mo"], 0, 3, { signal: AbortSignal.abort() });
+		check(s !== null && s.items.map((i) => i.value).join(",") === "/model,/move", `first-word menu keeps builtins (got ${JSON.stringify(s && s.items)})`);
+	}
+	// Provider: inline accept preserves slash + trailing space; stale refuses.
+	{
+		const r = iprovider.applyCompletion(["hello /re"], 0, 9, { value: "/review", label: "/review" }, "/re");
+		check(r.lines[0] === "hello /review " && r.cursorCol === 14, `inline accept appends the trailing space (got ${JSON.stringify(r)})`);
+		const stale = iprovider.applyCompletion(["hello /review"], 0, 14, { value: "/review", label: "/review" }, "/re");
+		check(stale.lines[0] === "hello /review" && stale.cursorCol === 14, "stale inline prefix refuses the splice");
+	}
+	// Pool freshness: skills added after the provider is built (the
+	// /trust reload path — same live array, no second list) appear inline.
+	{
+		liveSkills.push({ name: "retro" });
+		const s = await iprovider.getSuggestions(["hello /re"], 0, 9, { signal: AbortSignal.abort() });
+		check(s !== null && s.items.map((i) => i.value).sort().join(",") === "/retro,/review", `inline picker follows pool reloads (got ${JSON.stringify(s && s.items)})`);
+		liveSkills.pop();
+	}
+	// Enter routing: record what reaches stock with the list open.
+	{
+		const { Editor } = await import("@earendil-works/pi-tui");
+		const orig = Editor.prototype.handleInput;
+		const seen = [];
+		Editor.prototype.handleInput = function (d) { seen.push(d); };
+		try {
+			const theme = { borderColor: (s) => s, selectList: {} };
+			const inlineEd = new PromptEditor({}, theme);
+			inlineEd.isShowingAutocomplete = () => true;
+			inlineEd.getLines = () => ["hello /re"];
+			inlineEd.getCursor = () => ({ line: 0, col: 9 });
+			inlineEd.handleInput("\r");
+			check(seen.join(",") === "\t", `inline Enter translates to Tab (got ${JSON.stringify(seen)})`);
+			seen.length = 0;
+			const firstEd = new PromptEditor({}, theme);
+			firstEd.isShowingAutocomplete = () => true;
+			firstEd.getLines = () => ["/mo"];
+			firstEd.getCursor = () => ({ line: 0, col: 3 });
+			firstEd.handleInput("\r");
+			check(seen.join(",") === "\r", `first-word Enter passes through untouched (got ${JSON.stringify(seen)})`);
+			seen.length = 0;
+			const proseEd = new PromptEditor({}, theme);
+			proseEd.isShowingAutocomplete = () => true;
+			proseEd.getLines = () => ["hello world"];
+			proseEd.getCursor = () => ({ line: 0, col: 11 });
+			proseEd.handleInput("\r");
+			check(seen.join(",") === "\r", "non-token Enter passes through untouched");
+		} finally {
+			Editor.prototype.handleInput = orig;
+		}
+	}
 }
 
 if (failures) process.exit(1);

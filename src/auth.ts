@@ -170,7 +170,7 @@ export async function readCredential(providerId: string): Promise<Credential | u
 export async function listCredentials(): Promise<CredentialInfo[]> {
 	const data = await loadFile();
 	return Object.values(data).map(
-		(c) => new CredentialInfo({ provider_id: c.provider_id, type: c.type }),
+		(c) => new CredentialInfo({ provider_id: c.provider_id, type: c.type, expires: c.expires }),
 	);
 }
 

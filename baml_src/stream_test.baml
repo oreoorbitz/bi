@@ -182,6 +182,94 @@ testset "stream incremental" {
         }
     }
 
+    // bi#06: MediaSpec is the plain-data FFI boundary for media (the media
+    // analogue of ToolSpec). Media itself never crosses to the host — the
+    // bridge records a host-held Media as the ai.MediaPart union alias
+    // (`media`), not baml.media.Image, so re-entry fails with TypeMismatch
+    // (proposal 10). Specs are strings and survive; the VM builds Media
+    // in the same call that invokes the model.
+    //
+    // Red-check record (bi#57, observed live 2026-09-06): replacing the
+    // build_media InvalidArgument throw with a CreateMediaBlock fallback
+    // fails "build_media rejects an unknown source" with
+    // `left = Media {...}, right = "caught"`; restoring the throw returns
+    // green. Host-side (/tmp/ffi06-host-verify.mjs): routing image blocks
+    // to `rest` instead of `media` in splitMediaTurns fails with
+    // `ASSERT FAIL: one spec`; restoring extraction returns green.
+    test "build_media resolves base64 and url specs to image Media in-VM" {
+        let from_b64 = build_media(MediaSpec { source: "base64", data: "aGVsbG8=", mime_type: "image/png" });
+        assert.equal(from_b64.kind(), "image");
+        let from_url = build_media(MediaSpec { source: "url", data: "https://example.com/img.png", mime_type: "image/png" });
+        assert.equal(from_url.kind(), "image");
+        // A null mime still builds — the bridge fills the default.
+        let no_mime = build_media(MediaSpec { source: "base64", data: "aGVsbG8=", mime_type: null });
+        assert.equal(no_mime.kind(), "image")
+    }
+
+    test "build_media rejects an unknown source naming the value" {
+        // The trailing assert closes the vacuous-pass hole: without the
+        // throw, no catch arm runs and outcome would be the Media itself.
+        let outcome = build_media(MediaSpec { source: "carrier-pigeon", data: "aGVsbG8=", mime_type: null }) catch (e) {
+            baml.errors.InvalidArgument => {
+                assert.is_true(e.message.includes("carrier-pigeon"));
+                "caught"
+            },
+        };
+        assert.equal(outcome, "caught")
+    }
+
+    test "SendTurnWithMedia carries history plus media plus tools to the wire" {
+        let history: ai.events.Event[] = [
+            ai.events.UserMessage { content: "earlier question" },
+            ai.events.AssistantMessage {
+                content: [ai.content.Text { text: "earlier answer" }],
+                client_id: "test-client",
+            },
+        ];
+        let tool_spec = ToolSpec {
+            name: "get_weather",
+            description: "get the weather",
+            input_schema: { "type": "object" },
+        };
+        let result = SendTurnWithMedia(
+            "anthropic",
+            "claude-haiku-4-5",
+            "test-key",
+            "what is in this image?",
+            history,
+            [MediaSpec { source: "base64", data: "aGVsbG8=", mime_type: "image/png" }],
+            [tool_spec],
+            media_client_id = "test-client",
+            base_url = "http://127.0.0.1:1",
+        );
+        assert.is_true(result is TurnFailure);
+        match (result) {
+            let f: TurnFailure => {
+                assert.equal(f.kind, "network");
+                assert.is_true(f.retry_safe)
+            },
+            _ => assert.is_true(false),
+        }
+    }
+
+    test "SendTurnWithMedia with empty media behaves like SendTurn" {
+        let result = SendTurnWithMedia(
+            "anthropic",
+            "claude-haiku-4-5",
+            "test-key",
+            "hi",
+            [],
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
+        assert.is_true(result is TurnFailure);
+        match (result) {
+            let f: TurnFailure => assert.equal(f.kind, "network"),
+            _ => assert.is_true(false),
+        }
+    }
+
     test "toolResult with image placeholder string reaches wire" {
         let history: ai.events.Event[] = [
             ai.events.AssistantMessage {

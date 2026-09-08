@@ -20,34 +20,53 @@ import {
 	Editor,
 	Input,
 	Loader,
-	KeybindingsManager,
-	ProcessTerminal,
 	SelectList,
 	Spacer,
 	Text,
-	TuiMainScreen,
-	TUI_KEYBINDINGS,
 	getKeybindings,
 	matchesKey,
 	setKeybindings,
+	truncateToWidth,
+	visibleWidth,
 	type AutocompleteItem,
 	type AutocompleteProvider,
 	type AutocompleteSuggestions,
 	type Component,
+	type EditorOptions,
 	type EditorTheme,
+	type Focusable,
+	type OverlayAnchor,
+	type OverlayMargin,
 	type SelectItem,
 	type SelectListTheme,
 	type TUI,
 } from "@earendil-works/pi-tui";
-import { complete_arg, complete_slash } from "../baml_sdk/index.js";
+import { complete_arg, complete_slash, editor_side_border, prompt_glyph, rank_selector_rows, render_editor_bottom_border, render_editor_top_border, style_segment } from "../baml_sdk/index.js";
 import { appendFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { currentKeybindingsManager } from "./keybindings.js";
+import { PasteBurst } from "./paste-burst.js";
+import { splitSecondWord } from "./paths.js";
 import { getBiSessionsDir } from "./session.js";
-import { termWidth } from "./tui.js";
+import { disposeReplTui, ensureReplTui, replTuiLeased, termWidth } from "./tui.js";
 
 export interface ScreenRow {
 	label: string;
 	description?: string;
+	// bi#85: per-row fuzzy haystack (BAML model_selector_search_text for
+	// /model). Absent: cleaned "label description", so /resume display
+	// lines narrow on their id/label/cwd text with no caller change.
+	searchText?: string;
+}
+
+// Pure haystack builder (headless-testable): the override wins,
+// otherwise the cleaned label plus description.
+export function rowSearchTexts(rows: ScreenRow[]): string[] {
+	return rows.map((r) => {
+		if (r.searchText !== undefined) return r.searchText;
+		const label = clean(r.label);
+		return r.description === undefined ? label : `${label} ${clean(r.description)}`;
+	});
 }
 
 // Identity theme for now: no chalk in bi's deps, so no color mapping
@@ -76,10 +95,203 @@ export function promptAvailable(): boolean {
 // autocomplete list is closed (open: super dismisses the list);
 // Ctrl-D quits only on an empty buffer (non-empty: super handles it).
 // No release handling here — Tui drops releases before components run.
+// bi#153: narrow-terminal word-wrap guard. Stock upstream wordWrapLine
+// recurses forever when one indivisible grapheme is wider than the wrap
+// width (`wordWrapLine('你', 1)` → RangeError: Maximum call stack size
+// exceeded), killing the REPL in a 1-3-column tmux/SSH pane. Kimi's fork
+// guards inside wordWrapLine (editor.ts:170-180: single-grapheme check,
+// keep the chunk, let paint truncate); bi depends on stock pi-tui (bi#114
+// "depend, don't rebuild": no vendoring/patching of node_modules), so the
+// guard lives here: render() widens the width handed to super just enough
+// that no single grapheme exceeds the layout, then truncates the laid-out
+// lines back to the real width — degrade via truncate, same as the fork.
+// Indivisibility is grapheme-count-based (Intl.Segmenter, not code-unit
+// `.length`: ZWJ emoji is one grapheme but many UTF-16 units).
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const wordSegmenter = new Intl.Segmenter(undefined, { granularity: "word" });
+
+// Grapheme count, capped at 2 (only the 1-vs-many distinction matters).
+function graphemeCount(text: string): number {
+	let n = 0;
+	for (const _ of graphemeSegmenter.segment(text)) {
+		n += 1;
+		if (n > 1) return n;
+	}
+	return n;
+}
+
+// Wrap-width floor for a buffer: every indivisible (single-grapheme) word
+// unit must fit, else stock wordWrapLine recurses on it. Multi-grapheme
+// units re-split at grapheme granularity inside wordWrapLine, so they never
+// recurse and set no floor. Widths come from pi-tui visibleWidth — the same
+// measure wordWrapLine uses. Minimum 2 (CJK needs 2 cells).
+function editorWrapFloor(text: string): number {
+	let floor = 2;
+	for (const { segment } of wordSegmenter.segment(text)) {
+		if (graphemeCount(segment) > 1) continue;
+		const w = visibleWidth(segment);
+		if (w > floor) floor = w;
+	}
+	return floor;
+}
+
+// bi#181: editor border color roles (BAML theme roles via style_segment
+// — the existing theme mechanism; activeTheme() gating in cli.ts already
+// resolves null on pipes/NO_COLOR, and null renders byte-identical
+// plain). bi#185 wiring note: when the palette token system lands
+// (theme.baml/theme-files.ts, sibling-owned), swap these role names for
+// palette tokens (kimi: primary for `/`-command input, muted otherwise;
+// a third token for modal/approval-owns-focus) — the only call sites
+// are these constants and PromptEditor.render below. Do not edit the
+// theme files from here.
+const EDITOR_BORDER_ROLE_IDLE = "dim";
+const EDITOR_BORDER_ROLE_COMMAND = "accent";
+
+// Strip SGR spans (kimi stripSgr) — border detection measures the
+// visible row, styling is reapplied by the paint fn.
+function stripSgr(line: string): string {
+	return line.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+// bi#181: post-process pi-tui's editor output into kimi's rounded box
+// (custom-editor.ts wrapWithSideBorders :807-857 port). Dash-rule rows
+// become ╭╮/╰╯ borders (the BAML-shaped label splices into the top
+// border; scroll-indicator rows keep their middle text), content rows
+// get │ side bars — only over LITERAL SPACES, so the SGR inverse
+// cursor cell (including the cursor-overflow-into-padding case) is
+// never overwritten. Render-only: no stdin ownership (bi#162/179).
+function wrapEditorLines(lines: string[], paint: (s: string) => string, label: string): string[] {
+	const side = editor_side_border();
+	let seenTop = false;
+	return lines.map((line) => {
+		const plain = stripSgr(line);
+		if (plain.length > 0 && plain[0] === "─") {
+			const isTop = !seenTop;
+			seenTop = true;
+			if (plain.length === 1) return paint(isTop ? "╭" : "╰");
+			const middle = plain.slice(1, -1);
+			if (/^─+$/.test(middle)) {
+				return paint(isTop ? render_editor_top_border(label, plain.length) : render_editor_bottom_border(plain.length));
+			}
+			return paint((isTop ? "╭" : "╰") + middle + (isTop ? "╮" : "╯"));
+		}
+		if (line.length === 0) return line;
+		const firstCh = line[0];
+		const lastCh = line[line.length - 1];
+		const head = firstCh === " " ? paint(side) : firstCh ?? "";
+		const tail = line.length > 1 && lastCh === " " ? paint(side) : lastCh ?? "";
+		if (line.length === 1) return head;
+		return head + line.slice(1, -1) + tail;
+	});
+}
+
+// bi#181: overlay the `>` glyph on the first content line at column 2
+// (kimi injectPromptSymbol :792-803 port). Column 0 is the left side
+// bar (overlaid by wrapEditorLines), column 1 a gap, column 3 separates
+// the glyph from content. Relies on the editor being constructed with
+// paddingX >= 4 so the line starts with four literal spaces; returns
+// the line unchanged otherwise — the cursor cell is never overwritten.
+function injectPromptGlyph(line: string, glyph: string): string {
+	if (line.length < 4) return line;
+	for (let i = 0; i < 4; i++) {
+		if (line[i] !== " ") return line;
+	}
+	return "  " + glyph + " " + line.slice(4);
+}
+
 export class PromptEditor extends Editor {
 	onEscape?: () => void;
 	onCtrlD?: () => void;
+	// bi#181: the BAML-shaped prompt label (format_prompt_label, e.g.
+	// "bi[0]>") rendered INTO the rounded top border, and the active
+	// theme name for border colors (null = plain). Set by askEdit.
+	promptLabel = "";
+	borderTheme: string | null = null;
+	constructor(tui: TUI, theme: EditorTheme, options?: EditorOptions) {
+		super(tui, theme, options);
+	}
+	// bi#90: Ctrl+P model cycling (pi's app.model.cycleForward). Fires only
+	// when the autocomplete list is closed (open: the list owns control keys)
+	// and never inserts into the buffer. Unset (readline fallback callers):
+	// ctrl+p falls through to the Editor, which ignores it.
+	onCycleForward?: () => void;
+	// bi#154: paste-burst guard (kimi paste-burst.ts port). While the
+	// autocomplete list is closed, an Enter arriving inside a burst
+	// window inserts a newline instead of submitting; printable input
+	// feeds the detector, anything else (arrows, Tab, edits) resets it.
+	// Autocomplete-open input is untouched — the list owns Enter there.
+	private pasteBurst = new PasteBurst();
+	// bi#183: negotiation-straggler suppression. Indicted path (drill:
+	// scripts/paint-chain-junk.mjs, RED record in its header): a kitty/DA
+	// reply split across pi-tui's 150ms negotiation-fragment flush
+	// (terminal.js KEYBOARD_PROTOCOL_RESPONSE_FRAGMENT_TIMEOUT_MS) has its
+	// `\x1b[?…` prefix forwarded as input and its tail (`u`,
+	// `4;1;…;52c`) delivered as PLAIN TEXT — and StdinBuffer emits plain
+	// text ONE CHARACTER per sequence, so the tail arrives as a digit/
+	// semicolon run closed by a lone `u`/`c`. super.handleInput would
+	// insert the run into the buffer — the bi-cli-latest.png junk-glyph
+	// class (proposals/14). Draining before focus cannot cover an
+	// unboundedly late straggler, so the suppression lives at the
+	// insertion point as a small state machine: a flushed prefix arms a
+	// 500ms window; inside it, `[\d;]` chars are buffered speculatively
+	// and a closing `u`/`c` drops the whole run; any other input flushes
+	// the buffer as real text (fail-open — never eat typing). Bounded
+	// and named (bi#55); every drop/flush is tap-logged.
+	private negotiationTailUntil = 0;
+	private negotiationTailBuf = "";
+	// Returns null when the chunk is fully consumed (a straggler), else
+	// the chunk to process normally.
+	private suppressNegotiationStragglers(data: string, now: number): string | null {
+		// Whole late reply that leaked the Terminal's negotiation parser
+		// (defense-in-depth: the parser consumes these when they arrive
+		// complete, e.g. after a drain/pop cycle).
+		if (/^\x1b\[\?[\d;]*[uc]$/.test(data)) {
+			tapEvent(`suppress-neg whole ${JSON.stringify(data.slice(0, 40))}`);
+			return null;
+		}
+		// Flushed fragment prefix: drop it and arm the tail window — the
+		// tail follows as plain text within a link's jitter bound.
+		if (/^\x1b\[\?[\d;]*$/.test(data)) {
+			this.negotiationTailUntil = now + 500;
+			this.negotiationTailBuf = "";
+			tapEvent(`suppress-neg prefix ${JSON.stringify(data.slice(0, 40))}`);
+			return null;
+		}
+		if (this.negotiationTailUntil === 0) return data;
+		if (now >= this.negotiationTailUntil) {
+			// Window expired with an unterminated run: fail-open, the
+			// buffered chars are emitted as real input below.
+			this.negotiationTailUntil = 0;
+			return this.flushNegotiationTail(data, "expire");
+		}
+		if (/^[\d;]+$/.test(data)) {
+			this.negotiationTailBuf += data;
+			return null;
+		}
+		if (/^[\d;]*[uc]$/.test(data)) {
+			tapEvent(`suppress-neg tail ${JSON.stringify((this.negotiationTailBuf + data).slice(0, 40))}`);
+			this.negotiationTailBuf = "";
+			this.negotiationTailUntil = 0;
+			return null;
+		}
+		// Not tail-shaped: the run was typing (or a truncated tail) —
+		// fail-open and process the current chunk normally.
+		this.negotiationTailUntil = 0;
+		return this.flushNegotiationTail(data, "mismatch");
+	}
+	private flushNegotiationTail(data: string, why: string): string {
+		const pending = this.negotiationTailBuf;
+		this.negotiationTailBuf = "";
+		if (pending) {
+			tapEvent(`suppress-neg flush-${why} ${JSON.stringify(pending.slice(0, 40))}`);
+			for (const ch of pending) super.handleInput(ch);
+		}
+		return data;
+	}
 	handleInput(data: string): void {
+		const suppressed = this.suppressNegotiationStragglers(data, Date.now());
+		if (suppressed === null) return;
+		data = suppressed;
 		const kb = getKeybindings();
 		if (kb.matches(data, "tui.select.cancel") && !this.isShowingAutocomplete()) {
 			this.onEscape?.();
@@ -89,15 +301,101 @@ export class PromptEditor extends Editor {
 			this.onCtrlD?.();
 			return;
 		}
+		// bi#156: app-level model cycle through the manager (remappable via
+		// keybindings.json like every tui.* id) — never a hardcoded matcher.
+		if (!this.isShowingAutocomplete() && this.onCycleForward && kb.matches(data, "bi.model.cycleForward")) {
+			this.onCycleForward();
+			return;
+		}
+		// bi#155: confirming an inline skill with Enter applies the
+		// highlighted completion WITHOUT submitting (kimi divergence 8,
+		// host-side: stock AutocompleteItem carries no `data` marker, so
+		// the inline-token position decides). Stock Tab already applies
+		// without submitting, so Enter is translated to Tab. First-word
+		// slash and second-word arg Enters never match the inline token
+		// and keep stock behavior exactly (bi#115 guard intact).
+		const showing = this.isShowingAutocomplete();
+		if (showing && kb.matches(data, "tui.select.confirm")) {
+			const cur = this.getCursor();
+			if (inlineSlashTokenAt(this.getLines(), cur.line, cur.col) !== null) {
+				super.handleInput("\t");
+				return;
+			}
+		}
+		const now = Date.now();
+		const isEnter =
+			kb.matches(data, "tui.input.submit") ||
+			kb.matches(data, "tui.select.confirm") ||
+			kb.matches(data, "tui.input.newLine");
+		if (!showing && isEnter && this.pasteBurst.shouldInsertNewlineInsteadOfSubmit(now)) {
+			this.pasteBurst.extendWindow(now);
+			this.insertTextAtCursor("\n");
+			return;
+		}
+		if (!showing) {
+			if (data.length === 1 && data.charCodeAt(0) >= 32) this.pasteBurst.onPlainChar(now);
+			else if (!isEnter) this.pasteBurst.reset();
+		}
 		super.handleInput(data);
+	}
+	// bi#153: clamp the effective wrap width. Unpadded layout reserves one
+	// cursor column (layoutWidth = width - 1), so super needs at least
+	// floor + 1; laid-out lines are truncated back to the real width so no
+	// painted line exceeds the terminal.
+	// bi#181: the laid-out lines are then post-processed into kimi's
+	// rounded box — the BAML-shaped label splices into the top border,
+	// the `>` glyph lands at column 2 of the first content row, and the
+	// border paint flips role when the buffer is a `/`-command.
+	render(width: number): string[] {
+		const w = Math.max(1, Math.floor(width));
+		const need = editorWrapFloor(this.getText()) + 1;
+		const base = need <= w ? super.render(w) : super.render(need).map((line) => truncateToWidth(line, w));
+		const role = this.getText().startsWith("/") ? EDITOR_BORDER_ROLE_COMMAND : EDITOR_BORDER_ROLE_IDLE;
+		const paint = (s: string) => style_segment(s, role, this.borderTheme);
+		let glyphDone = false;
+		const withGlyph = base.map((line) => {
+			// First content row only: dash-rule rows and short/padded
+			// variants fall through untouched (narrow terminals degrade
+			// to no glyph, never a clobbered cursor).
+			if (!glyphDone && !stripSgr(line).startsWith("─")) {
+				const next = injectPromptGlyph(line, prompt_glyph());
+				if (next !== line) glyphDone = true;
+				return next;
+			}
+			return line;
+		});
+		return wrapEditorLines(withGlyph, paint, this.promptLabel);
 	}
 }
 
 export interface SlashPool {
 	// Slash names without the leading "/" (builtins + skills).
 	names: () => string[];
+	// bi#155: skills-only view over the SAME live pool (no second list
+	// to drift — the closure reads the same array `names()` does).
+	// The inline mid-prompt picker lists skills only; absent: inline
+	// falls back to `names()`.
+	skillNames?: () => string[];
 	describe: (name: string) => string | null;
 	argPool: (cmd: string, prefix: string) => Promise<string[]>;
+}
+
+// bi#155: inline slash token at the cursor (kimi `isAtInlineSlashTrigger`
+// + `isInInlineSlashContext`, host-side). A `/`-token counts when it
+// follows whitespace on any line, or opens a later line of a
+// multi-line draft. Token chars mirror kimi (`[A-Za-z0-9._-:]` — `:`
+// covers `/skill:<name>` tokens). Prose slashes (`src/foo`, `1/2`)
+// have no whitespace boundary and never match. Returns the token
+// (slash included) or null. Pure — headless-tested.
+export function inlineSlashTokenAt(lines: string[], cursorLine: number, cursorCol: number): string | null {
+	const before = (lines[cursorLine] ?? "").slice(0, cursorCol);
+	const mid = before.match(/[ \t](\/[A-Za-z0-9._:-]*)$/);
+	if (mid) return mid[1]!;
+	if (cursorLine > 0) {
+		const late = before.match(/^(\/[A-Za-z0-9._:-]*)$/);
+		if (late) return late[1]!;
+	}
+	return null;
 }
 
 // Tab completion through the same BAML matchers as readline: first
@@ -112,18 +410,40 @@ export function makeSlashProvider(pool: SlashPool): AutocompleteProvider {
 			cursorCol: number,
 		): Promise<AutocompleteSuggestions | null> {
 			const line = (lines[cursorLine] ?? "").slice(0, cursorCol);
-			const second = line.match(/^\/(\S+)[ \t]+(\S*)$/);
-			if (second) {
-				const [, cmd, prefix] = second;
-				if (!pool.names().includes(cmd)) return null;
-				const matches = complete_arg(prefix, await pool.argPool(cmd, prefix));
-				if (matches.length === 0) return null;
-				return {
-					items: matches.map((m): AutocompleteItem => ({ value: m, label: m })),
-					prefix,
-				};
-			}
-			if (!line.startsWith("/") || /[ \t]/.test(line)) return null;
+		// bi#159: plain and quoted second words split in one helper (the
+		// match key keeps its quote so quoted values survive BAML
+		// ranking). Path values carry their own suffix (dir `/`, file
+		// space), so the shared splice below needs no change; directory
+		// continuation re-enters through this same branch.
+		const split = splitSecondWord(line);
+		if (split) {
+			if (!pool.names().includes(split.cmd)) return null;
+			const matches = complete_arg(split.token, await pool.argPool(split.cmd, split.token));
+			if (matches.length === 0) return null;
+			return {
+				items: matches.map((m): AutocompleteItem => ({ value: m, label: m })),
+				prefix: split.token,
+			};
+		}
+		// bi#155: inline `/`-token mid-prompt (after whitespace, or
+		// opening a later line) completes loaded skills only through
+		// the same BAML `complete_slash` matcher. First-word behavior
+		// below is byte-identical to before.
+		const inline = inlineSlashTokenAt(lines, cursorLine, cursorCol);
+		if (inline !== null) {
+			const skillPool = pool.skillNames ? pool.skillNames() : pool.names();
+			const inlineMatches = complete_slash(inline, skillPool);
+			if (inlineMatches.length === 0) return null;
+			return {
+				items: inlineMatches.map((m): AutocompleteItem => ({
+					value: m,
+					label: m,
+					description: pool.describe(m.replace(/^\//, "")) ?? undefined,
+				})),
+				prefix: inline,
+			};
+		}
+		if (!line.startsWith("/") || /[ \t]/.test(line)) return null;
 			const matches = complete_slash(line, pool.names());
 			if (matches.length === 0) return null;
 			return {
@@ -163,19 +483,6 @@ export function makeSlashProvider(pool: SlashPool): AutocompleteProvider {
 			return { lines: next, cursorLine, cursorCol: head.length + insert.length };
 		},
 	};
-}
-
-// Long drain window over chunking links, mirroring pi-tui's SSH-gated
-// escape timeout (resolveEscapeTimeoutMs: 100ms SSH vs 10ms local).
-// Direct local links process the kitty pop in ~1ms, so pending
-// releases never get generated; anything that chunks escape traffic —
-// SSH, tmux (escape-time), screen, emulator batching — needs the wait.
-// Detection is env-based (same signals pi-tui itself uses, plus
-// multiplexer markers); plain local terminals keep 50ms and pay no
-// added latency.
-function chunkyLinkDrainIdleMs(): number {
-	const env = process.env;
-	return env.SSH_CONNECTION || env.SSH_TTY || env.TMUX || env.STY || env.ZELLIJ ? 250 : 50;
 }
 
 // Debug tap: BI_TUI_DEBUG=/path.log records timestamped raw stdin
@@ -244,14 +551,24 @@ ensureTap();
 // window (tails and early typeahead alike) are dropped; the cap bounds
 // the cost on mute terminals. Every modal settles: each start()
 // re-queries, so a "live once" shortcut would re-open the race.
-async function settleNegotiation(term: ProcessTerminal): Promise<void> {
+//
+// bi#183 soft/hard cap: the original flat 450ms cap focused the modal
+// EVEN WITH BYTES STILL LANDING — bytewise/tmux delivery of one reply
+// spans past the cap (29 bytes × 5-30ms ≈ 500ms+), so the remaining
+// tail typed into the freshly focused widget (pty proof: the trust
+// picker's filter read `;21;22;52c` and the chain wedged on "No
+// matching commands"). The soft cap now requires the quiet window too
+// — an active link holds focus off — and a 3s hard cap bounds a
+// pathological input stream (named residual risk, same as before).
+async function settleNegotiation(term: { kittyProtocolActive: boolean; modifyOtherKeysActive: boolean }): Promise<void> {
 	const step = 5;
 	const quietNeeded = 100;
-	// 450ms covers the slow-link band (every reply byte within ~450ms
-	// of the query, mid-reply stalls included); stalls past it are
-	// accepted residual risk, tracked on the junk issue. Mute terminals
-	// pay the cap per modal — near-empty population, so no skip logic.
+	// 450ms covers the slow-link band on links that have gone quiet
+	// (every reply byte within ~450ms of the query, mid-reply stalls
+	// included). Bytes still arriving AT the soft cap extend the wait
+	// (per the header comment); the 3s hard cap is the named bound.
 	const cap = 450;
+	const hardCap = 3000;
 	let quiet = 0;
 	let waited = 0;
 	let signal = false;
@@ -263,7 +580,8 @@ async function settleNegotiation(term: ProcessTerminal): Promise<void> {
 		for (;;) {
 			if (term.kittyProtocolActive || term.modifyOtherKeysActive) signal = true;
 			if (signal && quiet >= quietNeeded) break;
-			if (waited >= cap) break;
+			if (waited >= cap && quiet >= quietNeeded) break;
+			if (waited >= hardCap) break;
 			await new Promise((r) => setTimeout(r, step));
 			waited += step;
 			quiet += step;
@@ -273,72 +591,147 @@ async function settleNegotiation(term: ProcessTerminal): Promise<void> {
 	}
 }
 
-// One modal on a fresh main-screen TUI. Focus waits for the negotiation
-// settle (above); teardown copies pi's interactive-mode shutdown order:
-// terminal.drainInput() BEFORE ui.stop(), while stdin still flows —
-// late kitty replies and release events are consumed by the library
-// instead of landing in readline as typed junk.
+// One modal as an overlay on the REPL-lifetime host (bi#162, kimi
+// tui.ts:552-661 mirror): showOverlay records preFocus and centers
+// with margins; hide() restores focus and repaints the base frame —
+// no terminal re-init, no kitty re-query per dialog. Only the first
+// modal on a host settles the negotiation (bi#119 envelope, kept as
+// defense-in-depth); later modals skip it, and BI_MODAL_SETTLE=0
+// skips even the first for the drill proof that the overlay path
+// removed the re-query. Per-modal teardown is just the overlay hide:
+// drainInput per modal would pop the SHARED kitty flags (it pops one
+// stack level) and re-open the release storm for the next modal, so
+// the drain/pop/stop envelope runs once at host dispose instead.
 // ~/.bi log dir, never pi's: the screen's debug log must not leak
 // into the reference checkout's agent dir.
-async function runModal<T>(build: (ui: TUI, root: Container) => { wait: Promise<T>; focus: Component }): Promise<T> {
+async function runModal<T>(
+	build: (ui: TUI, root: Container) => { wait: Promise<T>; focus: Component },
+	overlayOpts: { anchor?: OverlayAnchor; margin?: OverlayMargin | number } = {},
+): Promise<T> {
 	if (!promptAvailable()) throw new Error("prompt modal: no TTY");
-	setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
-	const term = new ProcessTerminal();
-	const ui: TUI = new TuiMainScreen(term, false, dirname(getBiSessionsDir()));
-	const root = new Container();
-	ui.addChild(root);
-	const { wait, focus } = build(ui, root);
+	// bi#91: library defaults plus the user's validated ~/.bi overrides
+	// (currentKeybindingsManager) — still the library's matching, no
+	// homegrown input handling.
+	setKeybindings(currentKeybindingsManager());
+	const host = ensureReplTui(dirname(getBiSessionsDir()));
+	const { ui } = host;
 	ensureTap();
 	tapEvent("modal-start");
-	ui.start();
-	// Suppress event-type reporting (kitty flag 2): the library pushes
-	// flags 1+2+4, but no pi-tui component consumes presses/releases/
-	// repeats distinctly (no wantsKeyRelease opt-ins, no isKeyRepeat
-	// readers) — and every release is a junk vector on a chunking link
-	// (`3u` tails) with zero benefit here. Flags 1+4 keep disambiguated
-	// presses, modifiers, and alternate keys; held keys degrade to
-	// legacy repeated presses, which is correct for a text editor.
-	// Kitty enhancement flags stack: the library's push is underneath,
-	// ours is balanced by the explicit pop in the finally below (the
-	// drain pops the library's; stop then sees cleared flags and
-	// skips). Non-kitty terminals ignore both writes.
-	term.write("\x1b[>5u");
-	await settleNegotiation(term);
-	tapEvent(`focus kitty=${term.kittyProtocolActive} modkeys=${term.modifyOtherKeysActive}`);
+
+	const overlay = new Container();
+	const { wait, focus } = build(ui, overlay);
+	// Full-viewport overlay (not the library's default centered
+	// min(80)-col box): pre-162 modals owned a fresh fullscreen TUI
+	// with the root laid out top-left at terminal width. margin 0 +
+	// width 100% + top-left anchor reproduces that geometry, so wide
+	// terminals get full-width frames instead of a floating box.
+	// Callers may bottom-anchor instead (the main editor): the box
+	// shrink-wraps content and the clamp keeps it inside the margins,
+	// so bottom margin 2 glues it above the pinned footer rows.
+	const handle = ui.showOverlay(overlay, {
+		margin: overlayOpts.margin ?? 0,
+		width: "100%",
+		anchor: overlayOpts.anchor ?? "top-left",
+	});
+	// bi#179: turn output bypasses TUI composition (console.log), so a
+	// remounted overlay at the same geometry diffs equal on rows the
+	// previous modal already painted and the prompt mounts invisibly
+	// (input alive, second bi[0]> never painted: pty proof showed the
+	// mount render painting only rows the guess height covered while
+	// the prompt Text row diffed equal against the stale prev-frame —
+	// the bypass output had scrolled the physical screen without the
+	// library knowing). Dirty the overlay span so the pending render
+	// repaints exactly the box and skips everything else (transcript +
+	// footer survive — a full repaint would blank them, and extending
+	// prev would punch holes that crash the renderer's image scan).
+	// Geometry mirrors the compositor (resolveAnchorRow: bottom-*
+	// anchors sit at marginTop + availHeight - height). The editor box
+	// measures up to 4 rows tall (bi#181: rounded top border with the
+	// label spliced in + content + bottom border — the separate Text
+	// label row is gone), so resolve with height 4 for a true top row
+	// and dirty the top 3 functional rows — never the bottom-most row
+	// (footer-divider ownership is ambiguous and a stale rule there is
+	// cosmetic, while a forced repaint of a model-empty footer row
+	// would blank it). Over-resolving by one row is deliberate: the top
+	// border carries the per-turn label (bi[0]> → bi[1]>), so it must
+	// always be inside the dirtied span on remount. Other (top-anchored)
+	// modals keep the conservative 3-row span from row 0.
+	try {
+		const prev = (ui as unknown as { previousLines?: unknown }).previousLines;
+		const resolveLayout = (ui as unknown as {
+			resolveOverlayLayout?: (o: unknown, h: number, w: number, hh: number) => { width: number; row: number; col: number };
+		}).resolveOverlayLayout;
+		const termW = (host.term as unknown as { columns?: number }).columns ?? process.stdout.columns ?? 80;
+		const termH = (host.term as unknown as { rows?: number }).rows ?? process.stdout.rows ?? 24;
+		const base = { margin: overlayOpts.margin ?? 0, width: "100%", anchor: overlayOpts.anchor ?? "top-left" };
+		if (Array.isArray(prev) && typeof resolveLayout === "function") {
+			const anchoredBottom = (overlayOpts.anchor ?? "top-left").startsWith("bottom");
+			const box = resolveLayout.call(ui, base, anchoredBottom ? 4 : 2, termW, termH);
+			const H = 3;
+			if (Number.isInteger(box.row) && box.row >= 0 && box.row + H <= prev.length) {
+				for (let i = box.row; i < box.row + H; i++) prev[i] = "\u2060";
+			}
+		}
+	} catch {
+		// Dirtying failed — fall back to the plain differential.
+	}
+	if (process.env.BI_MODAL_SETTLE !== "0") await settleNegotiation(host.term);
+	host.settled = true;
+	tapEvent(`focus kitty=${host.term.kittyProtocolActive} modkeys=${host.term.modifyOtherKeysActive}`);
 	ui.setFocus(focus);
+	// bi#179 reset step: whoever owned stdin before this modal leaves
+	// it unusable for TUI input — readline's suspendLineInput closes
+	// the interface, and node readline's close pauses stdin and
+	// restores cooked mode. The shared host's start() ran once, so
+	// nothing re-asserts: the modal would idle on a dead stdin and
+	// the loop drains (silent exit 0, the post-picker vanish).
+	// Fresh-host-per-modal never saw this because every start()
+	// re-asserted raw + resume. Re-assert here, after settle (whose
+	// .on also resumes, but only while it lives) and before input.
+	if (typeof process.stdin.setRawMode === "function") process.stdin.setRawMode(true);
+	process.stdin.resume();
 	try {
 		const result = await wait;
 		tapEvent("resolve");
 		return result;
 	} finally {
-		// Post-submit net: stragglers generated while the pop is in
-		// flight would otherwise land in readline mangled ("3u" —
-		// readline cannot parse CSI-u). During the drain the library
-		// drops everything, so stall here long enough to eat a slow
-		// finger lift. Chunking links (SSH, multiplexers) get the long
-		// window; direct local links pop instantly, so they keep the
-		// short one and pay no latency. Cost: keys typed in the window
-		// are dropped and a precisely-timed Ctrl-C is swallowed — same
-		// semantics as pi's own drainInput, which also drops.
-		tapEvent("drain-start");
-		await ui.terminal.drainInput(500, chunkyLinkDrainIdleMs());
-		tapEvent("drain-end");
-		term.write("\x1b[<u");
-		ui.stop();
-		tapEvent("stopped");
+		handle.hide();
+		tapEvent("overlay-hide");
+		// Leased flows (REPL, login) share the host across modals;
+		// one-shot users hold no lease, so dispose here or the live
+		// stdin listener outlives their modal and hangs the exit.
+		if (!replTuiLeased()) await disposeReplTui();
 	}
 }
 
 // One prompt through the modal editor. Resolves text | "\x03" on
 // Esc/Ctrl-C, rejects EOF on Ctrl-D at empty — ReplReader.ask
 // byte-for-byte. History is oldest-first (file order); the caller
-// persists submissions as before.
-export async function askEdit(prompt: string, history: string[], pool: SlashPool): Promise<string> {
+// persists submissions as before. opts.onCycleForward (bi#90) wires the
+// Ctrl+P model-cycle binding; without it the key falls through.
+export async function askEdit(
+	prompt: string,
+	history: string[],
+	pool: SlashPool,
+	opts: { onCycleForward?: () => void; theme?: string | null } = {},
+): Promise<string> {
+	// Bottom-anchored above the two pinned footer rows (bi#67): the
+	// box shrink-wraps prompt + editor and the overlay clamp keeps it
+	// inside the margins, so the input draws glued to the footer and
+	// grows upward as it wraps — never over the footer. All other
+	// modals keep the top-left geometry (runModal default).
 	return runModal<string>((ui, root) => {
-		root.addChild(new Text(prompt));
-		const ed = new PromptEditor(ui, plainEditorTheme);
+		// bi#181: no separate label row — the BAML-shaped prompt label
+		// lives IN the editor's rounded top border and the `>` glyph at
+		// column 2 inside the box (kimi CustomEditor composition), so
+		// prompt and box read as one component. paddingX 4 makes room
+		// for the glyph (kimi's injectPromptSymbol precondition).
+		const ed = new PromptEditor(ui, plainEditorTheme, { paddingX: 4 });
+		ed.promptLabel = prompt;
+		ed.borderTheme = opts.theme ?? null;
 		for (const h of history) ed.addToHistory(h);
 		ed.setAutocompleteProvider(makeSlashProvider(pool));
+		if (opts.onCycleForward) ed.onCycleForward = opts.onCycleForward;
 		root.addChild(ed);
 		const wait = new Promise<string>((resolve, reject) => {
 			ed.onSubmit = (t) => {
@@ -349,7 +742,7 @@ export async function askEdit(prompt: string, history: string[], pool: SlashPool
 			ed.onCtrlD = () => reject(new Error("EOF"));
 		});
 		return { wait, focus: ed };
-	});
+	}, { anchor: "bottom-left", margin: { top: 0, left: 0, right: 0, bottom: 2 } });
 }
 
 // Text prompt through the same modal host (login code/URL entry).
@@ -460,6 +853,114 @@ export function makeBorderedLoader(ui: TUI, message: string, opts: { cancellable
 	return root;
 }
 
+// bi#69: filter-as-you-type atop stock pi-tui widgets. FilterList is a
+// pi ModelSelector-shaped composite (stock Input filter row + stock
+// SelectList, focus propagated to the input for the cursor) — no
+// homegrown key parsing: nav/confirm/cancel route by library
+// getKeybindings().matches, everything else falls into the Input and
+// refilters. SelectList itself only does prefix-on-value setFilter, so
+// the composite owns the subset and rebuilds the list per keystroke.
+// Resolution is ALWAYS the caller's original row index (callers map
+// positionally: /resume list[pick], screen-model models[at]), never the
+// filtered position. Non-empty queries reset to the top row (pi's
+// selector does the same); clearing restores the kept selection.
+// The rank core is BAML fuzzy (bi#85); bi#90 owns Ctrl+P cycling
+// (until then Ctrl+P lands in the filter text, which ignores it).
+export interface FilterRow {
+	item: SelectItem;
+	orig: number;
+	haystack: string;
+}
+
+export class FilterList extends Container implements Focusable {
+	private _focused = false;
+	get focused(): boolean {
+		return this._focused;
+	}
+	set focused(value: boolean) {
+		this._focused = value;
+		this.filter.focused = value;
+	}
+	private filter = new Input();
+	private holder = new Container();
+	private list: SelectList | null = null;
+	private visible: FilterRow[] = [];
+	private keptOrig = 0;
+
+	constructor(
+		private all: FilterRow[],
+		initial: number,
+		private rank: (query: string) => FilterRow[],
+		private onResolve: (orig: number | null) => void,
+	) {
+		super();
+		this.keptOrig = Math.min(Math.max(initial, 0), Math.max(0, all.length - 1));
+		this.addChild(this.filter);
+		this.addChild(this.holder);
+		this.refilter(true);
+	}
+
+	// Test hooks (headless: no TTY needed, same as PromptEditor cases).
+	getFilterValue(): string {
+		return this.filter.getValue();
+	}
+	visibleOriginals(): number[] {
+		return this.visible.map((r) => r.orig);
+	}
+
+	handleInput(data: string): void {
+		const kb = getKeybindings();
+		if (
+			kb.matches(data, "tui.select.up") ||
+			kb.matches(data, "tui.select.down") ||
+			kb.matches(data, "tui.select.confirm")
+		) {
+			this.list?.handleInput(data);
+			return;
+		}
+		if (kb.matches(data, "tui.select.cancel")) {
+			this.onResolve(null);
+			return;
+		}
+		this.filter.handleInput(data);
+		this.refilter(false);
+	}
+
+	private refilter(first: boolean): void {
+		const q = this.filter.getValue();
+		const cur = this.list?.getSelectedItem() ?? null;
+		if (cur) {
+			const kept = this.visible.find((r) => r.item === cur);
+			if (kept) this.keptOrig = kept.orig;
+		}
+		this.visible = this.rank(q);
+		const next = new SelectList(
+			this.visible.map((r) => r.item),
+			10,
+			plainListTheme,
+		);
+		next.onSelect = (item) => {
+			const hit = this.visible.find((r) => r.item === item);
+			this.onResolve(hit ? hit.orig : null);
+		};
+		next.onSelectionChange = (item) => {
+			const hit = this.visible.find((r) => r.item === item);
+			if (hit) this.keptOrig = hit.orig;
+		};
+		this.holder.clear();
+		this.holder.addChild(next);
+		this.list = next;
+		if (first) {
+			next.setSelectedIndex(Math.min(this.keptOrig, Math.max(0, this.visible.length - 1)));
+		} else if (q.length > 0) {
+			next.setSelectedIndex(0);
+		} else {
+			const at = this.visible.findIndex((r) => r.orig === this.keptOrig);
+			next.setSelectedIndex(at < 0 ? 0 : at);
+		}
+	}
+}
+
 // Select-list prompt. Null means "no pick made" (Esc/Ctrl-C): callers
 // keep their list-only path. Pipes and BI_SCREEN=0 never reach here.
 export async function pickList(title: string, rows: ScreenRow[], initial = 0): Promise<number | null> {
@@ -476,17 +977,85 @@ export async function pickList(title: string, rows: ScreenRow[], initial = 0): P
 			description: r.description === undefined ? undefined : clean(r.description),
 		}));
 		root.addChild(new Text(truncateVisual(title, termWidth())));
-		const list = new SelectList(items, 10, plainListTheme);
-		list.setSelectedIndex(Math.min(Math.max(initial, 0), items.length - 1));
+		// bi#85 rank core: BAML fuzzy over per-row search texts
+		// (rowSearchTexts above). BAML returns ranked ORIGINAL indices —
+		// the empty query lists all, pipes never reach here.
+		const texts = rowSearchTexts(rows);
+		const all: FilterRow[] = items.map((item, i) => ({
+			item,
+			orig: i,
+			haystack: texts[i],
+		}));
+		const rank = (query: string): FilterRow[] => {
+			const out: FilterRow[] = [];
+			for (const o of rank_selector_rows(query, texts) as number[]) {
+				const r = all[o];
+				if (r !== undefined) out.push(r);
+			}
+			return out;
+		};
+		let list!: FilterList;
+		const wait = new Promise<number | null>((resolve) => {
+			list = new FilterList(all, initial, rank, resolve);
+		});
 		root.addChild(list);
 		root.addChild(border);
+		return { wait, focus: list };
+	});
+}
+
+// Select-list prompt with a live preview pane (bi#105 theme selector —
+// pi's ThemeSelectorComponent shape: onSelectionChange repaints the
+// preview, Enter commits, Esc keeps). previewFor maps the highlighted
+// ORIGINAL row index to preview text; a sequence guard keeps a slow
+// preview from overwriting a newer highlight. Short lists only (no
+// filter row — theme catalogs are a handful of rows). Null means "no
+// pick made" (Esc/Ctrl-C): callers keep their list-only path. Pipes
+// and BI_SCREEN=0 never reach here.
+export async function pickListWithPreview(
+	title: string,
+	rows: ScreenRow[],
+	initial = 0,
+	previewFor: (index: number) => Promise<string>,
+): Promise<number | null> {
+	if (rows.length === 0) return null;
+	return runModal<number | null>((ui, root) => {
+		const border = new DynamicBorder();
+		root.addChild(border);
+		const items: SelectItem[] = rows.map((r) => ({
+			value: r.label,
+			label: clean(r.label),
+			description: r.description === undefined ? undefined : clean(r.description),
+		}));
+		root.addChild(new Text(truncateVisual(title, termWidth())));
+		const list = new SelectList(items, 8, plainListTheme);
+		root.addChild(list);
+		const preview = new Text("");
+		root.addChild(preview);
+		root.addChild(border);
+		// Live preview: every highlight (including the initial one)
+		// repaints the pane below the list before commit.
+		let seq = 0;
+		const show = (index: number) => {
+			seq += 1;
+			const at = seq;
+			void previewFor(index).then((text) => {
+				if (at !== seq) return;
+				preview.setText(text);
+				ui.invalidate();
+			});
+		};
 		const wait = new Promise<number | null>((resolve) => {
-			list.onSelect = (item) => {
-				const at = items.indexOf(item);
-				resolve(at === -1 ? null : at);
-			};
+			list.onSelect = (item) => resolve(items.indexOf(item));
 			list.onCancel = () => resolve(null);
+			list.onSelectionChange = (item) => {
+				const at = items.indexOf(item);
+				if (at >= 0) show(at);
+			};
 		});
+		const first = Math.max(0, Math.min(initial, items.length - 1));
+		list.setSelectedIndex(first);
+		show(first);
 		return { wait, focus: list };
 	});
 }

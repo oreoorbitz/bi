@@ -1,17 +1,16 @@
 testset "tools registry" {
-    test "ListTools returns 15 (7 pi + 8 bais)" {
+    test "ListTools returns 15 (7 pi + 6 bais + 2 report)" {
         assert.equal(ListTools().length(), 15)
     }
 
-    test "GetTool read has required path" {
-        let t = GetTool("read");
-        assert.not_null(t);
-        match (t) {
-            let tool: ToolSpec => {
-                assert.equal(tool.name, "read");
-                assert.is_true(tool.description.length() > 0)
-            },
-            _ => assert.is_true(false),
+    test "read/bash/ls/grep/find are listed now that executors landed (bi#150/151)" {
+        for (let name in ["read", "bash", "ls", "grep", "find"]) {
+            let t = GetTool(name);
+            assert.not_null(t);
+            match (t) {
+                let tool: ToolSpec => assert.equal(tool.name, name),
+                _ => assert.is_true(false),
+            }
         }
     }
 
@@ -43,6 +42,25 @@ testset "tools registry" {
             let f: TurnFailure => assert.equal(f.kind, "network"),
             _ => assert.is_true(false),
         }
+    }
+}
+
+testset "bash/read refusal policy (bi#150/151)" {
+    test "bash refusals name the policy and the fix" {
+        assert.contains(
+            refuse_bash_blocked("curl https://x", "git, rg"),
+            "not on the bash allowlist",
+        );
+        assert.contains(refuse_bash_blocked("curl https://x", "git, rg"), "curl https://x");
+        assert.contains(refuse_bash_timeout("sleep 60", 5), "timed out and was killed after 5s");
+        assert.contains(refuse_bash_timeout("sleep 60", 5), "larger timeout")
+    }
+
+    test "read refusals name the tool, the path, and the fix" {
+        assert.contains(refuse_read_outside_root("read", "../x"), "outside the project root");
+        assert.contains(refuse_read_outside_root("read", "../x"), "symlink escapes included");
+        assert.contains(refuse_read_too_large("read", "big.log", 10), "10 byte tool cap");
+        assert.contains(refuse_read_binary("grep", "a.png"), "text only")
     }
 }
 

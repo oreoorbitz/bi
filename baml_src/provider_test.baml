@@ -1,6 +1,6 @@
 testset "provider registry" {
     test "ListProviders returns 22" {
-        assert.equal(ListProviders().length(), 22)
+        assert.equal(ListProviders().length(), 37)
     }
 
     test "GetProvider meta is openai-completions over api.meta.ai" {
@@ -166,6 +166,176 @@ testset "provider registry" {
         }
     }
 
+    test "GetProvider gateways land with their template url and key var" {
+        let g = GetProvider("cloudflare-ai-gateway");
+        assert.not_null(g);
+        match (g) {
+            let prov: Provider => {
+                assert.equal(prov.api, "openai-responses");
+                assert.is_true(prov.base_url.includes("{CLOUDFLARE_ACCOUNT_ID}"));
+                assert.is_true(prov.base_url.includes("{CLOUDFLARE_GATEWAY_ID}"))
+            },
+            _ => assert.is_true(false),
+        }
+        match (ProviderAuthEnv("cloudflare-ai-gateway")) {
+            let v: string => assert.equal(v, "CLOUDFLARE_API_KEY"),
+            _ => assert.is_true(false),
+        }
+        let v = GetProvider("vercel-ai-gateway");
+        assert.not_null(v);
+        match (v) {
+            let prov: Provider => {
+                assert.equal(prov.api, "anthropic-messages");
+                assert.equal(prov.base_url, "https://ai-gateway.vercel.sh")
+            },
+            _ => assert.is_true(false),
+        }
+        match (ProviderAuthEnv("vercel-ai-gateway")) {
+            let w: string => assert.equal(w, "AI_GATEWAY_API_KEY"),
+            _ => assert.is_true(false),
+        }
+    }
+
+    test "GetProvider copilot and zen pin completions with their key var" {
+        match (GetProvider("github-copilot")) {
+            let prov: Provider => {
+                assert.equal(prov.api, "openai-completions");
+                assert.equal(prov.base_url, "https://api.individual.githubcopilot.com")
+            },
+            _ => assert.is_true(false),
+        }
+        match (ProviderAuthEnv("github-copilot")) {
+            let v: string => assert.equal(v, "COPILOT_GITHUB_TOKEN"),
+            _ => assert.is_true(false),
+        }
+        match (GetProvider("opencode")) {
+            let prov: Provider => {
+                assert.equal(prov.api, "openai-completions");
+                assert.equal(prov.base_url, "https://opencode.ai/zen/v1")
+            },
+            _ => assert.is_true(false),
+        }
+        match (GetProvider("opencode-go")) {
+            let prov: Provider => {
+                assert.equal(prov.api, "openai-completions");
+                assert.equal(prov.base_url, "https://opencode.ai/zen/go/v1")
+            },
+            _ => assert.is_true(false),
+        }
+        match (ProviderAuthEnv("opencode-go")) {
+            let v: string => assert.equal(v, "OPENCODE_API_KEY"),
+            _ => assert.is_true(false),
+        }
+    }
+
+    test "GetProvider xiaomi family lands with regional endpoints" {
+        match (GetProvider("xiaomi")) {
+            let prov: Provider => assert.equal(prov.base_url, "https://api.xiaomimimo.com/v1"),
+            _ => assert.is_true(false),
+        }
+        match (ProviderAuthEnv("xiaomi")) {
+            let v: string => assert.equal(v, "XIAOMI_API_KEY"),
+            _ => assert.is_true(false),
+        }
+        match (GetProvider("xiaomi-token-plan-cn")) {
+            let prov: Provider => {
+                assert.equal(prov.base_url, "https://token-plan-cn.xiaomimimo.com/v1")
+            },
+            _ => assert.is_true(false),
+        }
+        match (ProviderAuthEnv("xiaomi-token-plan-cn")) {
+            let v: string => assert.equal(v, "XIAOMI_TOKEN_PLAN_CN_API_KEY"),
+            _ => assert.is_true(false),
+        }
+        match (GetProvider("xiaomi-token-plan-ams")) {
+            let prov: Provider => {
+                assert.equal(prov.base_url, "https://token-plan-ams.xiaomimimo.com/v1")
+            },
+            _ => assert.is_true(false),
+        }
+        match (GetProvider("xiaomi-token-plan-sgp")) {
+            let prov: Provider => {
+                assert.equal(prov.base_url, "https://token-plan-sgp.xiaomimimo.com/v1")
+            },
+            _ => assert.is_true(false),
+        }
+        assert.is_true(ProviderExists("xiaomi-token-plan-ams"));
+        assert.is_true(ProviderExists("xiaomi-token-plan-sgp"))
+    }
+
+    test "GetProvider CN variants land with domestic endpoints" {
+        match (GetProvider("ant-ling")) {
+            let prov: Provider => {
+                assert.equal(prov.api, "openai-completions");
+                assert.equal(prov.base_url, "https://api.ant-ling.com/v1")
+            },
+            _ => assert.is_true(false),
+        }
+        match (ProviderAuthEnv("ant-ling")) {
+            let v: string => assert.equal(v, "ANT_LING_API_KEY"),
+            _ => assert.is_true(false),
+        }
+        match (GetProvider("minimax-cn")) {
+            let prov: Provider => {
+                assert.equal(prov.api, "anthropic-messages");
+                assert.equal(prov.base_url, "https://api.minimaxi.com/anthropic")
+            },
+            _ => assert.is_true(false),
+        }
+        match (GetProvider("moonshotai-cn")) {
+            let prov: Provider => assert.equal(prov.base_url, "https://api.moonshot.cn/v1"),
+            _ => assert.is_true(false),
+        }
+        // pi shares one var across the moonshot pair and the qwen pair.
+        match (ProviderAuthEnv("moonshotai-cn")) {
+            let v: string => assert.equal(v, "MOONSHOT_API_KEY"),
+            _ => assert.is_true(false),
+        }
+        match (ProviderAuthEnv("moonshotai")) {
+            let v: string => assert.equal(v, "MOONSHOT_API_KEY"),
+            _ => assert.is_true(false),
+        }
+        match (GetProvider("qwen-token-plan-cn")) {
+            let prov: Provider => {
+                assert.equal(
+                    prov.base_url,
+                    "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+                )
+            },
+            _ => assert.is_true(false),
+        }
+        match (ProviderAuthEnv("qwen-token-plan-cn")) {
+            let v: string => assert.equal(v, "QWEN_TOKEN_PLAN_CN_API_KEY"),
+            _ => assert.is_true(false),
+        }
+        match (ProviderAuthEnv("qwen-token-plan-individual")) {
+            let v: string => assert.equal(v, "QWEN_TOKEN_PLAN_API_KEY"),
+            _ => assert.is_true(false),
+        }
+        match (GetProvider("zai-coding-cn")) {
+            let prov: Provider => {
+                assert.equal(prov.base_url, "https://open.bigmodel.cn/api/coding/paas/v4")
+            },
+            _ => assert.is_true(false),
+        }
+        match (ProviderAuthEnv("zai-coding-cn")) {
+            let v: string => assert.equal(v, "ZAI_CODING_CN_API_KEY"),
+            _ => assert.is_true(false),
+        }
+    }
+
+    test "provider_headers sends copilot static headers and nothing else" {
+        match (provider_headers("github-copilot")) {
+            let h: map<string, string> => {
+                assert.equal(h["Copilot-Integration-Id"], "vscode-chat");
+                assert.is_true(h["User-Agent"].includes("GitHubCopilotChat"))
+            },
+            _ => assert.is_true(false),
+        }
+        assert.is_true(provider_headers("groq") is null);
+        assert.is_true(provider_headers("bogus") is null)
+    }
+
     test "resolve_endpoint_template passes plain urls through" {
         assert.equal(resolve_endpoint_template("https://api.x.ai/v1"), "https://api.x.ai/v1");
         assert.equal(resolve_endpoint_template(""), "")
@@ -204,6 +374,15 @@ testset "provider registry" {
         assert.equal(
             MissingKeyMessage("azure-openai-responses"),
             "azure-openai-responses needs an API key: pass --api-key, set AZURE_OPENAI_API_KEY, or run `bi login azure-openai-responses`",
+        );
+        // bi#15 gateway/CN ids resolve now that they are catalogued.
+        assert.equal(
+            MissingKeyMessage("cloudflare-ai-gateway"),
+            "cloudflare-ai-gateway needs an API key: pass --api-key, set CLOUDFLARE_API_KEY, or run `bi login cloudflare-ai-gateway`",
+        );
+        assert.equal(
+            MissingKeyMessage("minimax-cn"),
+            "minimax-cn needs an API key: pass --api-key, set MINIMAX_CN_API_KEY, or run `bi login minimax-cn`",
         )
     }
 
@@ -212,9 +391,12 @@ testset "provider registry" {
             MissingKeyMessage("bogus"),
             "unknown provider \"bogus\": no auth mapping (see ListProviders)",
         );
-        // bi#15 ids reuse this arm until they land in the catalog.
+        // Custom-wire bi#15 ids never land (no BAML client arm) — they
+        // stay unknown rather than listed-but-broken.
         assert.is_true(MissingKeyMessage("amazon-bedrock").includes("unknown provider"));
-        assert.is_true(MissingKeyMessage("google-vertex").includes("unknown provider"))
+        assert.is_true(MissingKeyMessage("google-vertex").includes("unknown provider"));
+        assert.is_true(MissingKeyMessage("openai-codex").includes("unknown provider"));
+        assert.is_true(MissingKeyMessage("radius").includes("unknown provider"))
     }
 
     test "ProviderExists true for known, false for unknown" {
@@ -257,7 +439,7 @@ testset "provider registry" {
     }
 
     test "RefreshAllModels returns provider count" {
-        assert.equal(RefreshAllModels(), 22)
+        assert.equal(RefreshAllModels(), 37)
     }
 
     test "RefreshModelsWithResult static vs remote vs unknown" {

@@ -16,13 +16,15 @@ import { showStagedImage, teardownInlineImages } from "./image-display.js";
 import { runAuthStatus, runLogin, runLogout, runOAuthLogin } from "./auth_cli.js";
 import { getOAuthFlow } from "./oauth.js";
 import { listCredentials } from "./auth.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, render_footer_frame_async, render_model_line_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, trust_options_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, format_skill_history_entry_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, setup_theme_options_async, setup_analytics_options_async, format_first_run_theme_step_async, format_first_run_analytics_step_async, format_first_run_done_async, format_setup_skipped_async, format_setup_status_async, branch_row_prefix_async, format_branch_row_async, format_branches_list_async, format_branch_summary_async, format_fork_list_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, format_issue_row_async, format_issue_context_async, render_ready_frame_async, format_image_placeholder_async, staged_image_label_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, render_footer_frame_async, render_model_line_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, trust_options_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, format_skill_history_entry_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, setup_theme_options_async, setup_analytics_options_async, format_first_run_theme_step_async, format_first_run_analytics_step_async, format_first_run_done_async, format_setup_skipped_async, format_setup_status_async, branch_row_prefix_async, format_branch_row_async, format_branches_list_async, format_branch_summary_async, format_fork_list_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, format_issue_row_async, format_issue_context_async, render_ready_frame_async, render_welcome_frame_async, format_prompt_label, format_image_placeholder_async, staged_image_label_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
 import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
 import { readClipboardImage, writeClipboardText, clipboardSupportsImage, extensionForImageMime, sniffImageMime } from "./clipboard.js";
 import { runResultToJsonLines, finalText } from "./events.js";
 import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow, appendSessionEntries, loadSessionTranscript, sessionResumeList, sessionIdFromFile, setSessionLabel, importSessionFile, shareSessionGist, detectTerminalThemeFromEnv, sessionBranchList, orderBranchRows, branchSwitchState, BI_AGENT_DIR_ENV } from "./session.js";
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { Text } from "@earendil-works/pi-tui";
 import { colorizeDiffLines } from "./diff-render.js";
 import {
 	parseUnifiedDiff, buildHunkQueue, assertQueueCoversDiffOnce, applyDecisionInputs,
@@ -274,7 +276,7 @@ function bamlErrorMessage(e: unknown): string {
 	const raw = e instanceof Error ? e.message : String(e);
 	return raw.replace(/^baml error: (baml\.errors\.\w+: )?/, "").split("\n")[0];
 }
-import { HostTui, HostFooter, renderSelectList, releaseReplTui, retainReplTui, runTranscriptSearch, termWidth, composeFrame } from "./tui.js";
+import { HostTui, HostFooter, renderSelectList, releaseReplTui, retainReplTui, ensureReplTui, runTranscriptSearch, termWidth, composeFrame } from "./tui.js";
 import { FullscreenSession, fullscreenRequested, teeOutputTo } from "./screen-fullscreen.js";
 import { KindStatus } from "./status.js";
 import { ActionLog, safeJson } from "./actionlog.js";
@@ -2402,6 +2404,10 @@ class ReplReader {
 	// follow-up). Set once at REPL start, read by ask/askMultiline.
 	forceLineMode = false;
 	editPool: SlashPool | null = null;
+	// bi#181: active theme name for the modal editor's border colors
+	// (null = plain; resolved by the REPL loop where activeTheme() is
+	// already computed for the footer, so pipes/NO_COLOR stay plain).
+	editorTheme: string | null = null;
 	setEditPool(pool: SlashPool): void {
 		this.editPool = pool;
 	}
@@ -2418,6 +2424,7 @@ class ReplReader {
 				promptText,
 				[...readHistoryFile(this.historyFile), ...this.submitted],
 				this.editPool,
+				{ theme: this.editorTheme },
 			);
 			if (text !== "\x03" && text.trim().length > 0) this.submitted.push(text);
 			return text;
@@ -2546,6 +2553,57 @@ async function printSettingsList(stored: UserSettings): Promise<void> {
 		console.log(list + (await format_setup_status_async(await readActiveTheme(), stored.share_analytics ?? null, stored.setup_done ?? false)));
 	} else {
 		console.log(list);
+	}
+}
+
+// bi#180: bi's own version for the welcome frame label column — read
+// from package.json at runtime (dist/src/cli.js → bi/package.json);
+// "dev" when unreadable. Never throws.
+function biVersion(): string {
+	try {
+		const req = createRequire(import.meta.url);
+		const pkg = req("../../package.json") as { version?: unknown };
+		return typeof pkg.version === "string" ? pkg.version : "dev";
+	} catch {
+		return "dev";
+	}
+}
+
+// bi#180: welcome entry frame (BAML-shaped render_welcome_frame, kimi
+// welcome.ts:49-107 mirror) with the ready-BAIS frame beneath it.
+// Mounted once from repl() AFTER the last startup modal (trust /
+// first-run / session picker) hides. A future /clear re-renders by
+// calling this again (bi has no /clear today). Gates: interactive TTY,
+// not fullscreen — pipes and the alt-screen shell stay byte-stable.
+async function printWelcomeFrame(backend: ReplBackend, sess: ReplSessionState, fullscreen: boolean): Promise<void> {
+	if (fullscreen || !promptAvailable()) return;
+	try {
+		const width = termWidth();
+		const theme = await activeTheme();
+		const [welcome, ready] = await Promise.all([
+			render_welcome_frame_async(
+				{ directory: process.cwd(), session: sessionIdFromFile(sess.file) ?? sess.file, model: backend.model, version: biVersion() },
+				width,
+				{ theme },
+			),
+			readyBaisIssues(),
+		]);
+		const readyLines = await render_ready_frame_async(
+			ready.map((f) => ({ id: f.issue.id, title: f.issue.title })),
+			width,
+		);
+		// Render INTO the modal host's base layer — never console.log:
+		// modal show/hide repaints the base frame, so bypass prints are
+		// erased by the next modal's mount render (how the pre-modal
+		// ready frame was lost) while base content survives every repaint
+		// by construction. The host is the REPL-lifetime one (bi#162
+		// lease held by repl()); creating it here when no picker ran just
+		// moves the one kitty negotiation earlier — the first editor
+		// modal settles it as usual.
+		const host = ensureReplTui(dirname(getBiSessionsDir()));
+		host.ui.addChild(new Text([...welcome, ...readyLines].join("\n"), 0, 0));
+	} catch {
+		// The entry frame is cosmetic — never brick REPL startup.
 	}
 }
 
@@ -2716,6 +2774,7 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 	try {
 		const loadTheme = await activeTheme();
 		const loadThinking = backend.thinking ?? "default";
+		reader.editorTheme = loadTheme;
 		footer.show(
 			await render_footer_frame_async(backend.provider, backend.model, loadThinking, sess.turn, history.length, termWidth(), { theme: loadTheme, cwd: footerCwd(), branch: gitBranch() }),
 			await render_model_line_async(backend.provider, backend.model, loadThinking, termWidth(), { theme: loadTheme }),
@@ -2724,6 +2783,14 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 	} catch {
 		// No footer on load — the first turn-end paint installs it.
 	}
+	// bi#180: welcome entry frame + ready BAIS beneath it, printed AFTER
+	// the last startup modal (trust / first-run / session picker) has
+	// hidden — modal full-repaints erase anything printed earlier, which
+	// is how the pre-modal ready frame was lost. TTY only and never in
+	// fullscreen: pipes keep byte-stable output. Second render site for
+	// render_ready_frame (the no-arg dump is the first). Named so a
+	// future /clear can re-render it (bi has no /clear today).
+	await printWelcomeFrame(backend, sess, fullscreen);
 	try {
 		for (;;) {
 			// bi#29: /trust swaps the project skill set live — reload on
@@ -2743,8 +2810,10 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 				footer.homeInput();
 				// bi#160: the dock's prompt row mirrors the live label;
 				// readline still owns the keystrokes (v1, see NOTES).
-				if (fsSession) fsSession.setPrompt(`bi[${sess.turn}]> `);
-				line = await reader.askMultiline(`bi[${sess.turn}]> `);
+				// bi#181: the label text is BAML-shaped (format_prompt_label).
+				const promptLabel = `${format_prompt_label(sess.turn)} `;
+				if (fsSession) fsSession.setPrompt(promptLabel);
+				line = await reader.askMultiline(promptLabel);
 			} catch {
 				console.error("\n[bi] EOF — session kept at " + sess.file);
 				return;
@@ -2795,6 +2864,7 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 					// bi#67: pinned to the bottom row on TTY, plain print on pipes.
 					const theme = await activeTheme();
 					const thinking = backend.thinking ?? "default";
+					reader.editorTheme = theme;
 					const cwd = footerCwd();
 					const branch = gitBranch();
 					const fallback = await format_repl_footer_async(backend.provider, backend.model, thinking, sess.turn, history.length, { theme, cwd, branch });

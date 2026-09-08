@@ -238,6 +238,14 @@ function build_client(
                 // cloudflareStreams pattern). Rows without placeholders
                 // pass through untouched; leftovers fail fast naming it.
                 let url = resolve_endpoint_template(base_url ?? p.base_url);
+                // Gateway check first: its template carries BOTH placeholders,
+                // so a bare catalog call names the pair; workers-ai URLs never
+                // contain the gateway placeholder, so that arm is unaffected.
+                if (url.includes("{CLOUDFLARE_GATEWAY_ID}")) {
+                    throw baml.errors.InvalidArgument {
+                        message: `${other} needs CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_GATEWAY_ID (account + gateway ids for the endpoint URL)`,
+                    }
+                }
                 if (url.includes("{CLOUDFLARE_ACCOUNT_ID}")) {
                     throw baml.errors.InvalidArgument {
                         message: "cloudflare-workers-ai needs CLOUDFLARE_ACCOUNT_ID (account id for the endpoint URL)",
@@ -249,6 +257,7 @@ function build_client(
                         model = model,
                         api_key = cred,
                         base_url = url,
+                        headers = provider_headers(other),
                         temperature = temperature,
                     )
                 } else if (p.api == "anthropic-messages") {
@@ -303,6 +312,24 @@ function resolve_endpoint_template(url: string) -> string {
         "{CLOUDFLARE_GATEWAY_ID}",
         baml.env.get("CLOUDFLARE_GATEWAY_ID"),
     )
+}
+
+// Per-provider static request headers (bi#15): pi attaches
+// COPILOT_STATIC_HEADERS (generate-models.ts) to every Copilot request —
+// the API rejects callers without Copilot-Integration-Id. Other providers
+// send none (a host base_url override never gains headers). Null means
+// "no extra headers" for the client constructors below.
+function provider_headers(provider: string) -> map<string, string>? {
+    if (provider == "github-copilot") {
+        {
+            "User-Agent": "GitHubCopilotChat/0.35.0",
+            "Editor-Version": "vscode/1.107.0",
+            "Editor-Plugin-Version": "copilot-chat/0.35.0",
+            "Copilot-Integration-Id": "vscode-chat",
+        }
+    } else {
+        null
+    }
 }
 
 // Azure endpoint resolution: explicit opt wins, else AZURE_OPENAI_* env.
@@ -379,6 +406,14 @@ function build_streaming_client(
                 // cloudflareStreams pattern). Rows without placeholders
                 // pass through untouched; leftovers fail fast naming it.
                 let url = resolve_endpoint_template(base_url ?? p.base_url);
+                // Gateway check first: its template carries BOTH placeholders,
+                // so a bare catalog call names the pair; workers-ai URLs never
+                // contain the gateway placeholder, so that arm is unaffected.
+                if (url.includes("{CLOUDFLARE_GATEWAY_ID}")) {
+                    throw baml.errors.InvalidArgument {
+                        message: `${other} needs CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_GATEWAY_ID (account + gateway ids for the endpoint URL)`,
+                    }
+                }
                 if (url.includes("{CLOUDFLARE_ACCOUNT_ID}")) {
                     throw baml.errors.InvalidArgument {
                         message: "cloudflare-workers-ai needs CLOUDFLARE_ACCOUNT_ID (account id for the endpoint URL)",
@@ -390,6 +425,7 @@ function build_streaming_client(
                         model = model,
                         api_key = cred,
                         base_url = url,
+                        headers = provider_headers(other),
                         temperature = temperature,
                     )
                 } else if (p.api == "anthropic-messages") {
@@ -611,18 +647,50 @@ function CreateMediaBlockFromUrl(url: string, mime_type: string?) -> ai.content.
     ai.content.Media.new(img)
 }
 
-// Media history helper — keeps the Media block inside one BAML call so the
-// ai.MediaPart union does not need to round-trip via the host (same pattern
-// as client/tool handle gaps). Host passes base64, VM builds the
-// AssistantMessage with Media block and invokes the model.
-function SendTurnWithImage(
+// Plain-data media definition — the media analogue of ToolSpec (see
+// limitation 4 above). A host-held ai.content.Media cannot re-enter the VM:
+// its recorded concrete type is the ai.MediaPart union alias (`media`), not
+// baml.media.Image, so inbound validation rejects it with
+// `baml.errors.TypeMismatch ... does not match any member of union
+// [Image, Audio, Video, Pdf]` (proposal 10, bi#06). Plain strings cross the
+// FFI boundary intact, so the host passes specs and the VM builds the real
+// Media blocks in the same call that invokes the model.
+// `source` is "base64" (data = base64 payload) or "url" (data = URL).
+class MediaSpec {
+    source: string,
+    data: string,
+    mime_type: string?,
+}
+
+// In-VM Media constructor from plain data. A bogus source is a clean
+// InvalidArgument naming the value — the typo-safety a real enum param
+// would give (same treatment as the string provider tag, point 2 above).
+function build_media(spec: MediaSpec) -> ai.content.Media {
+    match (spec.source) {
+        "base64" => CreateMediaBlock(spec.data, spec.mime_type ?? "image/png"),
+        "url" => CreateMediaBlockFromUrl(spec.data, spec.mime_type),
+        let other => {
+            throw baml.errors.InvalidArgument { message: `unknown media source: ${other} (want "base64" or "url")` }
+        },
+    }
+}
+
+// Media history helper — keeps every Media block inside one BAML call so
+// the ai.MediaPart union never round-trips via the host (same pattern as
+// client/tool handle gaps). The host passes media-free history plus plain
+// MediaSpecs; the VM builds one AssistantMessage from the specs, appends it
+// to the history, and invokes. This is what makes image-bearing history
+// survive the FFI boundary (bi#06): history events round-trip as plain
+// data, media crosses as specs, Media itself never leaves the VM.
+function SendTurnWithMedia(
     provider: string,
     model: string,
     api_key: string?,
     text: string,
-    image_base64: string,
-    image_mime: string,
-    client_id: string = "test-client",
+    history: ai.events.Event[],
+    media: MediaSpec[],
+    tools: ToolSpec[],
+    media_client_id: string = "test-client",
     base_url: string? = null,
     temperature: float? = null,
     thinking: anthropic.ThinkingConfig? = null,
@@ -630,8 +698,21 @@ function SendTurnWithImage(
     azure_deployment: string? = null,
     azure_api_version: string? = null,
 ) -> ai.ModelTurn | TurnFailure {
-    let media = CreateMediaBlock(image_base64, image_mime);
-    let history: ai.events.Event[] = [ai.events.AssistantMessage { content: [media], client_id: client_id }];
+    let log = history;
+    if (media.length() > 0) {
+        let blocks = media.map((spec) -> {
+            let m: ai.content.Media = build_media(spec);
+            m
+        });
+        let as_blocks = blocks.map((m) -> {
+            let b: ai.content.Block = m;
+            b
+        });
+        log
+            = log.concat(
+                [ai.events.AssistantMessage { content: as_blocks, client_id: media_client_id }],
+            )
+    }
     let cl = build_client(
         provider,
         model,
@@ -647,13 +728,49 @@ function SendTurnWithImage(
     cl.invoke(
         ai.ModelTurnInput {
             prompt: spec.prompt_template,
-            journal: ai.Journal { log: history },
-            toolbox: build_toolbox([]),
+            journal: ai.Journal { log: log },
+            toolbox: build_toolbox(tools),
             output_type: spec.output_type(),
         },
     ) catch (e) {
         let f: ai.errors.Failure => classify_failure(f),
     }
+}
+
+// Single-image entry point — now a thin delegation to SendTurnWithMedia
+// (one code path for all media turns). Carries no prior history and no
+// tools by construction, so image turns get answers, not agency.
+function SendTurnWithImage(
+    provider: string,
+    model: string,
+    api_key: string?,
+    text: string,
+    image_base64: string,
+    image_mime: string,
+    client_id: string = "test-client",
+    base_url: string? = null,
+    temperature: float? = null,
+    thinking: anthropic.ThinkingConfig? = null,
+    azure_resource: string? = null,
+    azure_deployment: string? = null,
+    azure_api_version: string? = null,
+) -> ai.ModelTurn | TurnFailure {
+    SendTurnWithMedia(
+        provider,
+        model,
+        api_key,
+        text,
+        [],
+        [MediaSpec { source: "base64", data: image_base64, mime_type: image_mime }],
+        [],
+        media_client_id = client_id,
+        base_url = base_url,
+        temperature = temperature,
+        thinking = thinking,
+        azure_resource = azure_resource,
+        azure_deployment = azure_deployment,
+        azure_api_version = azure_api_version,
+    )
 }
 
 // Stage 1 drained helper — still useful, but now StartTurnStream is the

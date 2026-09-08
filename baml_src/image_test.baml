@@ -53,4 +53,31 @@ testset "image generation" {
             },
         }
     }
+
+    test "paste allowlist mirrors the host sniff set" {
+        assert.equal(paste_supported_mimes().length(), 4);
+        assert.is_true(paste_mime_supported("image/png"));
+        assert.is_true(paste_mime_supported("image/jpeg"));
+        assert.is_true(paste_mime_supported("image/webp"));
+        assert.is_true(paste_mime_supported("image/gif"));
+        assert.is_true(!paste_mime_supported("image/bmp"));
+        assert.is_true(!paste_mime_supported("image/tiff"));
+        assert.is_true(!paste_mime_supported("text/plain"))
+    }
+
+    test "paste extensions map one to one" {
+        assert.equal(paste_extension("image/png"), "png");
+        assert.equal(paste_extension("image/jpeg"), "jpg");
+        assert.equal(paste_extension("image/webp"), "webp");
+        assert.equal(paste_extension("image/gif"), "gif");
+        assert.is_true(paste_extension("image/bmp") is null)
+    }
+
+    test "staged image label is the basename" {
+        assert.equal(staged_image_label("/tmp/paste-123.png"), "paste-123.png");
+        assert.equal(staged_image_label("cat.png"), "cat.png");
+        assert.equal(staged_image_label("/tmp/dir/"), "dir");
+        assert.equal(staged_image_label(""), "");
+        assert.equal(staged_image_label("/"), "")
+    }
 }

@@ -11,16 +11,32 @@
 import {
 	default_compaction_settings_async,
 	find_cut_index_async,
+	format_compaction_marker_async,
+	parse_compaction_marker,
 	should_compact_async,
 	summarize_prompt_async,
+	type CompactionMarker,
 } from "../baml_sdk/index.js";
 import type { ConversationTurn } from "./conversation.js";
+import { activeStatus } from "./status.js";
+import { printCompactionSummary } from "./summary-blocks.js";
+
+// bi#97: emission channel for the transcript block. Fired after a successful
+// splice only — a failed summary aborts the splice, so no block is owed.
+export interface CompactionEmit {
+	summary: string;
+	foldedTurns: number;
+	tokensBefore: number;
+	tokensAfter: number;
+	tokensReclaimed: number;
+}
 
 export interface CompactionOptions {
 	enabled?: boolean;
 	contextWindow?: number;
 	reserveTokens?: number;
 	keepRecentTokens?: number;
+	onCompacted?: (info: CompactionEmit) => void | Promise<void>;
 }
 
 const IMAGE_CHARS = 4800;
@@ -98,6 +114,9 @@ export interface Compacted {
 	messages: ConversationTurn[];
 	summary: string;
 	cut: number;
+	tokensBefore: number;
+	tokensAfter: number;
+	tokensReclaimed: number;
 }
 
 // Splice history: summarize messages[0..cut], keep the rest. The summary goes
@@ -115,12 +134,39 @@ export async function compactHistory(
 	const sizes = messages.map(estimateTurnTokens);
 	const cut = await find_cut_index_async(sizes, keep);
 	if (cut <= 0 || cut >= messages.length) return null;
+	// bi#97: measure before the cut so the transcript block can name folded
+	// turns and reclaimed tokens. The marker text is BAML-shaped
+	// (format_compaction_marker) so the session file carries a parseable
+	// record and /resume can replay the block.
+	const tokensBefore = estimateHistoryTokens(messages);
 	const head = messages.slice(0, cut).map(serializeTurn).join("\n");
-	const summary = await summarize(await summarize_prompt_async(head));
+	// bi#96: the summarization wait surfaces on the turn status (compaction
+	// kind) where a display is active. This is the automatic threshold path
+	// (maybeCompactHistory fired on token pressure). Working state restores
+	// in finally so a summarize throw never leaks the compaction styling.
+	activeStatus()?.showCompaction("threshold");
+	let summary: string;
+	try {
+		summary = await summarize(await summarize_prompt_async(head));
+	} finally {
+		activeStatus()?.showWorking();
+	}
+	const spliced: ConversationTurn[] = [
+		{ role: "user", text: "" },
+		...messages.slice(cut),
+	];
+	(spliced[0] as { role: string; text: string }).text = await format_compaction_marker_async(cut, tokensBefore, 0, summary);
+	const tokensAfter = estimateHistoryTokens(spliced);
+	// Second pass stamps the true post-cut total — the marker names the
+	// range the resumed session actually continues with.
+	(spliced[0] as { role: string; text: string }).text = await format_compaction_marker_async(cut, tokensBefore, tokensAfter, summary);
 	return {
-		messages: [{ role: "user", text: `Session summary (compacted, ${cut} earlier turns folded in):\n${summary}` }, ...messages.slice(cut)],
+		messages: spliced,
 		summary,
 		cut,
+		tokensBefore,
+		tokensAfter,
+		tokensReclaimed: Math.max(0, tokensBefore - tokensAfter),
 	};
 }
 
@@ -141,5 +187,47 @@ export async function maybeCompactHistory(
 		keepRecentTokens: opts?.keepRecentTokens ?? defaults.keep_recent_tokens,
 	});
 	if (!out) return { messages, compacted: false };
+	// bi#97: every successful auto-compaction emits its transcript block with
+	// folded-turn count and reclaimed tokens. Emission failures never break
+	// the turn — the marker user-turn already persists the record.
+	try {
+		await opts?.onCompacted?.({
+			summary: out.summary,
+			foldedTurns: out.cut,
+			tokensBefore: out.tokensBefore,
+			tokensAfter: out.tokensAfter,
+			tokensReclaimed: out.tokensReclaimed,
+		});
+	} catch (e) {
+		console.error(`[bi] compaction block failed to print (${e instanceof Error ? e.message : e}) — summary kept in context`);
+	}
 	return { messages: out.messages, compacted: true };
+}
+
+// bi#97: /resume replay. The session file carries the marker user-turn, so a
+// resumed transcript re-shows each compaction as its collapsed block (folded
+// count + token range, shaped by BAML). Legacy markers (no token counts) and
+// non-markers print nothing here — replay never invents numbers, and the
+// entries themselves stay in history for /export either way.
+export async function replayCompactionBlocks(
+	history: readonly { role: string; text: string }[],
+	theme?: string | null,
+): Promise<void> {
+	for (const m of history) {
+		if (m.role !== "user" || typeof m.text !== "string") continue;
+		let parsed: CompactionMarker | null;
+		try {
+			parsed = parse_compaction_marker(m.text);
+		} catch {
+			continue;
+		}
+		if (!parsed || parsed.tokens_before == null || parsed.tokens_after == null) continue;
+		await printCompactionSummary({
+			summary: parsed.summary,
+			tokensBefore: parsed.tokens_before,
+			tokensAfter: parsed.tokens_after,
+			foldedTurns: parsed.folded_turns,
+			theme: theme ?? null,
+		});
+	}
 }

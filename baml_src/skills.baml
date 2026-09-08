@@ -114,6 +114,17 @@ function format_skills_for_prompt(skills: Skill[]) -> string {
     }
 }
 
+// Transcript record (bi#98): an explicit /slash invocation persists with its
+// skill name on the first line — the same head the collapsed block prints —
+// so the session file (and /export rendered from it) names which skill
+// fired. The model still receives the expanded body; the label only prefixes
+// the persisted user turn, and /resume feeds the same text back, so replay
+// fidelity holds. Disabled-model skills never reach here via the model (they
+// stay out of the prompt section above); explicit /slash still runs.
+function format_skill_history_entry(name: string, expanded_prompt: string) -> string {
+    `[skill] ${name}\n${expanded_prompt}`
+}
+
 // Full registry (bi#31): pi's 23 builtins transcribed verbatim
 // (pi/packages/coding-agent/src/core/slash-commands.ts) plus bi's
 // /help, /attach, /editor. scope null = live; otherwise the issue that
@@ -243,6 +254,12 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
             scope: null,
         },
         BuiltinSlashCommand {
+            name: "branches",
+            description: "List session branches or switch to one by id",
+            argument_hint: "[id|n]",
+            scope: null,
+        },
+        BuiltinSlashCommand {
             name: "trust",
             description: "Show or set the project trust decision",
             argument_hint: "[allow|deny|session|forget]",
@@ -263,13 +280,13 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
         BuiltinSlashCommand {
             name: "oauth",
             description: "Show per-provider auth status (stored, env, or missing)",
-            argument_hint: null,
+            argument_hint: "[number|provider]",
             scope: null,
         },
         BuiltinSlashCommand {
             name: "config",
-            description: "Edit the settings file in $EDITOR (validated on save)",
-            argument_hint: "[path]",
+            description: "Preview the settings file (edit opens $EDITOR, validated on save)",
+            argument_hint: "[edit|path]",
             scope: null,
         },
         BuiltinSlashCommand {
@@ -323,11 +340,11 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
     ]
 }
 
-// /hotkeys body: what bi's line-based readline REPL actually supports
-// (not pi's widget keybindings — those wait on a raw-mode input layer
-// readline cannot give, bi#32). Host prints.
+// /hotkeys body: what bi's REPL actually supports. Screen mode (bi#69)
+// adds the Ctrl-P cycle binding through the pi-tui editor; readline keeps
+// the numeric /model picks as its fallback. Host prints.
 function hotkeys_text() -> string {
-    "/              Slash commands (this list: /help)\nTab            Complete the slash command (and its argument, e.g. /model <Tab>)\n↑ / ↓         Browse input history\nEnter          Send message\n\\ (trailing)   Continue input onto the next line\nCtrl-C          Abort the running turn (transcript survives)\nCtrl-D          Quit (when input is empty)\n/copy /paste   Copy last answer / stage a clipboard image\n/tree /attach  Browse files / stage file context\n/editor        Compose the prompt in $EDITOR"
+    "/              Slash commands (this list: /help)\nTab            Complete the slash command (and its argument, e.g. /model <Tab>)\n↑ / ↓         Browse input history\nEnter          Send message\n\\ (trailing)   Continue input onto the next line\nCtrl-C          Abort the running turn (transcript survives)\nCtrl-D          Quit (when input is empty)\nCtrl-P          Cycle to the next model in the enabled set (screen mode; readline: /model <n>)\n/copy /paste   Copy last answer / stage a clipboard image\n/tree /attach  Browse files / stage file context\n/editor        Compose the prompt in $EDITOR"
 }
 
 // /changelog bodies (bi#31): entries split on "## " headers, newest
@@ -385,9 +402,39 @@ function format_changelog(entries: ChangelogEntry[], show_all: bool) -> string {
     }
 }
 
-// Tab completion for the line REPL: first-word slash prefix only. The
+// Fuzzy rank over a completion pool, reusing bi#85's selector ranking
+// (kimi pi-tui fuzzy semantics): every whitespace/slash token must
+// subsequence-match, scores sum, ties keep catalog order. Exact-prefix
+// hits partition above scattered subsequence hits — raw fuzzy can
+// prefer a boundary-anchored scatter (e.g. "a-b" over "abx" for "ab"),
+// but a completion must never bury what the user already typed exactly.
+function rank_completion(query: string, items: string[]) -> int[] {
+    let q = query.to_lower_case();
+    let ranked = rank_selector_rows(query, items);
+    let pre: int[] = [];
+    let rest: int[] = [];
+    for (let i in ranked) {
+        match (items.at(i)) {
+            null => {},
+            let text: string => {
+                if (text.to_lower_case().starts_with(q)) {
+                    pre.push(i)
+                } else {
+                    rest.push(i)
+                }
+            },
+        }
+    }
+    for (let i in rest) {
+        pre.push(i)
+    }
+    pre
+}
+
+// Tab completion for the line REPL: first-word slash names only. The
 // host supplies candidate names (builtins + loaded skills); BAML owns
-// the match so every client completes identically.
+// the match so every client completes identically. Bare "/" lists the
+// full pool unchanged (bi#106: no behavior change on bare-/ + Tab).
 function complete_slash(line: string, names: string[]) -> string[] {
     if (!line.starts_with("/")) {
         []
@@ -395,11 +442,20 @@ function complete_slash(line: string, names: string[]) -> string[] {
         let word = line.slice(1, line.length());
         if (word.index_of(" ") != null || word.index_of("\t") != null) {
             []
-        } else {
+        } else if (word.length() == 0) {
             let out: string[] = [];
             for (let n in names) {
-                if (n.starts_with(word)) {
-                    out.push(`/${n}`)
+                out.push(`/${n}`)
+            }
+            out
+        } else {
+            let out: string[] = [];
+            for (let i in rank_completion(word, names)) {
+                match (names.at(i)) {
+                    null => {},
+                    let n: string => {
+                        out.push(`/${n}`)
+                    },
                 }
             }
             out
@@ -409,15 +465,28 @@ function complete_slash(line: string, names: string[]) -> string[] {
 
 // Second-word argument completion (`/model <Tab>`, `/thinking <Tab>`).
 // The host supplies the candidate pool per command (model ids, levels,
-// theme names, ...); BAML owns the prefix match.
+// theme names, ...); BAML owns the fuzzy match, so multi-token queries
+// (`/model xai grok`) narrow to the provider row. Empty prefix returns
+// the pool unchanged.
 function complete_arg(prefix: string, candidates: string[]) -> string[] {
-    let out: string[] = [];
-    for (let c in candidates) {
-        if (c.starts_with(prefix)) {
+    if (prefix.length() == 0) {
+        let out: string[] = [];
+        for (let c in candidates) {
             out.push(c)
         }
+        out
+    } else {
+        let out: string[] = [];
+        for (let i in rank_completion(prefix, candidates)) {
+            match (candidates.at(i)) {
+                null => {},
+                let c: string => {
+                    out.push(c)
+                },
+            }
+        }
+        out
     }
-    out
 }
 
 // Dispatch lookup: builtins first, then skill names ("/<name>"). Returns the
@@ -480,6 +549,14 @@ test "prompt format is XML, disabled excluded, empty is empty" {
     assert.equal(format_skills_for_prompt([]), "")
 }
 
+test "history entry labels the skill, keeps the expanded body" {
+    let e = format_skill_history_entry("review", "look closely\n\nnow do it");
+    assert.equal(e, "[skill] review\nlook closely\n\nnow do it");
+    // Head matches the collapsed block's head, so export/replay name it.
+    assert.equal(e.slice(0, 14), "[skill] review");
+    assert.is_true(e.index_of("look closely") != null)
+}
+
 test "skills list names every skill, flags prompt-only, empty is explicit" {
     let skills = [
         Skill {
@@ -523,7 +600,7 @@ test "slash dispatch finds builtins then skills" {
     assert.equal(lookup_slash("/oauth", skills), "oauth");
     assert.equal(lookup_slash("/config", skills), "config");
     assert.equal(lookup_slash("/skills", skills), "skills");
-    assert.equal(builtin_slash_commands().length(), 33)
+    assert.equal(builtin_slash_commands().length(), 34)
 }
 
 test "registry is pi's 23 plus bi extras" {
@@ -549,6 +626,7 @@ test "registry is pi's 23 plus bi extras" {
             "editor",
             "fork",
             "clone",
+            "branches",
             "trust",
             "login",
             "logout",
@@ -584,6 +662,7 @@ test "scope marks live vs owning issue" {
             "issues" => assert.is_true(b.scope is null),
             "bais" => assert.is_true(b.scope is null),
             "fork" => assert.is_true(b.scope is null),
+            "branches" => assert.is_true(b.scope is null),
             "compact" => assert.is_true(b.scope is null),
             "reload" => assert.is_true(b.scope is null),
             "login" => assert.is_true(b.scope is null),
@@ -662,11 +741,48 @@ test "second-word argument completion filters the host pool" {
     assert.equal(complete_arg("anything", []).length(), 0)
 }
 
+test "slash completion fuzzy-matches scattered initials" {
+    // /scd finds /scoped-models: no prefix gate, in-order subsequence.
+    let names = ["model", "scoped-models", "paste"];
+    let hits = complete_slash("/scd", names);
+    assert.equal(hits.length(), 1);
+    assert.equal(hits.at(0) ?? "", "/scoped-models")
+}
+
+test "slash completion ranks exact prefix above subsequence" {
+    // Catalog order is adversarial: the scattered hit leads, but the
+    // exact-prefix hit must still rank first.
+    let names = ["scoped-models", "small"];
+    let hits = complete_slash("/sm", names);
+    assert.equal(hits.length(), 2);
+    assert.equal(hits.at(0) ?? "", "/small");
+    assert.equal(hits.at(1) ?? "", "/scoped-models")
+}
+
+test "argument completion ranks prefix above boundary-anchored scatter" {
+    // Raw fuzzy prefers "a-b" here (boundary bonus outweighs the gap);
+    // the prefix partition keeps the exact head-match on top.
+    let hits = complete_arg("ab", ["a-b", "abx"]);
+    assert.equal(hits.length(), 2);
+    assert.equal(hits.at(0) ?? "", "abx");
+    assert.equal(hits.at(1) ?? "", "a-b")
+}
+
+test "argument completion matches space-separated tokens" {
+    // /model xai grok narrows the id pool to the xai row: every token
+    // must match, misses drop out.
+    let pool = ["openai/gpt-5", "xai/grok-4.6", "anthropic/claude-opus-4-5"];
+    let hits = complete_arg("xai grok", pool);
+    assert.equal(hits.length(), 1);
+    assert.equal(hits.at(0) ?? "", "xai/grok-4.6")
+}
+
 test "hotkeys text describes bi REPL keys" {
     let t = hotkeys_text();
     assert.contains(t, "/help");
     assert.contains(t, "Ctrl-C");
     assert.contains(t, "Ctrl-D");
+    assert.contains(t, "Ctrl-P");
     assert.contains(t, "/copy /paste");
     assert.contains(t, "/tree /attach");
     assert.contains(t, "/editor")

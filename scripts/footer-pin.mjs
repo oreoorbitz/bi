@@ -1,19 +1,25 @@
-// bi/scripts/footer-pin.mjs — HostFooter conformance (bi#67).
+// bi/scripts/footer-pin.mjs — HostFooter conformance (bi#67 + brand model row
+// + bi#184 row dedup + bi#186 tips slot shape).
 // Captures the byte stream, replays it on a region-aware virtual screen,
-// and asserts (1) pipes get the plain printed footer byte-identical to the
-// old console.error readout with zero escapes, (2) TTY setup reserves the
-// last row via DECSTBM, (3) repaints are differential (unchanged line
-// writes zero bytes, changed rows rewrite without clear/reset), (4) the
-// footer survives region scrolling, (5) resize reinstalls, (6) dispose
-// resets the region and erases the footer row, and (7) the BAML frame is
-// byte-identical to format_repl_footer on wide terminals (the contract
-// the host's pipe fallback relies on).
+// and asserts (1) pipes get the plain printed footer plus the plain model
+// line with zero escapes, (2) TTY setup reserves the last TWO rows via
+// DECSTBM (frame row N-1, brand model row N), (3) repaints are differential
+// per row (unchanged rows write zero bytes, changed rows rewrite without
+// clear/reset), (4) both rows survive region scrolling, (5) resize
+// reinstalls, (6) dispose resets the region and erases both rows, and
+// (7) the BAML frame is byte-identical to format_repl_footer on wide
+// terminals (the contract the host's pipe fallback relies on).
+// bi#184: the model row is ctx-only — the provider/model · thinking
+// prefix lives exclusively on the frame row. bi#186: sections 13+ pin
+// the right-aligned muted tips slot on the model row; rotation/dispose/
+// hint behavior lives in footer-tips.mjs. Harnesses inject an empty tips
+// corpus so the async BAML corpus load stays out of the byte pins.
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const { HostFooter } = await import(join(ROOT, "..", "dist", "src", "tui.js"));
-const { render_footer_frame_async, format_repl_footer_async } = await import(
+const { render_footer_frame_async, format_repl_footer_async, render_model_line_async } = await import(
 	join(ROOT, "..", "dist", "baml_sdk", "index.js")
 );
 
@@ -60,6 +66,12 @@ function replay(bytes) {
 			continue;
 		}
 		if (c === "\x1b" && bytes[i + 1] === "[") {
+			// SGR (…m): zero-width styling — skipped, never grid content.
+			const sgr = bytes.slice(i).match(/^\x1b\[[0-9;]*m/);
+			if (sgr) {
+				i += sgr[0].length;
+				continue;
+			}
 			const m = bytes.slice(i).match(/^\x1b\[(\d*)(?:;(\d*))?([rHsuAJK])/);
 			if (!m) throw new Error(`unsupported escape at offset ${i}: ${JSON.stringify(bytes.slice(i, i + 10))}`);
 			const n1 = m[1] === "" ? null : Number(m[1]);
@@ -100,77 +112,89 @@ function replay(bytes) {
 
 const F1 = "anthropic/claude-haiku-4-5 · thinking medium · 1 turn · 2 messages";
 const F2 = "anthropic/claude-haiku-4-5 · thinking medium · 2 turns · 4 messages";
+// bi#184: the model row is ctx-only (the repeated prefix moved to row 1).
+const M1 = "ctx 200k";
+const M2 = "ctx 128k";
 
-function harness(rows, tty) {
+function harness(rows, tty, tips = { corpus: [] }) {
 	let out = "";
 	const footer = new HostFooter(() => ({ rows, cols: 80 }), () => tty, (s) => {
 		out += s;
-	});
+	}, tips);
 	return { footer, bytes: () => out, clear: () => { out = ""; } };
 }
 
-// 1 — pipe fallback: byte-identical plain line, zero escapes, silent dispose.
+// 1 — pipe fallback: plain footer + plain model line, zero escapes, silent dispose.
 {
 	const h = harness(24, false);
-	h.footer.show(F1, F1);
-	check(h.bytes() === F1 + "\n", `pipe fallback prints plain line (got ${JSON.stringify(h.bytes())})`);
+	h.footer.show(F1, M1, F1);
+	check(h.bytes() === F1 + "\n" + M1 + "\n", `pipe fallback prints both plain lines (got ${JSON.stringify(h.bytes())})`);
 	check(!h.bytes().includes("\x1b"), "pipe fallback emits zero escapes");
 	h.clear();
 	h.footer.dispose();
 	check(h.bytes() === "", "dispose without install is silent");
 }
 
-// 2 — TTY setup: DECSTBM reserves the last row, cursor restored.
+// 2 — TTY setup: DECSTBM reserves the last two rows, cursor restored.
 {
 	const h = harness(24, true);
-	h.footer.show(F1, F1);
-	check(h.bytes().includes("\x1b[1;23r"), "setup installs scroll region 1..23");
-	check(h.bytes().includes("\x1b[24;1H"), "setup addresses bottom row 24");
+	h.footer.show(F1, M1, F1);
+	check(h.bytes().includes("\x1b[1;22r"), "setup installs scroll region 1..22");
+	check(h.bytes().includes("\x1b[23;1H"), "setup addresses frame row 23");
+	check(h.bytes().includes("\x1b[24;1H"), "setup addresses model row 24");
 	const screen = replay(h.bytes());
-	check(screen.grid.length === 24 && screen.grid[23] === F1, `footer lands on row 24 (got ${JSON.stringify(screen.grid[23])})`);
+	check(screen.grid.length === 24 && screen.grid[22] === F1 && screen.grid[23] === M1, `frame lands on 23, model on 24 (got ${JSON.stringify(screen.grid[22])} / ${JSON.stringify(screen.grid[23])})`);
 	check(screen.cursor[0] === 0 && screen.cursor[1] === 0, `cursor restored to transcript (got ${JSON.stringify(screen.cursor)})`);
 }
 
 // 3 — differential: unchanged repaint writes zero bytes.
 {
 	const h = harness(24, true);
-	h.footer.show(F1, F1);
+	h.footer.show(F1, M1, F1);
 	h.clear();
-	h.footer.show(F1, F1);
+	h.footer.show(F1, M1, F1);
 	check(h.bytes() === "", "unchanged footer writes zero bytes");
 }
 
-// 4 — changed repaint: no clear, no region reset, row updated in place.
+// 4 — changed repaint: no clear, no region reset, only changed rows update.
 {
 	const h = harness(24, true);
-	h.footer.show(F1, F1);
+	h.footer.show(F1, M1, F1);
 	h.clear();
-	h.footer.show(F2, F2);
+	h.footer.show(F2, M1, F1);
 	check(!h.bytes().includes("\x1b[2J"), "repaint never full-clears");
 	check(!h.bytes().includes("\x1b[r"), "repaint keeps the region (no reset)");
-	check(h.bytes().includes("\x1b[24;1H"), "repaint re-addresses the bottom row");
+	check(h.bytes().includes("\x1b[23;1H"), "frame-only change re-addresses row 23");
+	check(!h.bytes().includes("\x1b[24;1H"), "frame-only change leaves row 24 alone");
 	const screen = replay(h.bytes());
-	check(screen.grid[23] === F2, "repainted row converges to the new footer");
+	check(screen.grid[22] === F2, "repainted frame row converges");
+	h.clear();
+	h.footer.show(F2, M2, F1);
+	check(h.bytes().includes("\x1b[24;1H"), "model-only change re-addresses row 24");
+	check(!h.bytes().includes("\x1b[23;1H"), "model-only change leaves row 23 alone");
+	const screen2 = replay(h.bytes());
+	check(screen2.grid[23] === M2, "repainted model row converges");
 }
 
-// 5 — region scroll: transcript scrolls above the pinned footer.
+// 5 — region scroll: transcript scrolls above both pinned rows.
 {
 	const h = harness(24, true);
-	h.footer.show(F1, F1);
+	h.footer.show(F1, M1, F1);
 	const install = h.bytes();
 	h.clear();
 	let transcript = "";
 	for (let n = 0; n < 30; n++) transcript += `t${n}\n`;
 	// Transcript (stdout) and footer (stderr) share the terminal: the
-	// install paints the footer first, then output scrolls the region.
+	// install paints both rows first, then output scrolls the region.
 	const screen = replay(install + transcript);
-	check(screen.grid[23] === F1, "footer survives 30 scrolled lines");
+	check(screen.grid[22] === F1, "frame survives 30 scrolled lines");
+	check(screen.grid[23] === M1, "model row survives 30 scrolled lines");
 	// The last newline scrolled and left the cursor row empty — a real
-	// terminal shows the same: 22 lines plus the empty cursor row.
+	// terminal shows the same: 21 lines plus the empty cursor row.
 	check(
-		JSON.stringify(screen.grid.slice(0, 22)) === JSON.stringify(Array.from({ length: 22 }, (_, k) => `t${k + 8}`)) &&
-			screen.grid[22] === "",
-		`transcript window is t8..t29 plus empty cursor row (got ${JSON.stringify(screen.grid[0])}..${JSON.stringify(screen.grid[22])})`,
+		JSON.stringify(screen.grid.slice(0, 21)) === JSON.stringify(Array.from({ length: 21 }, (_, k) => `t${k + 9}`)) &&
+			screen.grid[21] === "",
+		`transcript window is t9..t29 plus empty cursor row (got ${JSON.stringify(screen.grid[0])}..${JSON.stringify(screen.grid[21])})`,
 	);
 }
 
@@ -180,33 +204,34 @@ function harness(rows, tty) {
 	let out = "";
 	const footer = new HostFooter(() => ({ rows, cols: 80 }), () => true, (s) => {
 		out += s;
-	});
-	footer.show(F1, F1);
+	}, { corpus: [] });
+	footer.show(F1, M1, F1);
 	out = "";
 	rows = 20;
-	footer.show(F1, F1);
-	check(out.includes("\x1b[1;19r"), "resize reinstalls the region");
+	footer.show(F1, M1, F1);
+	check(out.includes("\x1b[1;18r"), "resize reinstalls the region");
 	const screen = replay(out);
-	check(screen.grid[19] === F1, "footer re-pins to the new bottom row");
+	check(screen.grid[18] === F1, "frame re-pins to row 19");
+	check(screen.grid[19] === M1, "model re-pins to the new bottom row");
 }
 
-// 7 — dispose: region reset, footer row erased, transcript intact.
+// 7 — dispose: region reset, both rows erased, transcript intact.
 {
 	const h = harness(24, true);
-	h.footer.show(F2, F2);
+	h.footer.show(F2, M2, F1);
 	h.clear();
 	h.footer.dispose();
 	check(h.bytes().includes("\x1b[r"), "dispose resets the scroll region");
 	const screen = replay(h.bytes());
-	check(screen.grid[23] === "", "dispose erases the footer row");
+	check(screen.grid[22] === "" && screen.grid[23] === "", "dispose erases both rows");
 	check(screen.region.bottom === Number.POSITIVE_INFINITY, "region is full after dispose");
 }
 
-// 8 — degenerate screen (rows < 2): plain fallback, no escapes.
+// 8 — degenerate screen (rows < 3): plain fallback, no escapes.
 {
-	const h = harness(1, true);
-	h.footer.show(F1, F1);
-	check(h.bytes() === F1 + "\n", "1-row screen falls back to the plain line");
+	const h = harness(2, true);
+	h.footer.show(F1, M1, F1);
+	check(h.bytes() === F1 + "\n" + M1 + "\n", "2-row screen falls back to plain lines");
 	check(!h.bytes().includes("\x1b"), "degenerate screen emits zero escapes");
 }
 
@@ -229,6 +254,50 @@ function harness(rows, tty) {
 	check(cwdOnly === `${base} · ~/bi`, "cwd alone appends without branch");
 	const frameLoc = await render_footer_frame_async("xai", "grok-4.6", "high", 2, 5, 200, { theme: null, cwd: "~/bi", branch: "main" });
 	check(frameLoc === withLoc, "wide frame with segments is byte-identical to the printed footer");
+}
+
+// 12 — model line (bi#184): ctx-only shaping, brand wrap, stale-safe, width-capped.
+{
+	const plain = await render_model_line_async("anthropic", "claude-haiku-4-5", "medium", 200, { theme: null });
+	check(plain === "ctx 200k", `plain model line carries ctx only (got ${JSON.stringify(plain)})`);
+	// The dedup: no fact from the frame row repeats on the model row.
+	check(!plain.includes("anthropic") && !plain.includes("thinking"), "model row repeats neither backend nor thinking");
+	const styled = await render_model_line_async("anthropic", "claude-haiku-4-5", "medium", 200, { theme: "default" });
+	check(styled.includes("\x1b[38;2;168;85;247m") && styled.endsWith("\x1b[0m"), "default theme wraps the line in BAML purple");
+	const none = await render_model_line_async("anthropic", "claude-haiku-4-5", "medium", 200, { theme: "none" });
+	check(none === plain, "none theme degrades to the plain line");
+	const stale = await render_model_line_async("anthropic", "nope-xyz", "medium", 200, { theme: null });
+	check(stale === "", `stale id renders an empty row, never bricks (got ${JSON.stringify(stale)})`);
+	const narrow = await render_model_line_async("anthropic", "claude-haiku-4-5", "medium", 6, { theme: null });
+	check(narrow === "ctx 20…", `narrow caps to one row (got ${JSON.stringify(narrow)})`);
+}
+
+// 13 — bi#186 tips slot: right-aligned on the model row, textMuted.
+{
+	const savedTheme = process.env.BI_THEME;
+	const savedNoColor = process.env.NO_COLOR;
+	delete process.env.BI_THEME;
+	delete process.env.NO_COLOR;
+	try {
+		const h = harness(24, true, { corpus: ["tip one", "tip two"], intervalMs: 60000 });
+		h.footer.show(F1, M1, F1);
+		const screen = replay(h.bytes());
+		const row = screen.grid[23];
+		check(row.startsWith("ctx 200k"), `model row keeps the ctx content on the left (got ${JSON.stringify(row)})`);
+		check(row.endsWith("tip one | tip two"), `tips pair right-aligns on the model row (got ${JSON.stringify(row)})`);
+		check(row.length === 80, `tips row pads to the full width (got ${row.length})`);
+		check(h.bytes().includes("\x1b[38;2;107;107;107m"), "tips render in textMuted #6B6B6B");
+		check(screen.grid[22] === F1, "frame row untouched by the tips slot");
+		// Pipes: no tips, no escapes, fallback byte-shape unchanged.
+		const p = harness(24, false, { corpus: ["tip one", "tip two"], intervalMs: 60000 });
+		p.footer.show(F1, M1, F1);
+		check(p.bytes() === F1 + "\n" + M1 + "\n", "pipe fallback carries no tips and no escapes");
+	} finally {
+		if (savedTheme === undefined) delete process.env.BI_THEME;
+		else process.env.BI_THEME = savedTheme;
+		if (savedNoColor === undefined) delete process.env.NO_COLOR;
+		else process.env.NO_COLOR = savedNoColor;
+	}
 }
 
 // 11 — host segment suppliers (footer_info): ~/ collapse, branch oracle.

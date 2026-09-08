@@ -13,6 +13,11 @@ const { renderMarkdownTui, expandLinks, markdownTuiAvailable } = await import(
 	join(ROOT, "..", "dist", "src", "markdown.js")
 );
 const { render_markdown_text_async } = await import(join(ROOT, "..", "dist", "baml_sdk", "index.js"));
+const { setCapabilities, resetCapabilitiesCache } = await import("@earendil-works/pi-tui");
+// Sections 1–5 pin the incapable-terminal contract (fallback links, zero
+// escapes at theme null), so force hyperlinks off: the runner's own TERM
+// env must not leak into the fixture (bi#164 makes render env-sensitive).
+setCapabilities({ images: null, trueColor: false, hyperlinks: false });
 
 let failures = 0;
 const check = (cond, msg) => {
@@ -21,6 +26,8 @@ const check = (cond, msg) => {
 		console.error(`FAIL: ${msg}`);
 	} else console.log(`ok: ${msg}`);
 };
+
+const stripSgr = (l) => l.replace(/\x1b\[[0-9;]*m/g, "");
 
 const SRC = [
 	"# Title",
@@ -71,7 +78,8 @@ check(!plain.some((l) => l !== l.trimEnd() || l.length > 80), "no trailing paddi
 const styled = renderMarkdownTui(SRC, 80, "default");
 check(styled.some((l) => l.includes("\x1b[") && l.includes("const")), "ts fence highlights at theme default");
 check(
-	styled.join("\n").includes("link (https://x.io)") && !styled.some((l) => l.includes("]8;;")),
+	stripSgr(styled.join("\n")).includes("link (https://x.io)") &&
+		!styled.some((l) => l.includes("]8;;")),
 	"styled output still expands links",
 );
 
@@ -94,6 +102,53 @@ check(probe("default") === legacyStyled + "\n" || probe("default") === legacySty
 
 // expandLinks unit edge: plain text untouched, empty url tolerated.
 check(expandLinks("no links here") === "no links here", "expandLinks leaves plain lines alone");
+
+// 6 — bi#164: OSC8 gate follows pi-tui capabilities (simulated both ways).
+const LINK_SRC = "A [t](https://x) here.";
+setCapabilities({ images: null, trueColor: false, hyperlinks: true });
+const clickable = renderMarkdownTui(LINK_SRC, 80, null);
+check(clickable.some((l) => l.includes("]8;;")), "capable terminal keeps clickable OSC8");
+check(!clickable.join("\n").includes("(https://x)"), "capable terminal omits the inline url");
+setCapabilities({ images: null, trueColor: false, hyperlinks: false });
+const expanded = renderMarkdownTui(LINK_SRC, 80, null);
+check(expanded.join("\n").includes("t (https://x)"), "incapable terminal expands to text (url)");
+check(!expanded.some((l) => l.includes("]8;;")), "incapable terminal leaves no OSC8 behind");
+resetCapabilitiesCache();
+
+// 7 — bi#165: real MarkdownTheme on the TTY path, none stays clean.
+// Expected codes derive from BAML style_segment (same role path the
+// host uses), never hardcoded palettes in this script.
+const { style_segment } = await import(join(ROOT, "..", "dist", "baml_sdk", "index.js"));
+const openCode = (role, theme) => {
+	const wrapped = style_segment("QXZ", role, theme);
+	return wrapped.slice(0, wrapped.indexOf("QXZ"));
+};
+const THEME_SRC = ["# h", "", "A **b** word with `c`.", "", "> q", "", "---", ""].join("\n");
+const themed = renderMarkdownTui(THEME_SRC, 80, "default");
+const themedText = themed.join("\n");
+check(themedText.includes("\x1b["), "theme default emits ANSI on the TTY path");
+check(themed.some((l) => l.includes("\x1b[1m") && l.includes("b")), "bold uses SGR bold");
+check(
+	themed.some((l) => l.includes(openCode("accent", "default")) && l.includes("h")),
+	"heading uses the theme accent",
+);
+check(
+	themed.some((l) => l.includes(openCode("busy", "default")) && l.includes("c")),
+	"codespan uses the theme busy role",
+);
+check(themed.some((l) => l.includes("│") && l.includes("\x1b[")), "quote keeps a styled border");
+check(
+	themed.some((l) => /^─+$/.test(stripSgr(l)) && l.includes("\x1b[")),
+	"hr draws with theme styling",
+);
+// plain was pinned under forced incapable capabilities; re-force before
+// comparing so the runner's TERM env cannot leak in via detection.
+setCapabilities({ images: null, trueColor: false, hyperlinks: false });
+check(
+	JSON.stringify(renderMarkdownTui(SRC, 80, "none")) === JSON.stringify(plain),
+	"theme none is byte-identical to theme null",
+);
+resetCapabilitiesCache();
 
 if (failures) process.exit(1);
 console.log("markdown-tui: all green");

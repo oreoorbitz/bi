@@ -315,6 +315,51 @@ function ListAllModels() -> Model[] {
     for (let m in _cloudflare_models()) {
         out.push(m)
     }
+    for (let m in _cloudflare_gateway_models()) {
+        out.push(m)
+    }
+    for (let m in _vercel_gateway_models()) {
+        out.push(m)
+    }
+    for (let m in _copilot_models()) {
+        out.push(m)
+    }
+    for (let m in _opencode_models()) {
+        out.push(m)
+    }
+    for (let m in _opencode_go_models()) {
+        out.push(m)
+    }
+    for (let m in _xiaomi_models()) {
+        out.push(m)
+    }
+    for (let m in _xiaomi_ams_models()) {
+        out.push(m)
+    }
+    for (let m in _xiaomi_cn_models()) {
+        out.push(m)
+    }
+    for (let m in _xiaomi_sgp_models()) {
+        out.push(m)
+    }
+    for (let m in _ant_ling_models()) {
+        out.push(m)
+    }
+    for (let m in _minimax_cn_models()) {
+        out.push(m)
+    }
+    for (let m in _moonshotai_cn_models()) {
+        out.push(m)
+    }
+    for (let m in _qwen_token_plan_cn_models()) {
+        out.push(m)
+    }
+    for (let m in _qwen_token_plan_individual_models()) {
+        out.push(m)
+    }
+    for (let m in _zai_coding_cn_models()) {
+        out.push(m)
+    }
     out
 }
 
@@ -343,6 +388,21 @@ function ListModels(provider: string) -> Model[] {
         "qwen-token-plan" => _qwen_token_plan_models(),
         "azure-openai-responses" => _azure_models(),
         "cloudflare-workers-ai" => _cloudflare_models(),
+        "cloudflare-ai-gateway" => _cloudflare_gateway_models(),
+        "vercel-ai-gateway" => _vercel_gateway_models(),
+        "github-copilot" => _copilot_models(),
+        "opencode" => _opencode_models(),
+        "opencode-go" => _opencode_go_models(),
+        "xiaomi" => _xiaomi_models(),
+        "xiaomi-token-plan-ams" => _xiaomi_ams_models(),
+        "xiaomi-token-plan-cn" => _xiaomi_cn_models(),
+        "xiaomi-token-plan-sgp" => _xiaomi_sgp_models(),
+        "ant-ling" => _ant_ling_models(),
+        "minimax-cn" => _minimax_cn_models(),
+        "moonshotai-cn" => _moonshotai_cn_models(),
+        "qwen-token-plan-cn" => _qwen_token_plan_cn_models(),
+        "qwen-token-plan-individual" => _qwen_token_plan_individual_models(),
+        "zai-coding-cn" => _zai_coding_cn_models(),
         _ => [],
     }
 }
@@ -885,6 +945,471 @@ function _cloudflare_models() -> Model[] {
     ]
 }
 
+// Cloudflare AI Gateway OpenAI passthrough (pi maps openai/* upstream
+// ids to the responses arm on the /openai base). Ids/limits/costs from
+// models.dev cloudflare-ai-gateway (2026-09); the template base_url
+// mirrors the provider row.
+function _cloudflare_gateway_models() -> Model[] {
+    [
+        Model {
+            id: "openai/gpt-4o",
+            name: "GPT-4o (Cloudflare Gateway)",
+            api: "openai-responses",
+            provider: "cloudflare-ai-gateway",
+            base_url: "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai",
+            reasoning: false,
+            input: ["text", "image"],
+            context_window: 128000,
+            max_tokens: 16384,
+            cost: ModelCost { input: 1.25, output: 5.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "openai/gpt-4o-mini",
+            name: "GPT-4o mini (Cloudflare Gateway)",
+            api: "openai-responses",
+            provider: "cloudflare-ai-gateway",
+            base_url: "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai",
+            reasoning: false,
+            input: ["text", "image"],
+            context_window: 128000,
+            max_tokens: 16384,
+            cost: ModelCost { input: 0.075, output: 0.3, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+// Vercel AI Gateway BYO passthrough (pi fetches the catalog live from
+// the gateway; these two anthropic/* ids are the stable flagships from
+// models.dev vercel, 2026-09). pi routes the gateway through the
+// anthropic-messages arm — the id carries the upstream.
+function _vercel_gateway_models() -> Model[] {
+    [
+        Model {
+            id: "anthropic/claude-opus-4.8",
+            name: "Claude Opus 4.8 (Vercel Gateway)",
+            api: "anthropic-messages",
+            provider: "vercel-ai-gateway",
+            base_url: "https://ai-gateway.vercel.sh",
+            reasoning: true,
+            input: ["text", "image"],
+            context_window: 1000000,
+            max_tokens: 128000,
+            cost: ModelCost { input: 5.0, output: 25.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "anthropic/claude-opus-4.7",
+            name: "Claude Opus 4.7 (Vercel Gateway)",
+            api: "anthropic-messages",
+            provider: "vercel-ai-gateway",
+            base_url: "https://ai-gateway.vercel.sh",
+            reasoning: true,
+            input: ["text", "image"],
+            context_window: 1000000,
+            max_tokens: 128000,
+            cost: ModelCost { input: 5.0, output: 25.0, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+// GitHub Copilot on the pinned openai-completions arm (pi's per-model
+// arm mapping puts gpt-6-astra and kimi-k2.7-code here — not claude-4/5,
+// not gpt-5/grok/oswe/mai-). Limits/costs from models.dev
+// github-copilot (2026-09). Requests carry COPILOT_STATIC_HEADERS.
+function _copilot_models() -> Model[] {
+    [
+        Model {
+            id: "gpt-6-astra",
+            name: "GPT-6 Astra (Copilot)",
+            api: "openai-completions",
+            provider: "github-copilot",
+            base_url: "https://api.individual.githubcopilot.com",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1050000,
+            max_tokens: 128000,
+            cost: ModelCost { input: 10.0, output: 50.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "kimi-k2.7-code",
+            name: "Kimi K2.7 Code (Copilot)",
+            api: "openai-completions",
+            provider: "github-copilot",
+            base_url: "https://api.individual.githubcopilot.com",
+            reasoning: true,
+            input: ["text"],
+            context_window: 256000,
+            max_tokens: 32000,
+            cost: ModelCost { input: 0.95, output: 4.0, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+// OpenCode Zen on the pinned openai-completions arm (pi's npm mapping:
+// null/undefined npm → completions on <basePath>/v1). Ids/limits from
+// models.dev opencode (2026-09); zen serves free + paid lanes, costs
+// below are the paid lane (free lane bills 0).
+function _opencode_models() -> Model[] {
+    [
+        Model {
+            id: "nemotron-3-ultra-free",
+            name: "Nemotron 3 Ultra Free (Zen)",
+            api: "openai-completions",
+            provider: "opencode",
+            base_url: "https://opencode.ai/zen/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1000000,
+            max_tokens: 128000,
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "deepseek-v4-flash-vision-exp",
+            name: "DeepSeek V4 Flash Vision Exp (Zen)",
+            api: "openai-completions",
+            provider: "opencode",
+            base_url: "https://opencode.ai/zen/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1000000,
+            max_tokens: 384000,
+            cost: ModelCost { input: 0.14, output: 0.28, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+// OpenCode Go variant on its own basePath (same arm pinning).
+function _opencode_go_models() -> Model[] {
+    [
+        Model {
+            id: "qwen3.7-max",
+            name: "Qwen3.7 Max (Zen Go)",
+            api: "openai-completions",
+            provider: "opencode-go",
+            base_url: "https://opencode.ai/zen/go/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1000000,
+            max_tokens: 65536,
+            cost: ModelCost { input: 2.5, output: 7.5, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "longcat-2.0",
+            name: "LongCat-2.0 (Zen Go)",
+            api: "openai-completions",
+            provider: "opencode-go",
+            base_url: "https://opencode.ai/zen/go/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1000000,
+            max_tokens: 131072,
+            cost: ModelCost { input: 0.3, output: 1.2, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+// Xiaomi MiMo flagships (models.dev xiaomi, 2026-09) on the API billing
+// endpoint. The three token-plan variants serve the same ids on their
+// regional prepaid endpoints with plan billing (0.0 advisory here).
+function _xiaomi_models() -> Model[] {
+    [
+        Model {
+            id: "mimo-v2.5",
+            name: "MiMo-V2.5 (Xiaomi)",
+            api: "openai-completions",
+            provider: "xiaomi",
+            base_url: "https://api.xiaomimimo.com/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1048576,
+            max_tokens: 131072,
+            cost: ModelCost { input: 0.14, output: 0.28, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "mimo-v2.5-pro",
+            name: "MiMo-V2.5-Pro (Xiaomi)",
+            api: "openai-completions",
+            provider: "xiaomi",
+            base_url: "https://api.xiaomimimo.com/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1048576,
+            max_tokens: 131072,
+            cost: ModelCost { input: 0.435, output: 0.87, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+function _xiaomi_ams_models() -> Model[] {
+    [
+        Model {
+            id: "mimo-v2.5",
+            name: "MiMo-V2.5 (Xiaomi AMS)",
+            api: "openai-completions",
+            provider: "xiaomi-token-plan-ams",
+            base_url: "https://token-plan-ams.xiaomimimo.com/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1048576,
+            max_tokens: 131072,
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "mimo-v2.5-pro",
+            name: "MiMo-V2.5-Pro (Xiaomi AMS)",
+            api: "openai-completions",
+            provider: "xiaomi-token-plan-ams",
+            base_url: "https://token-plan-ams.xiaomimimo.com/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1048576,
+            max_tokens: 131072,
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+function _xiaomi_cn_models() -> Model[] {
+    [
+        Model {
+            id: "mimo-v2.5",
+            name: "MiMo-V2.5 (Xiaomi CN)",
+            api: "openai-completions",
+            provider: "xiaomi-token-plan-cn",
+            base_url: "https://token-plan-cn.xiaomimimo.com/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1048576,
+            max_tokens: 131072,
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "mimo-v2.5-pro",
+            name: "MiMo-V2.5-Pro (Xiaomi CN)",
+            api: "openai-completions",
+            provider: "xiaomi-token-plan-cn",
+            base_url: "https://token-plan-cn.xiaomimimo.com/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1048576,
+            max_tokens: 131072,
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+function _xiaomi_sgp_models() -> Model[] {
+    [
+        Model {
+            id: "mimo-v2.5",
+            name: "MiMo-V2.5 (Xiaomi SGP)",
+            api: "openai-completions",
+            provider: "xiaomi-token-plan-sgp",
+            base_url: "https://token-plan-sgp.xiaomimimo.com/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1048576,
+            max_tokens: 131072,
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "mimo-v2.5-pro",
+            name: "MiMo-V2.5-Pro (Xiaomi SGP)",
+            api: "openai-completions",
+            provider: "xiaomi-token-plan-sgp",
+            base_url: "https://token-plan-sgp.xiaomimimo.com/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1048576,
+            max_tokens: 131072,
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+// Ant Ling lineup transcribed verbatim from pi's generate-models static
+// block (not on models.dev): Ling flash + Ring reasoning flagship.
+function _ant_ling_models() -> Model[] {
+    [
+        Model {
+            id: "Ling-2.6-flash",
+            name: "Ling 2.6 Flash",
+            api: "openai-completions",
+            provider: "ant-ling",
+            base_url: "https://api.ant-ling.com/v1",
+            reasoning: false,
+            input: ["text"],
+            context_window: 262144,
+            max_tokens: 65536,
+            cost: ModelCost { input: 0.01, output: 0.02, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "Ring-2.6-1T",
+            name: "Ring 2.6 1T",
+            api: "openai-completions",
+            provider: "ant-ling",
+            base_url: "https://api.ant-ling.com/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 262144,
+            max_tokens: 65536,
+            cost: ModelCost { input: 0.06, output: 0.25, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+// MiniMax CN flagships (models.dev minimax-cn, 2026-09) on the domestic
+// anthropic-messages endpoint.
+function _minimax_cn_models() -> Model[] {
+    [
+        Model {
+            id: "MiniMax-M2.5",
+            name: "MiniMax-M2.5 (CN)",
+            api: "anthropic-messages",
+            provider: "minimax-cn",
+            base_url: "https://api.minimaxi.com/anthropic",
+            reasoning: true,
+            input: ["text"],
+            context_window: 204800,
+            max_tokens: 131072,
+            cost: ModelCost { input: 0.3, output: 1.2, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "MiniMax-M2.1",
+            name: "MiniMax-M2.1 (CN)",
+            api: "anthropic-messages",
+            provider: "minimax-cn",
+            base_url: "https://api.minimaxi.com/anthropic",
+            reasoning: true,
+            input: ["text"],
+            context_window: 204800,
+            max_tokens: 131072,
+            cost: ModelCost { input: 0.3, output: 1.2, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+// Moonshot CN flagships (models.dev moonshotai-cn, 2026-09).
+function _moonshotai_cn_models() -> Model[] {
+    [
+        Model {
+            id: "kimi-k2.5",
+            name: "Kimi K2.5 (CN)",
+            api: "openai-completions",
+            provider: "moonshotai-cn",
+            base_url: "https://api.moonshot.cn/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 262144,
+            max_tokens: 262144,
+            cost: ModelCost { input: 0.6, output: 3.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "kimi-k3",
+            name: "Kimi K3 (CN)",
+            api: "openai-completions",
+            provider: "moonshotai-cn",
+            base_url: "https://api.moonshot.cn/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1048576,
+            max_tokens: 131072,
+            cost: ModelCost { input: 3.0, output: 15.0, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+// Qwen Token Plan CN (models.dev alibaba-token-plan-cn, 2026-09).
+function _qwen_token_plan_cn_models() -> Model[] {
+    [
+        Model {
+            id: "qwen3.7-max",
+            name: "Qwen3.7 Max (CN)",
+            api: "openai-completions",
+            provider: "qwen-token-plan-cn",
+            base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1000000,
+            max_tokens: 131072,
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "qwen3.6-plus",
+            name: "Qwen3.6 Plus (CN)",
+            api: "openai-completions",
+            provider: "qwen-token-plan-cn",
+            base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1000000,
+            max_tokens: 65536,
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+// Individual is pi's narrower QWEN_TOKEN_PLAN_INDIVIDUAL_MODEL_IDS view
+// over the international source (models.dev alibaba-token-plan).
+function _qwen_token_plan_individual_models() -> Model[] {
+    [
+        Model {
+            id: "qwen3.7-max",
+            name: "Qwen3.7 Max (Individual)",
+            api: "openai-completions",
+            provider: "qwen-token-plan-individual",
+            base_url: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1000000,
+            max_tokens: 131072,
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "deepseek-v4-pro-0813",
+            name: "DeepSeek V4 Pro 0813 (Individual)",
+            api: "openai-completions",
+            provider: "qwen-token-plan-individual",
+            base_url: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1000000,
+            max_tokens: 384000,
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
+// Z.AI Coding CN (models.dev zhipuai-coding-plan, 2026-09) on the
+// bigmodel.cn endpoint.
+function _zai_coding_cn_models() -> Model[] {
+    [
+        Model {
+            id: "glm-5.3",
+            name: "GLM-5.3 (CN)",
+            api: "openai-completions",
+            provider: "zai-coding-cn",
+            base_url: "https://open.bigmodel.cn/api/coding/paas/v4",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1000000,
+            max_tokens: 131072,
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: null, cache_write: null },
+        },
+        Model {
+            id: "glm-5.3-flash",
+            name: "GLM-5.3-Flash (CN)",
+            api: "openai-completions",
+            provider: "zai-coding-cn",
+            base_url: "https://open.bigmodel.cn/api/coding/paas/v4",
+            reasoning: true,
+            input: ["text"],
+            context_window: 1000000,
+            max_tokens: 131072,
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: null, cache_write: null },
+        },
+    ]
+}
+
 function GetModel(id: string) -> Model? {
     for (let m in ListAllModels()) {
         if (m.id == id) {
@@ -916,4 +1441,145 @@ function ModelSupportsImage(id: string) -> bool {
             ok
         },
     }
+}
+
+// bi#89: host-owned catalog refresh, BAML-validated. The host fetches the
+// remote listing (fetch/dedupe/abort are host concerns — see
+// src/models.ts refreshCatalog, mirroring pi's per-runtime refresh
+// coordinator); every candidate entry passes through here before it can
+// join the overlay. Valid entries come out as full Model rows (the
+// validated catalog schema); anything else becomes a loud error and never
+// reaches the overlay. Strict on purpose: unknown provider poisons the
+// whole batch, and each entry needs a bare id (no provider/id scoped
+// form), a known wire arm, and positive context_window/max_tokens — the
+// host fetcher enriches wire listings that lack them. First-valid-wins
+// on duplicate ids.
+class RefreshedModel {
+    id: string,
+    name: string?,
+    api: string?,
+    reasoning: bool?,
+    context_window: int?,
+    max_tokens: int?,
+}
+
+class RefreshEntryError {
+    id: string,
+    reason: string,
+}
+
+class RefreshedValidation {
+    valid: Model[],
+    errors: RefreshEntryError[],
+}
+
+class CheckedRefreshedEntry {
+    model: Model?,
+    error: string?,
+}
+
+function _refresh_api_arms() -> string[] {
+    ["anthropic-messages", "openai-completions", "openai-responses", "google", "azure-responses"]
+}
+
+function _check_refreshed_entry(
+    p: Provider,
+    e: RefreshedModel,
+    seen: string[],
+) -> CheckedRefreshedEntry {
+    if (e.id.length() == 0) {
+        return CheckedRefreshedEntry { model: null, error: "empty model id" };
+    }
+    if (!(e.id.index_of("/") is null)) {
+        return CheckedRefreshedEntry {
+            model: null,
+            error: `scoped id "${e.id}" — refresh entries are bare ids`,
+        };
+    }
+    if (seen.includes(e.id)) {
+        return CheckedRefreshedEntry { model: null, error: `duplicate id "${e.id}" — first entry wins` };
+    }
+    let api = e.api ?? p.api;
+    if (!_refresh_api_arms().includes(api)) {
+        return CheckedRefreshedEntry { model: null, error: `unknown api "${api}" for "${e.id}"` };
+    }
+    match (e.context_window) {
+        null => CheckedRefreshedEntry { model: null, error: `missing context_window for "${e.id}"` },
+        let cw: int => {
+            match (e.max_tokens) {
+                null => {
+                    CheckedRefreshedEntry { model: null, error: `missing max_tokens for "${e.id}"` }
+                },
+                let mt: int => {
+                    if (cw < 1) {
+                        CheckedRefreshedEntry {
+                            model: null,
+                            error: `non-positive context_window for "${e.id}"`,
+                        }
+                    } else if (mt < 1) {
+                        CheckedRefreshedEntry {
+                            model: null,
+                            error: `non-positive max_tokens for "${e.id}"`,
+                        }
+                    } else {
+                        CheckedRefreshedEntry {
+                            model: Model {
+                                id: e.id,
+                                name: e.name ?? e.id,
+                                api: api,
+                                provider: p.id,
+                                base_url: p.base_url,
+                                reasoning: e.reasoning ?? false,
+                                input: ["text"],
+                                context_window: cw,
+                                max_tokens: mt,
+                                cost: ModelCost {
+                                    input: 0.0,
+                                    output: 0.0,
+                                    cache_read: null,
+                                    cache_write: null,
+                                },
+                            },
+                            error: null,
+                        }
+                    }
+                },
+            }
+        },
+    }
+}
+
+function validate_refreshed_models(
+    provider: string,
+    entries: RefreshedModel[],
+) -> RefreshedValidation {
+    let valid: Model[] = [];
+    let errors: RefreshEntryError[] = [];
+    match (GetProvider(provider)) {
+        null => {
+            for (let e in entries) {
+                errors.push(
+                    RefreshEntryError { id: e.id, reason: `unknown provider "${provider}"` },
+                )
+            }
+        },
+        let p: Provider => {
+            let seen: string[] = [];
+            for (let e in entries) {
+                let checked = _check_refreshed_entry(p, e, seen);
+                match (checked.model) {
+                    null => {
+                        errors.push(
+                            RefreshEntryError { id: e.id, reason: checked.error ?? "invalid entry" },
+                        )
+                    },
+                    let m: Model => {
+                        valid.push(m);
+                        seen.push(m.id)
+                    },
+                }
+            }
+        },
+    }
+    RefreshedValidation { valid: valid, errors: errors }
 }

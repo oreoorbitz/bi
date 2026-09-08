@@ -154,4 +154,52 @@ testset "tui" {
         let lines2 = comp2.render(80);
         assert.is_true(!lines2[0].includes(cursor_marker()));
     }
+
+    test "prompt label, glyph, and editor border shapes (bi#181)" {
+        assert.equal(format_prompt_label(0), "bi[0]>");
+        assert.equal(format_prompt_label(12), "bi[12]>");
+        assert.equal(prompt_glyph(), ">");
+        assert.equal(editor_side_border(), "│");
+        // Label splices one space after the left corner; dashes fill.
+        assert.equal(
+            render_editor_top_border("bi[0]>", 20),
+            "╭ bi[0]> ──────────╮",
+        );
+        assert.equal(render_editor_top_border("bi[0]>", 20).length(), 20);
+        // Narrow fallback drops the label, never the corners.
+        assert.equal(render_editor_top_border("bi[0]>", 10), "╭────────╮");
+        assert.equal(render_editor_top_border("bi[0]>", 1), "╭");
+        assert.equal(render_editor_bottom_border(10), "╰────────╯");
+        assert.equal(render_editor_bottom_border(1), "╰");
+    }
+
+    test "welcome frame box, label column, narrow fallback (bi#180)" {
+        let info = WelcomeInfo {
+            directory: "/tmp/dir",
+            session: "a1b2c3d4",
+            model: "claude-haiku-4-5",
+            version: "0.0.0",
+        };
+        let frame = render_welcome_frame(info, 60);
+        assert.equal(frame.length(), 11);
+        assert.is_true((frame.at(0) ?? "").starts_with("╭"));
+        assert.is_true((frame.at(10) ?? "").starts_with("╰"));
+        assert.is_true((frame.at(2) ?? "").includes("▐█▛█▛█▌"));
+        assert.is_true((frame.at(2) ?? "").includes("Welcome to bi!"));
+        assert.is_true((frame.at(3) ?? "").includes("/help"));
+        // Label column: every value starts at the same cell (14).
+        assert.equal((frame.at(5) ?? "").slice(14, 21), "/tmp/di");
+        assert.equal((frame.at(6) ?? "").slice(14, 22), "a1b2c3d4");
+        assert.equal((frame.at(7) ?? "").slice(14, 29), "claude-haiku-4-");
+        assert.equal((frame.at(8) ?? "").slice(14, 19), "0.0.0");
+        // Narrow (< 24) drops the box entirely (kimi precedent).
+        let narrow = render_welcome_frame(info, 20);
+        assert.equal(narrow.length(), 3);
+        assert.is_true(!(narrow.at(0) ?? "").includes("╭"));
+        assert.is_true((narrow.at(2) ?? "").starts_with("Model: "));
+        // Themed render keeps the text, adds SGR bytes only.
+        let themed = render_welcome_frame(info, 60, theme = "default");
+        assert.is_true((themed.at(2) ?? "").includes("Welcome to bi!"));
+        assert.is_true((themed.at(0) ?? "").length() > 60);
+    }
 }

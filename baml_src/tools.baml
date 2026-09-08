@@ -297,6 +297,40 @@ function edit_missing_text(path: string, index: int) -> string {
     `edit ${index} does not match "${path}": oldText not found — no edits applied`
 }
 
+// bi#150 bash execution policy. The host enforces; BAML owns every
+// refusal string. Only allowlisted commands run (first token of the
+// command line); everything else refuses with the policy reason named.
+// Runs die at their timeout (killed, never orphaned) and secret-looking
+// output is redacted from the transcript before the model sees it.
+function refuse_bash_blocked(command: string, allowed: string) -> string {
+    `refusing to run "${command}": command not on the bash allowlist (${allowed}) — run an allowlisted command instead`
+}
+
+function refuse_bash_timeout(command: string, timeout_secs: int) -> string {
+    `bash timed out and was killed after ${timeout_secs}s: "${command}" — retry with a larger timeout or a narrower command`
+}
+
+// bi#151 read-only execution policy. The host enforces; BAML owns every
+// refusal string. read/ls/grep/find reuse the write jail (cwd jail +
+// symlink escapes refuse), serve text only (NUL refuses), and cap output
+// (oversize single reads refuse with the cap named; search tools truncate
+// instead and say so in the payload).
+function refuse_read_outside_root(tool: string, path: string) -> string {
+    `refusing ${tool} outside the project root: "${path}" — paths resolve inside the working directory (symlink escapes included)`
+}
+
+function refuse_read_too_large(tool: string, path: string, limit: int) -> string {
+    `refusing ${tool} "${path}": content exceeds the ${limit} byte tool cap — narrow the read (offset/limit) or pick a smaller file`
+}
+
+function refuse_read_binary(tool: string, path: string) -> string {
+    `refusing ${tool} "${path}": binary content looks present (NUL byte) — read tools serve text only`
+}
+
+// Advertise/execute parity: ListTools names ONLY tools with a host
+// executor in src/tools.ts handleTool (bi#150 bash, bi#151 read/ls/grep/find,
+// bi#77 write/edit, plus bais_*/report_*). Delisting was the incident fix;
+// the host-side gate (bi#152 tool-parity.mjs) pins it there too.
 function ListTools() -> ToolSpec[] {
     [
         _tool_read(),

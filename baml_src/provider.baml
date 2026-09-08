@@ -7,6 +7,15 @@
 // vocabulary ("openai-completions" | "anthropic-messages" |
 // "openai-responses" | "google") plus bi's "azure-responses" so turn.baml
 // routes catalog-driven.
+//
+// bi#15 non-goals (no BAML client arm, deliberately unlisted rather than
+// listed-but-broken): amazon-bedrock (bedrockConverseStreamApi — SigV4
+// via the AWS SDK, and the issue bars provider SDK deps), google-vertex
+// (ADC OAuth2 + {location}-aiplatform endpoint shape, no vertex arm),
+// openai-codex (OAuth-only + SSE/WebSocket/zstd hybrid wire, no codex
+// arm), radius (pi-messages, pi's own gateway protocol, no arm).
+// openrouter-images is not a provider row either (pi id "openrouter") —
+// deferred to bi#17's image lane.
 
 class Provider {
     id: string,
@@ -205,6 +214,149 @@ function _providers() -> Provider[] {
             base_url: "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1",
             api: "openai-completions",
             auth_env: "CLOUDFLARE_API_KEY",
+        },
+        // AI Gateway pins pi's OpenAI passthrough (CLOUDFLARE_AI_GATEWAY_OPENAI_BASE_URL
+        // in pi/packages/ai/src/api/cloudflare.ts — the /compat unified
+        // endpoint stays a host concern until /v1/responses lands there).
+        // Both {VAR} placeholders materialize per request like workers-ai;
+        // a missing gateway id fails fast naming CLOUDFLARE_GATEWAY_ID.
+        Provider {
+            id: "cloudflare-ai-gateway",
+            name: "Cloudflare AI Gateway",
+            base_url: "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai",
+            api: "openai-responses",
+            auth_env: "CLOUDFLARE_API_KEY",
+        },
+        // Vercel AI Gateway is BYO-provider: pi routes it through the
+        // anthropic-messages arm against the bare gateway URL (the model
+        // id carries the upstream, e.g. anthropic/claude-opus-4.8).
+        Provider {
+            id: "vercel-ai-gateway",
+            name: "Vercel AI Gateway",
+            base_url: "https://ai-gateway.vercel.sh",
+            api: "anthropic-messages",
+            auth_env: "AI_GATEWAY_API_KEY",
+        },
+        // pi's github-copilot serves each model on one of three arms;
+        // bi pins openai-completions (gpt-6-astra, kimi-k2.7-code) and
+        // sends pi's COPILOT_STATIC_HEADERS on every request (the API
+        // rejects callers without Copilot-Integration-Id) — see
+        // provider_headers in turn.baml. OAuth (subscription) deferred
+        // like the other lazyOAuth flows; the COPILOT_GITHUB_TOKEN
+        // api-key path works the same wire.
+        Provider {
+            id: "github-copilot",
+            name: "GitHub Copilot",
+            base_url: "https://api.individual.githubcopilot.com",
+            api: "openai-completions",
+            auth_env: "COPILOT_GITHUB_TOKEN",
+        },
+        // OpenCode Zen serves per-model APIs (pi maps provider.npm:
+        // @ai-sdk/openai → responses, anthropic → anthropic-messages,
+        // else completions). bi pins openai-completions on the /v1 base
+        // (https://opencode.ai/zen + /v1, pi's generate-models basePath).
+        Provider {
+            id: "opencode",
+            name: "OpenCode Zen",
+            base_url: "https://opencode.ai/zen/v1",
+            api: "openai-completions",
+            auth_env: "OPENCODE_API_KEY",
+        },
+        // Same shape as opencode on the Go variant's basePath.
+        Provider {
+            id: "opencode-go",
+            name: "OpenCode Go",
+            base_url: "https://opencode.ai/zen/go/v1",
+            api: "openai-completions",
+            auth_env: "OPENCODE_API_KEY",
+        },
+        // Xiaomi MiMo on the API billing endpoint (keys from
+        // platform.xiaomimimo.com); the three token-plan variants below
+        // cover the prepaid regional endpoints (pi's xiaomiVariants).
+        Provider {
+            id: "xiaomi",
+            name: "Xiaomi",
+            base_url: "https://api.xiaomimimo.com/v1",
+            api: "openai-completions",
+            auth_env: "XIAOMI_API_KEY",
+        },
+        Provider {
+            id: "xiaomi-token-plan-ams",
+            name: "Xiaomi Token Plan AMS",
+            base_url: "https://token-plan-ams.xiaomimimo.com/v1",
+            api: "openai-completions",
+            auth_env: "XIAOMI_TOKEN_PLAN_AMS_API_KEY",
+        },
+        Provider {
+            id: "xiaomi-token-plan-cn",
+            name: "Xiaomi Token Plan CN",
+            base_url: "https://token-plan-cn.xiaomimimo.com/v1",
+            api: "openai-completions",
+            auth_env: "XIAOMI_TOKEN_PLAN_CN_API_KEY",
+        },
+        Provider {
+            id: "xiaomi-token-plan-sgp",
+            name: "Xiaomi Token Plan SGP",
+            base_url: "https://token-plan-sgp.xiaomimimo.com/v1",
+            api: "openai-completions",
+            auth_env: "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
+        },
+        // Ant Ling serves openai-completions (pi hardcodes the Ling/Ring
+        // lineup in generate-models — not on models.dev — transcribed
+        // verbatim into _ant_ling_models).
+        Provider {
+            id: "ant-ling",
+            name: "Ant Ling",
+            base_url: "https://api.ant-ling.com/v1",
+            api: "openai-completions",
+            auth_env: "ANT_LING_API_KEY",
+        },
+        // MiniMax CN is the same anthropic-messages shape as minimax on
+        // the domestic endpoint (api.minimaxi.com, pi's minimaxVariants).
+        Provider {
+            id: "minimax-cn",
+            name: "MiniMax CN",
+            base_url: "https://api.minimaxi.com/anthropic",
+            api: "anthropic-messages",
+            auth_env: "MINIMAX_CN_API_KEY",
+        },
+        // Moonshot CN mirrors moonshotai on api.moonshot.cn. DIVERGENCE
+        // from the one-canonical-var rule is pi's own: both rows share
+        // MOONSHOT_API_KEY, so ProviderAuthEnv agrees with pi here.
+        Provider {
+            id: "moonshotai-cn",
+            name: "Moonshot AI CN",
+            base_url: "https://api.moonshot.cn/v1",
+            api: "openai-completions",
+            auth_env: "MOONSHOT_API_KEY",
+        },
+        // Qwen Token Plan CN on the Beijing endpoint (pi's
+        // alibaba-token-plan-cn source, sk-sp- keys).
+        Provider {
+            id: "qwen-token-plan-cn",
+            name: "Qwen Token Plan CN",
+            base_url: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            api: "openai-completions",
+            auth_env: "QWEN_TOKEN_PLAN_CN_API_KEY",
+        },
+        // Individual reuses the international endpoint with pi's narrower
+        // QWEN_TOKEN_PLAN_INDIVIDUAL_MODEL_IDS catalog — and pi's key:
+        // same QWEN_TOKEN_PLAN_API_KEY var as qwen-token-plan.
+        Provider {
+            id: "qwen-token-plan-individual",
+            name: "Qwen Token Plan Individual",
+            base_url: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+            api: "openai-completions",
+            auth_env: "QWEN_TOKEN_PLAN_API_KEY",
+        },
+        // Z.AI Coding CN on the bigmodel.cn endpoint (pi's
+        // zhipuai-coding-plan source, not the api.z.ai one).
+        Provider {
+            id: "zai-coding-cn",
+            name: "Z.AI Coding CN",
+            base_url: "https://open.bigmodel.cn/api/coding/paas/v4",
+            api: "openai-completions",
+            auth_env: "ZAI_CODING_CN_API_KEY",
         },
     ]
 }

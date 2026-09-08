@@ -27,6 +27,62 @@ function first_present(items: string?[]) -> string {
     out
 }
 
+// bi#171: user-facing terminal notifications. BAML shapes the text
+// (sanitize + join + bound); the host owns the bytes (OSC 9 / BEL /
+// tmux DCS) and the enabled / unfocused / TTY gates. Shaping here keeps
+// model and session text from reaching the terminal raw.
+
+// Valid `notifications` settings values: off (or unset) emits zero
+// bytes; unfocused pages only a backgrounded terminal; always pages
+// every completed turn. Called from settings.baml validation.
+function is_valid_notifications_mode(mode: string) -> bool {
+    mode == "off" || mode == "unfocused" || mode == "always"
+}
+
+// One text field with no control bytes: C0/C1 controls and whitespace
+// runs become single spaces, ends trimmed. `is_control` is Unicode Cc
+// (0x00-0x1F, 0x7F-0x9F) — the same set kimi strips — so BEL/ESC can
+// never terminate or forge the OSC 9 payload the host wraps.
+function sanitize_notification_text(value: string) -> string {
+    //# Map controls/whitespace to spaces
+    let parts = value.chars().map((ch) -> {
+        if (ch.is_control() || ch.is_whitespace()) {
+            " "
+        } else {
+            ch
+        }
+    });
+    //# Collapse runs, trim ends
+    let joined = parts.join("");
+    while (joined.includes("  ")) {
+        joined = joined.replace_all("  ", " ")
+    }
+    joined.trim()
+}
+
+// "title: body" capped at 240 chars (kimi's
+// MAX_TERMINAL_NOTIFICATION_MESSAGE_LENGTH). Empty sides drop out;
+// fully-empty input shapes to "" and the host emits zero bytes.
+function format_terminal_notification(title: string, body: string?) -> string {
+    let t = sanitize_notification_text(title);
+    let b = match (body) {
+        null => "",
+        let s: string => sanitize_notification_text(s),
+    };
+    let message = if (t != "" && b != "") {
+        `${t}: ${b}`
+    } else if (t != "") {
+        t
+    } else {
+        b
+    };
+    if (message.length() > 240) {
+        message.slice(0, 240)
+    } else {
+        message
+    }
+}
+
 // One prompt-context line per validated event, null for Heartbeat
 // liveness. Expiry fires on the LeaseExpiring type OR on expiry keys in
 // the body (the hub sets either); the host precomputes has_expiry and

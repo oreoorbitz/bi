@@ -4,6 +4,7 @@
 
 import { loop_context_new, validate_continue, next_loop_state, LoopState } from "../baml_sdk/index.js";
 import { runAgent, type ToolHandler, type ToolSpec } from "./agent.js";
+import type { CompactionOptions } from "./compaction.js";
 
 export async function runBiLoop(
 	prompt: string,
@@ -18,6 +19,13 @@ export async function runBiLoop(
 		toolHandler?: ToolHandler;
 		history?: any[];
 		baseUrl?: string | null;
+		// bi#97: compaction transcript-block emission rides the existing
+		// options channel — runAgent's maybeCompact call already forwards
+		// options.compaction to maybeCompactHistory.
+		compaction?: CompactionOptions;
+		// bi#168: per-turn assistant text callback — fires inside the
+		// loop, before runBiLoop resolves, so the REPL can stream it.
+		onAssistantText?: (text: string, turnIndex: number) => void | Promise<void>;
 	},
 ): Promise<{ messages: any[]; failure?: { kind: string; message: string } }> {
 	const ctx = loop_context_new(opts.maxTurns ?? 5, Math.random().toString(16).slice(2, 8));
@@ -41,6 +49,8 @@ export async function runBiLoop(
 		tools: opts.tools,
 		toolHandler: opts.toolHandler,
 		history: opts.history,
+		compaction: opts.compaction,
+		onAssistantText: opts.onAssistantText,
 	});
 
 	// Update BAML loop state via next_loop_state

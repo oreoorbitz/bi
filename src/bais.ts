@@ -25,7 +25,9 @@ export type BaisEdge = { from: string; to: string; kind: string };
 // lease, null when unclaimed. BAML serialize round-trips them untouched.
 export type BaisFile = { issue: BaisIssue; edges: BaisEdge[]; holder: string | null; lease: string | null };
 
-// Resolve the BAIS issues directory. Prefer the nearest .bais/issues
+// Resolve the BAIS issues directory. Prefer the nearest .bais/issues.
+// Root .bais/ is the ecosystem hub (goal.toml lives there); per-dir hubs
+// resolve first when present, otherwise fall through to the root.
 // (cwd → bais project → repo dot). Mirrors `rg` file-per-issue layout.
 // For bi, primary is bi/.bais/issues — handle both `cwd==bi` and `cwd==orion-learn-baml`.
 function resolveIssuesDir(from: string = process.cwd()): string | null {
@@ -173,6 +175,136 @@ export async function loadBaisIssues(dir?: string): Promise<BaisLoad> {
 // short list is better than a fabricated issue, but it is still worth surfacing.
 export async function listBaisIssues(dir?: string): Promise<BaisFile[]> {
 	return (await loadBaisIssues(dir)).issues;
+}
+
+// Mirror of BAML `blast_radii` (bi#122) — same mirror rationale as
+// filterReadyIssues above (proposals/05: enums nested in class fields do
+// not survive the FFI boundary, so BAML owns the definition proved by
+// `baml test` and this mirrors it — keep the two in step). Per issue, the
+// transitive dependents through DependsOn/Blocks, split into open_downstream
+// (work actually held) and total_downstream (every declared dependent).
+export type BlastRadius = { id: string; open_downstream: number; total_downstream: number };
+
+// Mirrors of BAML parse_file_claims / dispatch_pack (bi#123) — same rationale.
+// `Files:` body lines declare the footprint; dispatchPack is the dry-run pack
+// (ready + unleased, greedy by radius, no file clashes). Never mutates.
+export type FileClaim = { issue_id: string; files: string[] };
+export type AgentSlot = { slot: number; issue_id: string };
+
+export function parseFileClaims(body: string): string[] {
+	const out: string[] = [];
+	for (const line of (body ?? "").split("\n")) {
+		const t = line.trim();
+		if (!t.startsWith("Files:")) continue;
+		let rest = t.slice("Files:".length).trim();
+		const hash = rest.indexOf("#");
+		if (hash !== -1) rest = rest.slice(0, hash).trim();
+		for (const part of rest.split(" ")) {
+			const p = part.trim();
+			if (p !== "" && !out.includes(p)) out.push(p);
+		}
+	}
+	return out;
+}
+
+export function blastRadii(all: BaisFile[]): BlastRadius[] {
+	const edges = all.flatMap((f) => f.edges);
+	const statusById = new Map(all.map((f) => [f.issue.id, f.issue.status]));
+	const directDependents = (id: string): string[] => {
+		const out: string[] = [];
+		for (const e of edges) {
+			if ((e.kind === "DependsOn" || e.kind === "Blocks") && e.to === id && !out.includes(e.from)) {
+				out.push(e.from);
+			}
+		}
+		return out;
+	};
+	return all.map((f) => {
+		const seen: string[] = [];
+		let frontier = directDependents(f.issue.id);
+		while (frontier.length > 0) {
+			const next: string[] = [];
+			for (const id of frontier) {
+				if (seen.includes(id)) continue;
+				seen.push(id);
+				for (const d of directDependents(id)) {
+					if (!seen.includes(d)) next.push(d);
+				}
+			}
+			frontier = next;
+		}
+		let open = 0;
+		let total = 0;
+		for (const id of seen) {
+			if (id === f.issue.id) continue;
+			total += 1;
+			if (statusById.get(id) === "Open") open += 1;
+		}
+		return { id: f.issue.id, open_downstream: open, total_downstream: total };
+	});
+}
+
+// hub#175: unknown footprints (no `Files:` line — a bare `Files:` still
+// counts as declared) are mutually exclusive in a swipe pack. Mirror of the
+// bais/src/graph.ts exclusion, which mirrors the scripts-lane
+// splitUnknownPack in bais/scripts/briefs.mjs: the greedy pick fills the
+// budget, then the first unknown in slot order keeps its slot and the rest
+// are withheld, renumbered dense. Keep the two dispatchPack copies in sync.
+export function isDeclaredFootprint(body: string): boolean {
+	return (body ?? "").split("\n").some((l) => l.trim().startsWith("Files:"));
+}
+
+// hub#175 warning lines — verbatim mirrors of warnUnknownWithheld /
+// warnUnknownShared in bais/scripts/briefs.mjs (see bais/src/graph.ts).
+export function warnUnknownWithheld(ids: string[]): string {
+	const list = [...ids].map(String);
+	const noun = list.length === 1 ? "footprint" : "footprints";
+	return `[bais] unknown ${noun} withheld from swipe pack: ${list.join(", ")} (no Files: line proves no clash-freedom — at most one unknown per pack; declare Files: first per bi#125)`;
+}
+
+export function warnUnknownShared(unknownId: string, declaredIds: string[]): string {
+	return `[bais] unknown footprint ${unknownId} shares a swipe pack with declared ${[...declaredIds].map(String).join(", ")} (no Files: — confirm scope with the operator before writing)`;
+}
+
+export function dispatchPack(all: BaisFile[], leased: string[], footprints: Map<string, string[]>, budget: number): AgentSlot[] {
+	const slots: AgentSlot[] = [];
+	if (budget <= 0) return slots;
+	const radii = new Map(blastRadii(all).map((r) => [r.id, r]));
+	const ready = filterReadyIssues(all);
+	const bodies = new Map(all.map((f) => [f.issue.id, f.issue.body ?? ""]));
+	const filesFor = (id: string): string[] => footprints.get(id) ?? [];
+	const clash = (a: string[], b: string[]): boolean => a.some((x) => b.includes(x));
+	const packed: string[] = [];
+	const packedFiles: string[] = [];
+	while (slots.length < budget) {
+		let bestId = "";
+		let bestOpen = -1;
+		for (const c of ready) {
+			if (packed.includes(c.issue.id) || leased.includes(c.issue.id)) continue;
+			const open = radii.get(c.issue.id)?.open_downstream ?? 0;
+			if (clash(filesFor(c.issue.id), packedFiles)) continue;
+			if (open > bestOpen || (open === bestOpen && (bestId === "" || c.issue.id < bestId))) {
+				bestId = c.issue.id;
+				bestOpen = open;
+			}
+		}
+		if (bestId === "") break;
+		packed.push(bestId);
+		for (const f of filesFor(bestId)) {
+			if (!packedFiles.includes(f)) packedFiles.push(f);
+		}
+		slots.push({ slot: slots.length, issue_id: bestId });
+	}
+	const kept: AgentSlot[] = [];
+	let seenUnknown = false;
+	for (const s of slots) {
+		if (!isDeclaredFootprint(bodies.get(s.issue_id) ?? "")) {
+			if (seenUnknown) continue;
+			seenUnknown = true;
+		}
+		kept.push({ slot: kept.length, issue_id: s.issue_id });
+	}
+	return kept;
 }
 
 // Mirror of BAML `ready_issues` / `is_blocked` (bais/baml_src/main.baml).
@@ -338,6 +470,49 @@ async function serializeViaBaisBaml(file: BaisFile): Promise<string> {
 	return out;
 }
 
+export const BAIS_EDGE_KINDS = ["Blocks", "DependsOn", "SubtaskOf", "DuplicateOf", "Related", "Fixes", "Replaces"];
+
+function assertEdgeKind(kind: string): void {
+	if (!BAIS_EDGE_KINDS.includes(kind)) throw new Error(`unknown edge kind ${JSON.stringify(kind)} — one of ${BAIS_EDGE_KINDS.join(", ")}`);
+}
+
+// Precedence adjacency mirrors precedesEdge (only Blocks/DependsOn order
+// work): BFS from `b` to `a`, returning [b, …, a], or null when no path.
+// The link refusal below reports the full closed cycle from this path.
+function precedencePath(edges: BaisEdge[], a: string, b: string): string[] | null {
+	const next = (id: string): string[] => {
+		const out: string[] = [];
+		for (const e of edges) {
+			if (e.kind === "Blocks" && e.from === id) out.push(e.to);
+			else if (e.kind === "DependsOn" && e.to === id) out.push(e.from);
+		}
+		return out;
+	};
+	const prev = new Map<string, string>();
+	const seen = new Set([b]);
+	const q = [b];
+	while (q.length) {
+		const cur = q.shift()!;
+		if (cur === a) {
+			const path = [cur];
+			let n = cur;
+			while (n !== b) {
+				n = prev.get(n)!;
+				path.unshift(n);
+			}
+			return path;
+		}
+		for (const id of next(cur)) {
+			if (!seen.has(id)) {
+				seen.add(id);
+				prev.set(id, cur);
+				q.push(id);
+			}
+		}
+	}
+	return null;
+}
+
 export async function createBaisIssue(opts: {
 	title: string;
 	kind?: string;
@@ -345,6 +520,7 @@ export async function createBaisIssue(opts: {
 	body?: string;
 	status?: string;
 	dir?: string;
+	edges?: { kind: string; to: string }[];
 }): Promise<BaisFile> {
 	const dir = opts.dir ?? resolveIssuesDir() ?? join(process.cwd(), "bi", ".bais", "issues");
 	if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -355,6 +531,17 @@ export async function createBaisIssue(opts: {
 	// New ids carry the owning project's scope (bi#11 in bi, tt#01 in tt) —
 	// a hardcoded "bi" prefix would mis-scope every other project's issues.
 	const id = nextBaisId(targetDir, baisProjectName(targetDir));
+	// bi#111: edges declared at birth. Ends must already exist (Missing
+	// fails loudly per bais check §4.3); a fresh node has no inbound, so
+	// birth edges cannot close a cycle — kind + existence is the check.
+	const birthEdges: BaisEdge[] = [];
+	for (const e of opts.edges ?? []) {
+		assertEdgeKind(e.kind);
+		if (e.to === id) throw new Error(`cannot link ${id} to itself`);
+		if (!existsSync(join(targetDir, `${e.to}.toml`))) throw new Error(`unknown issue ${JSON.stringify(e.to)} — link ends must exist (bais check §4.3 Missing fails loudly)`);
+		if (birthEdges.some((b) => b.to === e.to && b.kind === e.kind)) throw new Error(`${id} ${e.kind} ${e.to} is already linked`);
+		birthEdges.push({ from: id, to: e.to, kind: e.kind });
+	}
 	const file: BaisFile = {
 		issue: {
 			id,
@@ -366,7 +553,7 @@ export async function createBaisIssue(opts: {
 			source: null,
 			body: opts.body ?? `Seeded via \`bi bais new\` for ${id}.`,
 		},
-		edges: [],
+		edges: birthEdges,
 		holder: null,
 		lease: null,
 	};
@@ -430,6 +617,42 @@ export async function moveBaisIssue(id: string, status: string, dir?: string, cl
 	await validateViaBaisBaml(toml);
 	writeFileSync(fp, toml);
 	return file;
+}
+
+// bi#111: link issues without hand-editing TOML. Edges live in the FROM
+// file only (same convention as hand-written [[edge]] tables); BAML
+// serializes + re-validates, so a malformed link never reaches disk.
+// Write-time validation: known kind, existing ends (Missing fails loudly
+// per bais check §4.3), no self-links, no exact duplicates, and no new
+// Blocks/DependsOn cycle (refused with the cycle path).
+export async function linkBaisIssues(from: string, kind: string, to: string, dir?: string): Promise<BaisFile> {
+	assertEdgeKind(kind);
+	if (from === to) throw new Error(`cannot link ${from} to itself`);
+	const issuesDir = dir ?? resolveIssuesDir() ?? join(process.cwd(), "bi/.bais/issues");
+	if (!existsSync(issuesDir)) throw new Error(`No .bais/issues at ${issuesDir}`);
+	const { issues } = await loadBaisIssues(issuesDir);
+	const byId = new Map(issues.map((f) => [f.issue.id, f]));
+	const fromFile = byId.get(from);
+	if (!fromFile) throw new Error(`unknown issue ${JSON.stringify(from)} — link ends must exist (bais check §4.3 Missing fails loudly)`);
+	if (!byId.get(to)) throw new Error(`unknown issue ${JSON.stringify(to)} — link ends must exist (bais check §4.3 Missing fails loudly)`);
+	if (fromFile.edges.some((e) => e.from === from && e.to === to && e.kind === kind)) throw new Error(`${from} ${kind} ${to} is already linked`);
+	const all = issues.flatMap((f) => f.edges);
+	// The new edge (from -kind-> to) closes a cycle iff precedence already
+	// flows back: Blocks from→to needs a to⇝from path, DependsOn to→from
+	// needs a from⇝to path. Other kinds never order (precedesEdge), so
+	// only Blocks/DependsOn can close one.
+	const back = kind === "Blocks" ? precedencePath(all, from, to) : kind === "DependsOn" ? precedencePath(all, to, from) : null;
+	if (back) {
+		// back already runs back-to-front ([to, …, from] for Blocks),
+		// so prepending the new edge's start closes the loop exactly.
+		const cycle = kind === "Blocks" ? [from, ...back] : [to, ...back];
+		throw new Error(`linking ${from} ${kind} ${to} would close a cycle: ${cycle.join(" -> ")}`);
+	}
+	fromFile.edges.push({ from, to, kind });
+	const toml = await serializeViaBaisBaml(fromFile);
+	await validateViaBaisBaml(toml);
+	writeFileSync(join(issuesDir, `${from}.toml`), toml);
+	return fromFile;
 }
 
 // Heartbeat: only the recorded holder extends a live Doing claim.
@@ -624,6 +847,10 @@ export function baisIssuesDir(dir?: string): string {
 }
 
 const SCALAR_RE = /^([A-Za-z_][A-Za-z0-9_]*) = "(.*)"$/;
+// Bare-integer scalars (severity = 2): legal TOML the header scan needs
+// nothing from. bi#112 root cause: every severity-bearing file scanned
+// unparseable, so /issues could list but never stage or mark it.
+const INT_SCALAR_RE = /^([A-Za-z_][A-Za-z0-9_]*) = (-?\d+)$/;
 
 export function scanBaisHeaders(dir?: string): BaisScan {
 	const issuesDir = issuesDirOrDefault(dir);
@@ -668,6 +895,10 @@ export function scanBaisHeaders(dir?: string): BaisScan {
 			if (!m) {
 				// Blank lines and comments are layout, not content.
 				if (line === "" || line.startsWith("#")) continue;
+				// Integer scalars are content the scan doesn't need
+				// (severity) — but only at top level: edge tables take
+				// from/to/kind strings, so an int there is off-shape.
+				if (!cur && INT_SCALAR_RE.test(line)) continue;
 				ok = false;
 				continue;
 			}

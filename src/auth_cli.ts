@@ -19,7 +19,8 @@ import { listCredentials, modifyCredential, readCredential } from "./auth.js";
 import { getOAuthFlow, resolveFlowLogin, type OAuthInteraction } from "./oauth.js";
 import { listProviders, providerExists } from "./provider.js";
 import { createInterface } from "node:readline";
-import { screenAvailable, screenAskText } from "./screen.js";
+import { promptAvailable, askText } from "./prompt.js";
+import { releaseReplTui, retainReplTui } from "./tui.js";
 
 export class AuthCliError extends Error {}
 
@@ -130,8 +131,8 @@ export async function runOAuthLogin(provider: string): Promise<void> {
 				// the login (same rejection as abort). Mid-modal abort
 				// does not close the widget — Esc is the cancel path.
 				// Pipes keep the line reader byte-identical.
-				if (screenAvailable()) {
-					screenAskText(message).then((value) => {
+				if (promptAvailable()) {
+					askText(message).then((value) => {
 						if (value === null) reject(new Error("Login cancelled"));
 						else resolve(value.trim());
 					}, reject);
@@ -150,7 +151,15 @@ export async function runOAuthLogin(provider: string): Promise<void> {
 				});
 			}),
 	};
-	const cred = await resolveFlowLogin(flow)(flow, interaction);
+	// bi#162: one lease for the whole login — repeated code/URL
+	// prompts share a single negotiation instead of one per modal.
+	retainReplTui();
+	let cred: Credential;
+	try {
+		cred = await resolveFlowLogin(flow)(flow, interaction);
+	} finally {
+		await releaseReplTui();
+	}
 	await modifyCredential(provider, () => cred);
 	console.log(`Stored oauth credential for ${provider} in ~/.bi/auth.json.`);
 }

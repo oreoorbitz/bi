@@ -2,10 +2,13 @@
 // BAML owns the plain-data spec (ListTools/GetTool), TS host owns executors
 // (actual read/write/bash + bais_*). This mirrors bi's ToolSpec handling (limitation 4).
 
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, resolve, sep } from "node:path";
-import { GetTool_async, ListTools_async, render_tool_diff_async, refuse_write_outside_root_async, refuse_write_untrusted_async, refuse_write_too_large_async, edit_missing_text_async, type ToolSpec } from "../baml_sdk/index.js";
+import { execFile } from "node:child_process";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
+import { GetTool_async, ListTools_async, render_tool_diff_async, refuse_bash_blocked_async, refuse_bash_timeout_async, refuse_read_binary_async, refuse_read_outside_root_async, refuse_read_too_large_async, refuse_write_outside_root_async, refuse_write_untrusted_async, refuse_write_too_large_async, edit_missing_text_async, type ToolSpec } from "../baml_sdk/index.js";
 import { checkBaisIssues, createBaisIssue, graphBaisIssues, loadBaisIssues, moveBaisIssue, readyBaisIssues } from "./bais.js";
+import { colorizeDiffLines } from "./diff-render.js";
 import { getStoredTrust } from "./trust.js";
 
 export type { ToolSpec } from "../baml_sdk/index.js";
@@ -52,16 +55,19 @@ export async function shapeToolResult(name: string, output: string): Promise<Sha
 }
 
 // The transcript call after a tool success: print the shaped diff lines,
-// and nothing at all unless BAML deems the payload diffable (failures and
-// plain output keep today's lines byte-identical).
-export async function emitToolDiff(name: string, output: string): Promise<void> {
+// tinted for the terminal, and nothing at all unless BAML deems the payload
+// diffable (failures and plain output keep today's lines byte-identical).
+// Theme defaults to null (pipes/tests stay byte-identical); the cli owner
+// passes its active theme at the runToolWithStatus call site.
+export async function emitToolDiff(name: string, output: string, theme: string | null = null): Promise<void> {
 	const shaped = await shapeToolResult(name, output);
-	if (shaped.diffable) for (const l of shaped.lines) console.log(l);
+	if (shaped.diffable) for (const l of await colorizeDiffLines(shaped.lines, theme)) console.log(l);
 }
 
-// bi#77: write/edit executors with cwd jail + affirmative project
-// trust. Only these two pi tools run: read/bash/ls/grep/find stay on
-// the "need host impl" error until their own issues land.
+// bi#77: write/edit executors with cwd jail + affirmative project trust.
+// bi#150 adds the bash executor (allowlist + scrubbed env + timeout/kill +
+// secret redaction); bi#151 adds the read-only executors (read/ls/grep/find)
+// reusing the same cwd jail with text-only + capped output.
 export const TOOL_WRITE_CAP = 1_000_000;
 
 // Effective trust lives in the loop (in-memory session answer + stored
@@ -72,10 +78,12 @@ export function setTrustReader(fn: () => string | null): void {
 	trustReader = fn;
 }
 
-// Resolve inside the project cwd or throw the BAML refusal. Symlink
-// escapes resolve through the nearest existing ancestor, so a link
-// pointing outside still refuses.
-async function jailResolve(p: string): Promise<string> {
+// Resolve inside the project cwd or throw the caller's BAML refusal.
+// Symlink escapes resolve through the nearest existing ancestor, and an
+// already-existing final symlink resolves fully too, so a link pointing
+// outside still refuses. The refuse callback picks the refusal string:
+// write's for write/edit, read's for the read-only tools (bi#151).
+async function jailResolve(p: string, refuse: (path: string) => Promise<string>): Promise<string> {
 	const root = realpathSync(process.cwd());
 	const abs = resolve(root, p);
 	let probe = abs;
@@ -84,9 +92,9 @@ async function jailResolve(p: string): Promise<string> {
 		if (parent === probe) break;
 		probe = parent;
 	}
-	const real = probe === abs ? abs : realpathSync(probe) + abs.slice(probe.length);
+	const real = existsSync(abs) ? realpathSync(abs) : realpathSync(probe) + abs.slice(probe.length);
 	if (real !== root && !real.startsWith(root + sep)) {
-		throw new Error(await refuse_write_outside_root_async(p));
+		throw new Error(await refuse(p));
 	}
 	return real;
 }
@@ -112,7 +120,7 @@ async function execWrite(args: Record<string, unknown>): Promise<string> {
 		throw new Error(await refuse_write_too_large_async(p, TOOL_WRITE_CAP));
 	}
 	await gateWriteTrust();
-	const abs = await jailResolve(p);
+	const abs = await jailResolve(p, refuse_write_outside_root_async);
 	const before = existsSync(abs) ? readFileSync(abs, "utf8") : "";
 	if (Buffer.byteLength(before) > TOOL_WRITE_CAP) {
 		throw new Error(await refuse_write_too_large_async(p, TOOL_WRITE_CAP));
@@ -128,7 +136,7 @@ async function execEdit(args: Record<string, unknown>): Promise<string> {
 	if (typeof p !== "string" || !p) throw new Error('edit requires a "path" string');
 	if (!Array.isArray(edits) || edits.length === 0) throw new Error('edit requires a non-empty "edits" array');
 	await gateWriteTrust();
-	const abs = await jailResolve(p);
+	const abs = await jailResolve(p, refuse_write_outside_root_async);
 	let current: string;
 	try {
 		current = readFileSync(abs, "utf8");
@@ -152,6 +160,272 @@ async function execEdit(args: Record<string, unknown>): Promise<string> {
 	}
 	writeFileSync(abs, next);
 	return diffEnvelope(p, current, next);
+}
+
+// bi#150: bash executor with a real command policy. The first token of the
+// command line must be on the allowlist (git/rg/node and other safe,
+// mostly read-only tools) — anything else (curl, ssh, ...) refuses loud
+// with the BAML-owned policy reason. The child runs jailed to the project
+// cwd with a scrubbed env (no secrets, no loader hijacks), dies at its
+// timeout (killed, never orphaned), and its output is secret-redacted
+// before the transcript ever sees it.
+export const BASH_DEFAULT_TIMEOUT_S = 30;
+export const BASH_MAX_TIMEOUT_S = 120;
+export const TOOL_BASH_CAP = 256_000;
+
+const BASH_ALLOW = new Set([
+	"git", "rg", "node", "npm", "npx", "ls", "cat", "head", "tail",
+	"echo", "pwd", "sleep", "wc", "sort", "uniq", "diff", "grep", "find",
+	"jq", "true", "false",
+]);
+
+// First token of the command line, skipping VAR=x env prefixes and
+// resolving absolute paths to their basename. Empty/quoted-operator
+// leads yield null (refuse, not guess).
+function bashProgram(command: string): string | null {
+	let rest = command.trim().replace(/^[;(]+/, "").trim();
+	for (;;) {
+		const m = /^([A-Za-z_][A-Za-z0-9_]*)=(\S*)\s*/.exec(rest);
+		if (!m) break;
+		rest = rest.slice(m[0].length);
+	}
+	const m = /^([\w.+/-]+)/.exec(rest);
+	if (!m) return null;
+	return basename(m[1]) || null;
+}
+
+const SECRET_ENV = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|AUTH|CREDENTIAL|COOKIE|SESSION|PRIVATE|BEARER)/i;
+const DANGEROUS_ENV = new Set([
+	"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+	"BASH_ENV", "ENV", "NODE_OPTIONS", "NODE_PATH",
+]);
+
+// Copy the parent env minus secrets and loader hijacks. Everything else
+// (PATH, HOME, TERM, ...) passes through so allowlisted tools behave.
+function scrubEnv(src: NodeJS.ProcessEnv): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (const [k, v] of Object.entries(src)) {
+		if (v === undefined) continue;
+		if (DANGEROUS_ENV.has(k) || SECRET_ENV.test(k)) continue;
+		out[k] = v;
+	}
+	return out;
+}
+
+const SECRET_RES = [
+	/sk-ant-[A-Za-z0-9\-_]{8,}/g,
+	/(gh[pousr]|github_pat)_[A-Za-z0-9_]{8,}/g,
+	/AKIA[0-9A-Z]{16}/g,
+	/xox[bpas]-[A-Za-z0-9\-]+/g,
+	/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
+];
+const SECRET_KV = /((?:api[_-]?key|secret|token|passwd|password|auth(?:orization)?)\s*[:=]\s*['"]?)[^\s'";,}]+(['"]?)/gi;
+
+// Redact secret-looking output before it reaches the transcript. Exported
+// for the conformance script; the executor always applies it.
+export function redactSecrets(text: string): string {
+	let out = text;
+	for (const re of SECRET_RES) {
+		re.lastIndex = 0;
+		out = out.replace(re, "[REDACTED]");
+	}
+	SECRET_KV.lastIndex = 0;
+	return out.replace(SECRET_KV, "$1[REDACTED]$2");
+}
+
+const execFileAsync = promisify(execFile);
+
+async function execBash(args: Record<string, unknown>): Promise<string> {
+	const command = args.command;
+	if (typeof command !== "string" || !command.trim()) throw new Error('bash requires a "command" string');
+	const want = Math.floor(Number(args.timeout ?? BASH_DEFAULT_TIMEOUT_S));
+	const timeoutS = Number.isFinite(want) ? Math.min(Math.max(want, 1), BASH_MAX_TIMEOUT_S) : BASH_DEFAULT_TIMEOUT_S;
+	const prog = bashProgram(command);
+	if (!prog || !BASH_ALLOW.has(prog)) {
+		throw new Error(await refuse_bash_blocked_async(command, [...BASH_ALLOW].sort().join(", ")));
+	}
+	let raw: string;
+	try {
+		const { stdout, stderr } = await execFileAsync("bash", ["-c", command], {
+			cwd: process.cwd(),
+			timeout: timeoutS * 1000,
+			maxBuffer: 4 * 1024 * 1024,
+			env: scrubEnv(process.env),
+		});
+		raw = stdout + (stderr ? `\n[stderr]\n${stderr}` : "");
+	} catch (e) {
+		const err = e as { killed?: boolean; stdout?: string; stderr?: string; code?: number; message?: string };
+		const partial = redactSecrets((err.stdout ?? "") + (err.stderr ? `\n[stderr]\n${err.stderr}` : ""));
+		if (err.killed) throw new Error(await refuse_bash_timeout_async(command, timeoutS));
+		throw new Error(`bash exited ${err.code ?? "?"}: ${command}\n${partial}`);
+	}
+	const redacted = redactSecrets(raw);
+	if (Buffer.byteLength(redacted) > TOOL_BASH_CAP) {
+		const buf = Buffer.from(redacted);
+		return buf.subarray(0, TOOL_BASH_CAP).toString("utf8") + `\n…(truncated: ${buf.length - TOOL_BASH_CAP} more bytes)`;
+	}
+	return redacted;
+}
+
+// bi#151: read-only executors. All four reuse the write jail (same
+// cwd + symlink-escape refusal, BAML-owned read strings), serve text only
+// (NUL refuses), and cap output: single reads refuse past the byte cap,
+// search tools truncate and say so in the payload.
+export const TOOL_READ_CAP = 256_000;
+export const TOOL_READ_MAX_LINES = 2000;
+export const TOOL_LS_CAP = 1000;
+export const TOOL_GREP_CAP = 200;
+export const TOOL_FIND_CAP = 500;
+
+async function execRead(args: Record<string, unknown>): Promise<string> {
+	const p = args.path;
+	if (typeof p !== "string" || !p) throw new Error('read requires a "path" string');
+	const offset = Math.max(1, Math.floor(Number(args.offset ?? 1)) || 1);
+	const limit = Math.min(Math.max(1, Math.floor(Number(args.limit ?? TOOL_READ_MAX_LINES)) || 1), TOOL_READ_MAX_LINES);
+	const abs = await jailResolve(p, (q) => refuse_read_outside_root_async("read", q));
+	let buf: Buffer;
+	try {
+		if (statSync(abs).isDirectory()) throw new Error(`read: "${p}" is a directory — use ls`);
+		buf = readFileSync(abs);
+	} catch (e) {
+		if (e instanceof Error && e.message.startsWith("read:")) throw e;
+		throw new Error(`read: no such file "${p}" — check the path`);
+	}
+	if (buf.includes(0)) throw new Error(await refuse_read_binary_async("read", p));
+	if (buf.length > TOOL_READ_CAP) throw new Error(await refuse_read_too_large_async("read", p, TOOL_READ_CAP));
+	const lines = buf.toString("utf8").split("\n");
+	// A trailing newline is not a line: full reads stay byte-identical and
+	// only genuinely unread lines earn the marker.
+	const effective = lines.length > 1 && lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
+	const slice = lines.slice(offset - 1, offset - 1 + limit);
+	const rest = effective - (offset - 1 + slice.length);
+	return slice.join("\n") + (rest > 0 ? `\n…(${rest} more lines — retry with offset ${offset + slice.length})` : "");
+}
+
+type LsEntry = { name: string; kind: "dir" | "file" | "symlink" | "other" };
+
+async function execLs(args: Record<string, unknown>): Promise<string> {
+	const p = typeof args.path === "string" && args.path ? args.path : ".";
+	const abs = await jailResolve(p, (q) => refuse_read_outside_root_async("ls", q));
+	let entries: LsEntry[];
+	try {
+		if (!statSync(abs).isDirectory()) throw new Error(`ls: "${p}" is not a directory`);
+		entries = readdirSync(abs, { withFileTypes: true }).map((d) => ({
+			name: d.name,
+			kind: d.isDirectory() ? "dir" : d.isFile() ? "file" : d.isSymbolicLink() ? "symlink" : "other",
+		} as LsEntry)).sort((a, b) => (a.kind === b.kind ? (a.name < b.name ? -1 : 1) : a.kind === "dir" ? -1 : 1));
+	} catch (e) {
+		if (e instanceof Error && e.message.startsWith("ls:")) throw e;
+		throw new Error(`ls: cannot list "${p}" — check the path`);
+	}
+	const truncated = entries.length > TOOL_LS_CAP;
+	return JSON.stringify({ path: p, entries: truncated ? entries.slice(0, TOOL_LS_CAP) : entries, truncated });
+}
+
+// Walk absolute paths under root without following symlinks. Symlink
+// entries are yielded themselves (find lists them, grep skips them) but
+// never descended — an escape link can neither leak nor loop.
+function walkFiles(root: string): string[] {
+	const out: string[] = [];
+	const stack = [root];
+	while (stack.length) {
+		const dir = stack.pop()!;
+		let names: string[];
+		try {
+			names = readdirSync(dir);
+		} catch {
+			continue;
+		}
+		for (const n of names.sort()) {
+			const full = resolve(dir, n);
+			let st;
+			try {
+				st = lstatSync(full);
+			} catch {
+				continue;
+			}
+			if (st.isDirectory()) stack.push(full);
+			else if (st.isFile()) out.push(full);
+			else if (st.isSymbolicLink()) out.push(full);
+		}
+	}
+	return out;
+}
+
+function globToRegExp(glob: string): RegExp {
+	return new RegExp("^" + glob.split("").map((c) => (c === "*" ? ".*" : c === "?" ? "." : "\\.+^$()|[]{}".includes(c) ? `\\${c}` : c)).join("") + "$");
+}
+
+async function execGrep(args: Record<string, unknown>): Promise<string> {
+	const pattern = args.pattern;
+	if (typeof pattern !== "string" || !pattern) throw new Error('grep requires a "pattern" string');
+	let re: RegExp;
+	try {
+		re = new RegExp(pattern);
+	} catch {
+		throw new Error(`grep: invalid regex "${pattern}"`);
+	}
+	const base = typeof args.path === "string" && args.path ? args.path : ".";
+	const root = await jailResolve(base, (q) => refuse_read_outside_root_async("grep", q));
+	const glob = typeof args.glob === "string" && args.glob ? globToRegExp(args.glob) : null;
+	const rootIsDir = statSync(root).isDirectory();
+	const roots = rootIsDir ? walkFiles(root) : [root];
+	const matches: { path: string; line: number; text: string }[] = [];
+	let truncated = false;
+	let skippedBinary = 0;
+	let skippedLarge = 0;
+	for (const full of roots) {
+		if (truncated) break;
+		if (glob && !glob.test(basename(full))) continue;
+		let st;
+		try {
+			st = lstatSync(full);
+		} catch {
+			continue;
+		}
+		if (!st.isFile()) continue; // symlinks never followed
+		if (st.size > TOOL_READ_CAP) {
+			skippedLarge++;
+			continue;
+		}
+		const buf = readFileSync(full);
+		if (buf.includes(0)) {
+			skippedBinary++;
+			continue;
+		}
+		const rel = relative(root, full).split(sep).join("/");
+		const lines = buf.toString("utf8").split("\n");
+		for (let i = 0; i < lines.length; i++) {
+			if (!re.test(lines[i])) continue;
+			if (matches.length >= TOOL_GREP_CAP) {
+				truncated = true;
+				break;
+			}
+			matches.push({ path: rootIsDir ? rel : base, line: i + 1, text: lines[i].slice(0, 1000) });
+		}
+	}
+	return JSON.stringify({ pattern, matches, truncated, skipped_binary: skippedBinary, skipped_large: skippedLarge });
+}
+
+async function execFind(args: Record<string, unknown>): Promise<string> {
+	const pattern = args.pattern;
+	if (typeof pattern !== "string" || !pattern) throw new Error('find requires a "pattern" string');
+	const base = typeof args.path === "string" && args.path ? args.path : ".";
+	const root = await jailResolve(base, (q) => refuse_read_outside_root_async("find", q));
+	const isDir = statSync(root).isDirectory();
+	const files = isDir ? walkFiles(root) : [root];
+	const re = globToRegExp(pattern);
+	const paths: string[] = [];
+	let truncated = false;
+	for (const full of files) {
+		if (!re.test(basename(full))) continue;
+		if (paths.length >= TOOL_FIND_CAP) {
+			truncated = true;
+			break;
+		}
+		paths.push(isDir ? relative(root, full).split(sep).join("/") : base);
+	}
+	return JSON.stringify({ pattern, paths, truncated });
 }
 
 // BAML is spec, host is executor — dispatch table for the agent loop.
@@ -231,7 +505,22 @@ export async function handleTool(name: string, args: Record<string, unknown>): P
 		case "edit": {
 			return execEdit(args);
 		}
+		case "read": {
+			return execRead(args);
+		}
+		case "bash": {
+			return execBash(args);
+		}
+		case "ls": {
+			return execLs(args);
+		}
+		case "grep": {
+			return execGrep(args);
+		}
+		case "find": {
+			return execFind(args);
+		}
 		default:
-			throw new Error(`unknown tool ${name} — write/edit/bais_* tools handled here, others need host impl`);
+			throw new Error(`unknown tool ${name} — known tools: read/write/edit/bash/ls/grep/find/bais_*/report_*`);
 	}
 }

@@ -259,3 +259,117 @@ export async function sessionResumeList(sessionDir?: string): Promise<{ id: stri
 	}
 	return out;
 }
+
+// First-run theme detection (bi#93): pi queries the terminal; the
+// readline-era host reads COLORFGBG ("fg;bg", e.g. "15;0" is light
+// text on a dark background, "0;15" the reverse). Only an explicit
+// light background (white 7/15 or near-white 250+) resolves light —
+// anything absent or unparseable is "default" (dark palette).
+export function detectTerminalThemeFromEnv(env: Record<string, string | undefined> = process.env): "default" | "light" {
+	const raw = env.COLORFGBG ?? "";
+	const nums = raw
+		.split(/[;:\s]/)
+		.map((t) => Number(t))
+		.filter((n) => Number.isInteger(n));
+	const bg = nums.length ? nums[nums.length - 1]! : NaN;
+	if (bg === 7 || bg === 15 || bg >= 250) return "light";
+	return "default";
+}
+
+// Branch-tree rows (bi#87): same headers as the resume list plus the
+// parent_session link, so the host can walk the fork/clone forest.
+export interface BranchListEntry {
+	id: string;
+	timestamp: string;
+	cwd: string;
+	turns: number;
+	label: string | null;
+	parent: string | null;
+}
+
+export async function sessionBranchList(sessionDir?: string): Promise<BranchListEntry[]> {
+	const out: BranchListEntry[] = [];
+	for (const id of listSessions(sessionDir)) {
+		const loaded = await loadSessionTranscript(id, sessionDir);
+		if (!loaded) continue;
+		out.push({
+			id: loaded.header.id,
+			timestamp: loaded.header.timestamp,
+			cwd: loaded.header.cwd,
+			turns: loaded.history.filter((m) => m.role === "user").length,
+			label: loaded.header.label,
+			parent: loaded.header.parent_session,
+		});
+	}
+	return out;
+}
+
+// Display order for the branch tree: roots first (a missing parent,
+// a self-link, or a link outside the set all count as roots —
+// unreachable cycles are dropped, never hung on), children by
+// timestamp then id. Each row's guides say, per ancestor level below
+// the root, whether that ancestor has a following sibling — exactly
+// the cells BAML's branch_row_prefix renders.
+export interface OrderedBranchRow {
+	id: string;
+	depth: number;
+	is_last: boolean;
+	guides: boolean[];
+}
+
+// REPL state adopted on a branch switch (bi#87): the file moves onto
+// the picked branch, turn counts its user messages, persisted marks the
+// whole loaded transcript clean — the same triple /resume sets. Pure
+// so the branches-tree suite pins the contract headlessly.
+export function branchSwitchState(loaded: { file: string; history: { role: string }[] }): { file: string; turn: number; persisted: number } {
+	return {
+		file: loaded.file,
+		turn: loaded.history.filter((m) => m.role === "user").length,
+		persisted: loaded.history.length,
+	};
+}
+
+export function orderBranchRows(entries: { id: string; timestamp: string; parent: string | null }[]): OrderedBranchRow[] {
+	const byId = new Map(entries.map((e) => [e.id, e]));
+	const kids = new Map<string, typeof entries>();
+	const roots: typeof entries = [];
+	for (const e of entries) {
+		const p = e.parent;
+		if (!p || p === e.id || !byId.has(p)) roots.push(e);
+		else {
+			const l = kids.get(p) ?? [];
+			l.push(e);
+			kids.set(p, l);
+		}
+	}
+	const byTime = (a: (typeof entries)[number], b: (typeof entries)[number]): number =>
+		a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+	roots.sort(byTime);
+	for (const l of kids.values()) l.sort(byTime);
+	const out: OrderedBranchRow[] = [];
+	const seen = new Set<string>();
+	interface Frame { e: (typeof entries)[number]; depth: number; is_last: boolean; guides: boolean[]; i: number }
+	const stack: Frame[] = roots.map((e, i): Frame => ({ e, depth: 0, is_last: i === roots.length - 1, guides: [], i: 0 })).reverse();
+	while (stack.length) {
+		const f = stack[stack.length - 1]!;
+		if (f.i === 0) {
+			if (seen.has(f.e.id)) {
+				stack.pop();
+				continue;
+			}
+			seen.add(f.e.id);
+			out.push({ id: f.e.id, depth: f.depth, is_last: f.is_last, guides: f.guides });
+		}
+		const children = kids.get(f.e.id) ?? [];
+		while (f.i < children.length && seen.has(children[f.i]!.id)) f.i++;
+		if (f.i >= children.length) {
+			stack.pop();
+			continue;
+		}
+		const child = children[f.i]!;
+		f.i++;
+		const rest = children.slice(f.i).some((c) => !seen.has(c.id));
+		stack.push({ e: child, depth: f.depth + 1, is_last: !rest, guides: f.depth === 0 ? [] : [...f.guides, !f.is_last], i: 0 });
+	}
+	return out;
+}

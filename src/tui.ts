@@ -1,9 +1,121 @@
 // bi/src/tui.ts — host differential TUI, mirrors pi/packages/tui differential rendering
 // BAML owns Component + diff_lines/visible_width/cursor_marker for baml test; host does TS rendering.
 // This is minimal: renders BAIS ready + prompt, diffs lines (pi does ANSI differential).
-import { render_divider_async, render_select_frame_async } from "../baml_sdk/index.js";
+import { footer_tips_async, render_divider_async, render_select_frame_async, tip_rotate_interval_ms_async } from "../baml_sdk/index.js";
+import { chromeAnsi, loadChromePalette } from "./theme-files.js";
+import { Container, ProcessTerminal, ScrollView, Text, TuiAltScreen, TuiMainScreen, getKeybindings, setKeybindings, sliceByColumn, visibleWidth as piVisibleWidth, type TUI } from "@earendil-works/pi-tui";
+// bi#163: declared frame composition over pi-tui's VStack sizing contract.
+// allocateStackSizes/visibleStackEntries are the exact fns VStack lays out
+// with (components/stack.ts) — the host reuses them directly on line-array
+// regions so BAML keeps owning row content while chrome declares sizing.
+// (Deep path: index re-exports VStack but not the layout fns.)
+import { allocateStackSizes, visibleStackEntries } from "@earendil-works/pi-tui/dist/components/stack.js";
+import { currentKeybindingsManager } from "./keybindings.js";
+import type { LayoutViewport, StackLayoutEntry } from "@earendil-works/pi-tui/dist/layout-node.js";
 
 const CURSOR_MARKER = "\x1b_pi:c\x07";
+
+// bi#162: REPL-lifetime pi-tui host for prompt modals.
+//
+// Kimi keeps one TuiBase for the app lifetime and mounts dialogs via
+// showOverlay (tui.ts:552-661: preFocus recorded, focus restored on
+// hide). bi did the opposite — every prompt modal built its own
+// ProcessTerminal + TuiMainScreen, re-negotiating kitty flags per
+// dialog (bi#119 names that churn as the escape-tail junk mechanism).
+// This block owns the single host: created + started lazily on the
+// first modal, shared by every modal until the leases drain, stopped
+// exactly once. Negotiation runs once per host, pop + drain + stop
+// once per dispose — the bi#119 envelope kept as defense-in-depth,
+// just no longer per modal.
+//
+// Lease protocol: repl() (cli.ts) and multi-prompt login flows hold a
+// lease for their whole run; one-shot modal users hold none and their
+// host is disposed when their modal closes (same lifetime as before,
+// so a lone `bi login` never hangs on a live stdin listener).
+export interface ReplTuiHost {
+	term: ProcessTerminal;
+	ui: TUI;
+	// True once the kitty/DA settle has run on this host. Later modals
+	// never re-query (BI_MODAL_SETTLE=0 skips even the first, for the
+	// drill proof that the overlay path removed the re-query).
+	settled: boolean;
+}
+
+let replTuiHost: ReplTuiHost | null = null;
+let replTuiLeases = 0;
+
+/** True while a REPL/login flow holds the host across modals. */
+export function replTuiLeased(): boolean {
+	return replTuiLeases > 0;
+}
+
+/** Hold the host across modals (REPL lifetime, login flows). */
+export function retainReplTui(): void {
+	replTuiLeases += 1;
+}
+
+/** Release a lease; the last release disposes the host. */
+export async function releaseReplTui(): Promise<void> {
+	if (replTuiLeases > 0) replTuiLeases -= 1;
+	if (replTuiLeases === 0) await disposeReplTui();
+}
+
+/** Idempotent: creates + starts the host once; later calls reuse it. */
+export function ensureReplTui(logDir: string): ReplTuiHost {
+	if (replTuiHost) return replTuiHost;
+	const term = new ProcessTerminal();
+	const ui: TUI = new TuiMainScreen(term, false, logDir);
+	// Inert base layer: readline owns the REPL screen, so the host's
+	// own frame is empty — modals composite over it via showOverlay
+	// and hide() repaints back to it (shrink-clear erases modal rows).
+	ui.addChild(new Container());
+	ui.start();
+	// Suppress event-type reporting (kitty flag 2): the library pushes
+	// flags 1+2+4, but no pi-tui component consumes presses/releases/
+	// repeats distinctly (no wantsKeyRelease opt-ins, no isKeyRepeat
+	// readers) — and every release is a junk vector on a chunking link
+	// (`3u` tails) with zero benefit here. Flags 1+4 keep disambiguated
+	// presses, modifiers, and alternate keys; held keys degrade to
+	// legacy repeated presses, which is correct for a text editor.
+	// Kitty enhancement flags stack: the library's push is underneath,
+	// ours is balanced by the explicit pop in disposeReplTui below (the
+	// drain pops the library's; stop then sees cleared flags and
+	// skips). Non-kitty terminals ignore both writes.
+	term.write("\x1b[>5u");
+	replTuiHost = { term, ui, settled: false };
+	return replTuiHost;
+}
+
+/**
+ * Tear down the host: drain stragglers while the library still drops
+ * everything (bi#119 envelope, once per host), pop our kitty
+ * suppression, then stop. Same order as pi's interactive-mode
+ * shutdown. Never per modal: drainInput pops the shared kitty flags,
+ * which would re-open the release storm for the next modal.
+ */
+export async function disposeReplTui(): Promise<void> {
+	const host = replTuiHost;
+	replTuiHost = null;
+	if (!host) return;
+	while (host.ui.hasOverlay()) host.ui.hideOverlay();
+	await host.term.drainInput(500, chunkyLinkDrainIdleMs());
+	host.term.write("\x1b[<u");
+	host.ui.stop();
+}
+
+
+// Long drain window over chunking links, mirroring pi-tui's SSH-gated
+// escape timeout (resolveEscapeTimeoutMs: 100ms SSH vs 10ms local).
+// Direct local links process the kitty pop in ~1ms, so pending
+// releases never get generated; anything that chunks escape traffic —
+// SSH, tmux (escape-time), screen, emulator batching — needs the wait.
+// Detection is env-based (same signals pi-tui itself uses, plus
+// multiplexer markers); plain local terminals keep 50ms and pay no
+// added latency.
+export function chunkyLinkDrainIdleMs(): number {
+	const env = process.env;
+	return env.SSH_CONNECTION || env.SSH_TTY || env.TMUX || env.STY || env.ZELLIJ ? 250 : 50;
+}
 
 export function termWidth(fallback = 80): number {
 	// Headless ptys and odd redirections report 0/undefined columns,
@@ -13,25 +125,148 @@ export function termWidth(fallback = 80): number {
 	return typeof c === "number" && Number.isFinite(c) && c > 0 ? Math.floor(c) : fallback;
 }
 
+// bi#163: one ordered VStack-style entry per frame region. Fields are the
+// StackEntryOptions contract (basis/grow/shrink/minSize/maxSize/visible);
+// `lines` is the BAML-shaped content. Chrome declares "never below 1 row"
+// (minSize: 1) and the transcript declares "grow into the rest" (grow: 1);
+// entries hide responsively via visible(viewport).
+export interface FrameRegion {
+	lines: string[];
+	basis?: number | "auto";
+	grow?: number;
+	shrink?: number;
+	minSize?: number;
+	maxSize?: number;
+	visible?: (viewport: LayoutViewport) => boolean;
+}
+
+export interface FrameViewport {
+	width: number;
+	height?: number;
+}
+
+// Anchor component for sizing entries: allocateStackSizes/visibleStackEntries
+// never touch `component`, but StackLayoutEntry requires one — a single inert
+// Container stands in for all regions (VStack does the same per child).
+const frameAnchor = new Container();
+
+// Width-cap one row (bi#161, kimi tui-main-screen mirror): measure with
+// pi-tui visibleWidth (ANSI-aware), cut with pi-tui sliceByColumn —
+// never trusted to arrive pre-capped, never wrapped. A truncated styled
+// line keeps its in-range SGR and gains a closing reset (the slice drops
+// the reset past the cut; EL 2K clears text, not SGR, so without it the
+// style would leak into the rows below). Shared by HostTui.render and
+// composeFrame so composed frames carry the same cap.
+// Graphics payloads are byte sequences, not text rows: slicing one by
+// columns corrupts the image. Owner of the prefixes is image-display.ts
+// (isImageLine); this prefix mirror keeps tui.ts free of that import
+// (image-display stays baml_sdk-free, no tui cycle).
+const KITTY_LINE_PREFIX = "\x1b_G";
+const ITERM2_LINE_PREFIX = "\x1b]1337;File=";
+
+function isGraphicsLine(line: string): boolean {
+	return (
+		line.startsWith(KITTY_LINE_PREFIX) ||
+		line.startsWith(ITERM2_LINE_PREFIX) ||
+		line.includes(KITTY_LINE_PREFIX) ||
+		line.includes(ITERM2_LINE_PREFIX)
+	);
+}
+
+function capLine(line: string, width: number): string {
+	// bi#167 image regions: graphics lines pass through byte-identical —
+	// the kitty/iterm2 payload carries its own cell size, never the cap.
+	if (isGraphicsLine(line)) return line;
+	if (piVisibleWidth(line) <= width) return line;
+	const cut = sliceByColumn(line, 0, width, true);
+	if (line.includes("\x1b") && !/(?:\x1b\[0?m)$/.test(cut)) return cut + "\x1b[0m";
+	return cut;
+}
+
+// bi#163: compose ordered regions into the clipped line array for one frame.
+// Sizing resolves through pi-tui's VStack machinery: visible(viewport)
+// filters first, then allocateStackSizes deals grow/shrink against the
+// available height with minSize/maxSize clamps. Overflow keeps the TAIL of a
+// region (transcript scroll semantics — the most recent lines survive).
+// Width degrades safely: non-positive/non-finite widths clamp to 1, so
+// narrow terminals (< 40 cols) render without throwing or negative padding.
+// Height omitted means "no clipping" (passthrough concatenation, capped).
+export function composeFrame(regions: FrameRegion[], viewport: FrameViewport): string[] {
+	const rawW = Math.floor(viewport.width);
+	const width = Number.isFinite(rawW) && rawW > 0 ? rawW : 1;
+	const entries: StackLayoutEntry[] = regions.map((r) => ({
+		component: frameAnchor,
+		...(r.basis === undefined ? {} : { basis: r.basis }),
+		...(r.grow === undefined ? {} : { grow: r.grow }),
+		...(r.shrink === undefined ? {} : { shrink: r.shrink }),
+		...(r.minSize === undefined ? {} : { minSize: r.minSize }),
+		...(r.maxSize === undefined ? {} : { maxSize: r.maxSize }),
+		...(r.visible === undefined ? {} : { visible: r.visible }),
+	}));
+	const totalIntrinsic = regions.reduce((sum, r) => sum + r.lines.length, 0);
+	const rawH = viewport.height === undefined ? totalIntrinsic : Math.floor(viewport.height);
+	const height = Number.isFinite(rawH) && rawH > 0 ? rawH : 0;
+	const vp: LayoutViewport = { width, height };
+	const visEntries = visibleStackEntries(entries, vp);
+	const visRegions = visEntries.map((e) => regions[entries.indexOf(e)]);
+	const intrinsic = visRegions.map((r) => r.lines.length);
+	const sizes = allocateStackSizes(visEntries, intrinsic, height, 0);
+	const out: string[] = [];
+	for (let k = 0; k < visRegions.length; k++) {
+		const take = Math.max(0, Math.min(visRegions[k].lines.length, sizes[k] ?? 0));
+		const kept = visRegions[k].lines.slice(visRegions[k].lines.length - take);
+		for (const line of kept) out.push(capLine(line, width));
+	}
+	return out;
+}
+
 export class HostTui {
 	private oldLines: string[] = [];
 	private width: number;
 	private write: (s: string) => void;
 	constructor(width = termWidth(), write: (s: string) => void = (s) => process.stdout.write(s)) {
-		this.width = width;
+		this.width = Math.max(1, width);
 		this.write = write;
+	}
+	// Live terminal width (bi#161). A SIGWINCH between renders updates
+	// process.stdout.columns, so a positive finite reading always wins over
+	// the cached width and the next frame renders at the new width.
+	// Headless ptys report 0/undefined — those never override, so an
+	// explicitly constructed width (drills, pipes) stays put.
+	private liveWidth(): { width: number; resized: boolean } {
+		const c = process.stdout.columns;
+		if (typeof c === "number" && Number.isFinite(c) && c > 0) {
+			const w = Math.max(1, Math.floor(c));
+			return { width: w, resized: w !== this.width };
+		}
+		return { width: this.width, resized: false };
+	}
+	// Width-cap one row — shared capLine (bi#161/bi#163), so HostTui and
+	// composeFrame truncate identically.
+	private cap(line: string, width: number): string {
+		return capLine(line, width);
 	}
 	render(lines: string[]): void {
 		// Differential repaints, pi-TUI spec: first render streams rows
 		// (cursor ends below the frame); same-count repaints restore to
 		// below-frame, step up, and rewrite CHANGED rows only, then
 		// restore — no full clear, no scroll creep (no net newlines).
-		// Frames must arrive width-capped (BAML frames are); a row wider
-		// than the terminal wraps and misaligns the region. Count
-		// changes still full-clear (rare; startup-shaped usage).
-		const clean = lines.map((l) => l.replace(CURSOR_MARKER, ""));
+		// Every buffer is ?2026-bracketed (synchronized output) so the
+		// terminal never paints half a frame. Rows are width-capped here
+		// (a row wider than the terminal would wrap and misalign the
+		// region). Pure count changes still full-clear (rare;
+		// startup-shaped usage); a columns change instead takes the resize
+		// path — full re-render at the new width, stale rows cleared in
+		// place, never 2J (kimi viewport/width-change mirror).
+		const live = this.liveWidth();
+		this.width = live.width;
+		const width = this.width;
+		const clean = lines.map((l) => this.cap(l.replace(CURSOR_MARKER, ""), width));
+		this.write("\x1b[?2026h");
 		if (this.oldLines.length === 0) {
 			for (const l of clean) this.write(l + "\n");
+		} else if (live.resized) {
+			this.renderResized(clean);
 		} else if (clean.length !== this.oldLines.length) {
 			this.write("\x1b[2J\x1b[H");
 			for (const l of clean) this.write(l + "\n");
@@ -44,29 +279,78 @@ export class HostTui {
 			}
 			this.write("\x1b[u");
 		}
+		this.write("\x1b[?2026l");
 		this.oldLines = clean;
 	}
+	// Resize path: cursor starts below the old frame. Step up over it,
+	// rewrite every row at the new width (references never match across a
+	// width change), clear stale rows when the frame shrank, and park the
+	// cursor below the new frame — the saved position is stale (it points
+	// below the OLD frame), so it is never restored. Grown rows stream
+	// exactly like a first render; no path here scrolls away content or
+	// touches 2J.
+	private renderResized(clean: string[]): void {
+		const old = this.oldLines.length;
+		const n = clean.length;
+		this.write("\x1b[s");
+		this.write(`\x1b[${old}A`);
+		for (let i = 0; i < Math.max(old, n); i++) {
+			if (i > 0) this.write("\n");
+			this.write(`\r\x1b[2K${clean[i] ?? ""}`);
+		}
+		if (n >= old) {
+			// Cursor sits on the last frame row — step below the frame.
+			this.write("\n");
+		} else {
+			const up = old - n - 1;
+			if (up > 0) this.write(`\x1b[${up}A`);
+		}
+	}
 	static visibleWidth(line: string): number {
-		return line.replace(CURSOR_MARKER, "").length;
+		return piVisibleWidth(line.replace(CURSOR_MARKER, ""));
 	}
 }
 
 // Select-list frame (bi#68): the one host path for /model, /resume,
 // /tree listings. BAML owns rows + cursor + width shaping; the host
-// only splits the shaped text and diffs the frame through HostTui.
+// composes the shaped frame + closing divider as one frame (bi#163) and
+// diffs it through HostTui — no direct stdout assembly on this path.
 // Picks stay numeric — the cursor index is display state until the
 // bi#69 raw-mode layer. A BAML-shaped divider closes the block on
 // stdout so the next prompt doesn't crowd the list.
 export async function renderSelectList(text: string, cursor: number, width?: number, theme?: string | null): Promise<void> {
 	const w = width ?? termWidth();
 	const rows = text.split("\n").filter((l) => l.length > 0);
-	new HostTui(w).render(await render_select_frame_async(rows, cursor, w));
-	process.stdout.write((await render_divider_async(w, { theme: theme ?? null })) + "\n");
+	const frame = await render_select_frame_async(rows, cursor, w);
+	const divider = await render_divider_async(w, { theme: theme ?? null });
+	new HostTui(w).render(
+		composeFrame(
+			[
+				{ lines: frame, grow: 1, shrink: 1, minSize: 0 },
+				{ lines: [divider], minSize: 1, shrink: 0 },
+			],
+			{ width: w },
+		),
+	);
 }
 // Pinned bottom-row footer (bi#67). BAML owns the frame line
 // (render_footer_frame, width-capped to one row); the host owns the
 // scroll region + repaint. DECSTBM reserves the last row, so turn output
 // scrolls above the footer instead of pushing it away.
+//
+// bi#184: row N-1 (frame) carries provider/model · thinking · counters ·
+// cwd · branch; row N (model line) carries ONLY the catalog ctx window —
+// no fact prints on both rows.
+//
+// bi#186: the model row also holds the rotating tips slot, right-aligned
+// in textMuted (chrome palette, bi#185). BAML owns the corpus + rotation
+// policy as data (selectors.baml footer_tips/tips_slot_text); HostFooter
+// owns the 10s timer (started on the first TTY render, cleared by
+// reset/dispose, unref'd so it never holds the event loop) and mirrors
+// the pure pairing policy synchronously for the differential render —
+// footer-tips.mjs pins mirror == BAML output (one-test→one-impl). A
+// transient hint (bi#169 channel) preempts the slot while set; clearing
+// releases back to the rotating tip. Pipes get neither tips nor hints.
 //
 // Readline coexistence: repaints happen only between turns (no active
 // question pending), save the cursor, address the footer row absolutely,
@@ -75,9 +359,48 @@ export async function renderSelectList(text: string, cursor: number, width?: num
 // which is what makes the differential skip sound. Pipes and degenerate
 // screens fall back to a plain printed line, byte-identical to the
 // pre-footer console.error readout.
+// Width below which the brand model line hides (bi#163 responsive demo via
+// visible(viewport)): narrow terminals keep the footer + transcript rows,
+// never clip chrome to fit. Mirrors the composeFrame narrow-width drill.
+export const MODEL_LINE_MIN_WIDTH = 40;
+
+// Synchronous mirror of selectors.baml tips_slot_text (bi#186) — the
+// differential render path cannot await the BAML call per repaint.
+// scripts/footer-tips.mjs pins this mirror equal to tips_slot_text_async
+// across ticks and widths.
+export function tipsSlotText(corpus: string[], tick: number, width: number): string {
+	if (width <= 0 || corpus.length === 0) return "";
+	const n = corpus.length;
+	const i = ((tick % n) + n) % n;
+	const first = corpus[i] ?? "";
+	const second = corpus[(i + 1) % n] ?? "";
+	const pair = `${first} | ${second}`;
+	if (pair.length <= width) return pair;
+	if (first.length <= width) return first;
+	return `${first.slice(0, width)}…`;
+}
+
+// bi#186 tips wiring for HostFooter. Omitted (production): the corpus +
+// cadence load async from BAML on construction. Passed (drills): the
+// corpus is used directly — an empty corpus disables the slot and skips
+// the async load, keeping byte pins deterministic.
+export interface HostFooterTips {
+	corpus: string[];
+	intervalMs?: number;
+}
+
 export class HostFooter {
 	private installedRows = 0;
-	private lastLine: string | null = null;
+	private lastFrame: string | null = null;
+	private lastModel: string | null = null;
+	// Last shown frame args for differential repaint.
+	private lastArgs: { frame: string; model: string; fallback: string } | null = null;
+	// bi#186 tips slot state.
+	private tipsCorpus: string[] | null;
+	private tipsIntervalMs: number;
+	private tipTick = 0;
+	private tipTimer: ReturnType<typeof setInterval> | null = null;
+	private hint: string | null = null;
 	constructor(
 		private dims: () => { rows: number; cols: number } = () => ({
 			rows: process.stdout.rows ?? 0,
@@ -85,54 +408,282 @@ export class HostFooter {
 		}),
 		private tty: () => boolean = () => !!process.stdout.isTTY && !!process.stderr.isTTY,
 		private write: (s: string) => void = (s) => process.stderr.write(s),
-	) {}
-	// Paints the BAML-shaped frame row; fallback is the plain printed
-	// footer for pipes (byte-identical to the old readout). Differential:
-	// an unchanged line on an unchanged screen writes zero bytes. A
-	// resize reinstalls the region and repaints even when the text matches.
-	show(frame: string, fallback: string): void {
-		const { rows } = this.dims();
-		if (!this.tty() || rows < 2) {
-			this.reset();
-			this.write(fallback + "\n");
+		tips?: HostFooterTips,
+	) {
+		this.tipsCorpus = tips ? tips.corpus : null;
+		// Default mirrors selectors.baml tip_rotate_interval_ms (pinned
+		// equal by footer-tips.mjs); the async load replaces it with the
+		// BAML value.
+		this.tipsIntervalMs = tips?.intervalMs ?? 10000;
+		if (!tips) void this.loadTips();
+	}
+	// Loads the BAML corpus + cadence and the chrome palette override,
+	// then repaints so the slot appears without waiting a full interval.
+	// Tips are ambient chrome: a load failure is a loud named warning,
+	// never a footer failure (bi#55).
+	private async loadTips(): Promise<void> {
+		try {
+			const [corpus, ms] = await Promise.all([footer_tips_async(), tip_rotate_interval_ms_async()]);
+			this.tipsCorpus = corpus as string[];
+			this.tipsIntervalMs = ms as number;
+			await loadChromePalette();
+		} catch (e) {
+			console.error(
+				`[bi] footer tips unavailable (${e instanceof Error ? e.message : e}) — footer runs without the tips slot`,
+			);
 			return;
 		}
-		if (this.installedRows !== rows) this.install(rows, frame);
-		else if (this.lastLine !== frame) this.paint(rows, frame);
+		if (this.installedRows > 0) this.render();
 	}
-	// Tears down the region and erases the footer row; silent when the
+	// Paints the two BAML-shaped rows: the footer frame (row N-1) and
+	// the brand model line below it (row N). Both rows compose through
+	// composeFrame (bi#163): footer + model declare minSize 1 each so the
+	// transcript filler yields first on short screens, and the model line
+	// hides below MODEL_LINE_MIN_WIDTH via visible(viewport). Fallback is
+	// the plain printed footer + plain model line for pipes (byte-identical
+	// to the old readout plus one line). Differential per row: unchanged
+	// rows on an unchanged screen write zero bytes. A resize reinstalls
+	// the region and repaints even when the text matches.
+	show(frame: string, model: string, fallback: string): void {
+		this.lastArgs = { frame, model, fallback };
+		this.render();
+	}
+	// Transient hint (bi#169 channel): preempts the tips slot while set,
+	// styled primary (actionable); clearing releases back to the rotating
+	// tip. Pipes stay byte-silent — hints are chrome, not output.
+	setHint(hint: string | null): void {
+		this.hint = hint !== null && hint.length > 0 ? hint : null;
+		if (this.tty()) this.render();
+	}
+	private render(): void {
+		const a = this.lastArgs;
+		if (!a) return;
+		const frame = a.frame;
+		const model = a.model;
+		const { rows, cols } = this.dims();
+		if (!this.tty() || rows < 3) {
+			this.reset();
+			this.write(a.fallback + "\n" + a.model + "\n");
+			return;
+		}
+		const modelOn = cols >= MODEL_LINE_MIN_WIDTH;
+		const composed = composeFrame(
+			[
+				{ lines: [], grow: 1, shrink: 1, minSize: 0 },
+				{ lines: [frame], minSize: 1, shrink: 0 },
+				{ lines: [model], minSize: 1, shrink: 0, visible: (vp) => vp.width >= MODEL_LINE_MIN_WIDTH },
+			],
+			{ width: cols, height: rows },
+		);
+		const cFrame = composed[composed.length - (modelOn ? 2 : 1)] ?? frame;
+		const cModelRaw = modelOn ? (composed[composed.length - 1] ?? model) : null;
+		const cModel = cModelRaw === null ? null : this.withTipsSlot(cModelRaw, cols);
+		if (this.installedRows !== rows) this.install(rows, cFrame, cModel);
+		else {
+			if (this.lastFrame !== cFrame || this.lastModel !== cModel) this.paint(rows, cFrame, cModel);
+		}
+		this.ensureTipsTimer();
+	}
+	// Appends the right-aligned tips slot to the model row: the live hint
+	// while one is set, else the rotating tip for this tick. Slot width is
+	// the columns left after the left content minus one gap column; an
+	// empty slot (narrow terminal, no corpus yet) returns the row
+	// untouched. Styling is render-time chromeAnsi (bi#185): textMuted for
+	// tips, primary for hints; BI_THEME=none / NO_COLOR yields plain text.
+	private withTipsSlot(row: string, cols: number): string {
+		const text =
+			this.hint ??
+			(this.tipsCorpus !== null ? tipsSlotText(this.tipsCorpus, this.tipTick, cols - HostTui.visibleWidth(row) - 1) : "");
+		if (text === "") return row;
+		const code = chromeAnsi(this.hint !== null ? "primary" : "text_muted");
+		const styled = code === "" ? text : `${code}${text}\x1b[0m`;
+		const pad = cols - HostTui.visibleWidth(row) - HostTui.visibleWidth(styled);
+		if (pad < 1) return row;
+		return row + " ".repeat(pad) + styled;
+	}
+	// Tips rotation timer: started once the region is live on a TTY,
+	// cleared by reset/dispose, unref'd so drills and one-shot runs never
+	// hang on it. The guard is the bi#186 no-double-fire pin: repeated
+	// renders never stack intervals. Each tick advances and repaints
+	// through the normal differential path, so a rotation rewrites row N
+	// only — never the frame row, never while piping.
+	private ensureTipsTimer(): void {
+		if (this.tipTimer || this.tipsCorpus === null || this.tipsCorpus.length === 0) return;
+		this.tipTimer = setInterval(() => {
+			this.tipTick += 1;
+			this.render();
+		}, this.tipsIntervalMs);
+		this.tipTimer.unref();
+	}
+	private clearTipsTimer(): void {
+		if (this.tipTimer) clearInterval(this.tipTimer);
+		this.tipTimer = null;
+	}
+	// Tears down the region and erases both rows; silent when the
 	// region was never installed (pipes stay escape-free).
 	dispose(): void {
 		this.reset();
 	}
-	private install(rows: number, frame: string): void {
-		// DECSTBM homes the cursor, so save first; paint the footer row,
+	// Homes the cursor to the last scroll-region row (directly above
+	// the two pinned footer rows) so the next readline prompt draws as
+	// part of the footer block instead of floating mid-screen. No-op
+	// unless the region is installed — pipes and short screens keep
+	// today's inline prompt byte-identical.
+	homeInput(): void {
+		if (this.installedRows === 0) return;
+		const { rows } = this.dims();
+		if (!this.tty() || rows < 3) return;
+		this.write(`\x1b[${rows - 2};1H`);
+	}
+	private install(rows: number, frame: string, model: string | null): void {
+		// DECSTBM homes the cursor, so save first; paint both rows,
 		// then restore — the transcript cursor never moves.
 		this.write("\x1b[s");
-		this.write(`\x1b[1;${rows - 1}r`);
-		this.paintBody(rows, frame);
+		this.write(`\x1b[1;${rows - 2}r`);
+		this.paintBody(rows, frame, model);
 		this.write("\x1b[u");
 		this.installedRows = rows;
-		this.lastLine = frame;
+		this.lastFrame = frame;
+		this.lastModel = model;
 	}
-	private paint(rows: number, frame: string): void {
+	private paint(rows: number, frame: string, model: string | null): void {
 		this.write("\x1b[s");
-		this.paintBody(rows, frame);
+		// Repaint only changed rows (no clear, no region reset). A hidden
+		// model (narrow viewport) erases row N instead of writing text.
+		if (this.lastFrame !== frame) this.write(`\x1b[${rows - 1};1H\x1b[2K${frame}`);
+		if (this.lastModel !== model) this.write(`\x1b[${rows};1H\x1b[2K${model ?? ""}`);
 		this.write("\x1b[u");
-		this.lastLine = frame;
+		this.lastFrame = frame;
+		this.lastModel = model;
 	}
-	private paintBody(rows: number, frame: string): void {
-		this.write(`\x1b[${rows};1H\x1b[2K${frame}`);
+	private paintBody(rows: number, frame: string, model: string | null): void {
+		this.write(`\x1b[${rows - 1};1H\x1b[2K${frame}`);
+		this.write(`\x1b[${rows};1H\x1b[2K${model ?? ""}`);
 	}
 	private reset(): void {
+		this.clearTipsTimer();
 		if (this.installedRows === 0) return;
 		this.write("\x1b[s");
 		this.write("\x1b[r");
+		this.write(`\x1b[${this.installedRows - 1};1H\x1b[2K`);
 		this.write(`\x1b[${this.installedRows};1H\x1b[2K`);
 		this.write("\x1b[u");
 		this.installedRows = 0;
-		this.lastLine = null;
+		this.lastFrame = null;
+		this.lastModel = null;
 	}
+}
+
+// bi#158: transcript search over session scrollback.
+//
+// The REPL prints turns as plain lines; /search renders the in-memory
+// history (the same source /export serializes) into a TuiAltScreen
+// viewport and opens pi-tui's own AltScreenSearchComponent — query,
+// n/m counter, next/prev nav are all library-owned (bi#114 doctrine:
+// pi-tui owns widgets, BAML owns content). Esc closes with the session
+// byte-identical: history is only read, and the screen stops with
+// preserveScreen so the library skips its scrollback replay (no
+// transcript reprint). Teardown mirrors runModal (prompt.ts): drain
+// input, then stop — drainInput pops the library's kitty flags itself,
+// so no manual <u is written (disposeReplTui's manual pop only
+// balances its own >5u suppression write, which this screen skips).
+export const TRANSCRIPT_SEARCH_NOTE =
+	"/search needs an interactive terminal — use /export [path] for a searchable markdown dump of this session";
+
+// Gate for the search screen. Local (not promptAvailable): tui.ts is
+// imported by prompt.ts, so importing prompt.js here would cycle.
+export function searchScreenAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
+	if (env.BI_SCREEN === "0") return false;
+	return !!process.stdin.isTTY && !!process.stdout.isTTY;
+}
+
+// Pure transcript shaping (headless-testable): one header row per
+// message plus its text lines. Plain rows — the library strips ANSI
+// for matching itself, and bi stores no ANSI in history.
+export function transcriptLines(history: Array<{ role?: unknown; text?: unknown }>): string[] {
+	const out: string[] = [];
+	for (const m of history) {
+		const role = String((m as { role?: unknown } | null)?.role ?? "unknown");
+		out.push(`### ${role}`);
+		const text = String((m as { text?: unknown } | null)?.text ?? "");
+		if (text.length > 0) for (const l of text.split("\n")) out.push(l);
+	}
+	return out;
+}
+
+export async function runTranscriptSearch(
+	history: Array<{ role?: unknown; text?: unknown }>,
+	logDir: string,
+): Promise<void> {
+	if (!searchScreenAvailable()) {
+		console.error(TRANSCRIPT_SEARCH_NOTE);
+		return;
+	}
+	// Library defaults plus the user's validated ~/.bi overrides, same
+	// as runModal — the search/next/prev/close bindings stay remappable.
+	setKeybindings(currentKeybindingsManager());
+	const term = new ProcessTerminal();
+	const ui = new TuiAltScreen(term, false, logDir);
+	const lines = transcriptLines(history);
+	const doc = new Text(lines.length > 0 ? lines.join("\n") : "(empty transcript — no turns yet)");
+	ui.setLayoutRoot(new ScrollView(doc, { follow: "end", primary: true }));
+	ui.start();
+	// Programmatic openSearch: private in the .d.ts but the library's
+	// own entry (tui-alt-screen.ts openSearch) — the same call the
+	// Ctrl+Shift+F keybinding reaches. Esc closes via the library's
+	// searchClose binding; the exit listener below only fires when no
+	// overlay remains (first-consume-wins routing: the viewport
+	// consumes the closing Esc first, so closing never exits).
+	(ui as unknown as { openSearch(): void }).openSearch();
+	const done = new Promise<void>((resolve) => {
+		const off = ui.addInputListener((data: string) => {
+			if (data === "\x03" || data === "\x04") {
+				off();
+				resolve();
+				return { consume: true };
+			}
+			try {
+				if (!ui.hasOverlay() && getKeybindings().matches(data, "tui.altScreen.searchClose")) {
+					off();
+					resolve();
+					return { consume: true };
+				}
+			} catch {
+				// Key matching never breaks the viewer.
+			}
+			return undefined;
+		});
+	});
+	await done;
+	await term.drainInput(500, chunkyLinkDrainIdleMs());
+	// preserveScreen: replay would reprint the transcript into
+	// scrollback — the acceptance forbids exactly that.
+	ui.stop({ preserveScreen: true });
+}
+
+// bi#160: fullscreen frame contract (VStack mirror).
+//
+// The live alt-screen root (screen-fullscreen.ts) is a VStack with
+// these same entries: the transcript grows, the prompt row collapses
+// first, the footer never drops below 1 row. composeFullscreenFrame
+// resolves the identical allocateStackSizes contract headlessly, so
+// the drill proves dock pinning without a pty.
+export interface FullscreenFrameInput {
+	transcript: string[];
+	promptRow: string;
+	footer: string[];
+}
+
+export function fullscreenFrameEntries(input: FullscreenFrameInput): FrameRegion[] {
+	return [
+		{ lines: input.transcript, grow: 1, shrink: 1, minSize: 0 },
+		{ lines: [input.promptRow], shrink: 1, minSize: 0 },
+		{ lines: input.footer, minSize: 1, shrink: 0 },
+	];
+}
+
+export function composeFullscreenFrame(input: FullscreenFrameInput, viewport: FrameViewport): string[] {
+	return composeFrame(fullscreenFrameEntries(input), viewport);
 }
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

@@ -6,6 +6,7 @@
 // Jitter (±25%) lives here: BAML has no RNG.
 
 import { TurnFailure, ai, backoff_ms, max_retries, should_retry } from "../baml_sdk/index.js";
+import { reportRetryWait, restoreWorkingStatus } from "./status.js";
 
 export async function callWithRetry(label: string, fn: () => Promise<ai.ModelTurn | TurnFailure>): Promise<ai.ModelTurn | TurnFailure> {
 	const max = max_retries();
@@ -15,8 +16,14 @@ export async function callWithRetry(label: string, fn: () => Promise<ai.ModelTur
 		if (!(out instanceof TurnFailure)) return out;
 		if (!should_retry(out.kind, out.retry_safe, attempt)) return out;
 		const wait = Math.round(backoff_ms(attempt) * (0.75 + Math.random() / 2));
+		// bi#96: the wait surfaces on the turn status (retry kind + attempt
+		// count) where a status display is active; the plain line below is
+		// the pipe path. Working state restores before the re-call so a
+		// success never inherits the retry styling.
+		reportRetryWait(attempt + 1, max, Math.ceil(wait / 1000));
 		console.error(`[bi] retry ${attempt + 1}/${max} ${label} ${out.kind} after ${wait}ms`);
 		await new Promise((r) => setTimeout(r, wait));
+		restoreWorkingStatus();
 		attempt += 1;
 	}
 }

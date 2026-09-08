@@ -352,6 +352,164 @@ testset "turn plumbing" {
         assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
     }
 
+    test "cloudflare-ai-gateway invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn(
+            "cloudflare-ai-gateway",
+            "openai/gpt-4o-mini",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "vercel-ai-gateway invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn(
+            "vercel-ai-gateway",
+            "anthropic/claude-opus-4.8",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "github-copilot invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("github-copilot", "gpt-6-astra", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "opencode invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn(
+            "opencode",
+            "nemotron-3-ultra-free",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "opencode-go invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("opencode-go", "qwen3.7-max", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "xiaomi invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("xiaomi", "mimo-v2.5", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "xiaomi-token-plan-ams invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn(
+            "xiaomi-token-plan-ams",
+            "mimo-v2.5",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "xiaomi-token-plan-cn invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn(
+            "xiaomi-token-plan-cn",
+            "mimo-v2.5-pro",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "xiaomi-token-plan-sgp invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn(
+            "xiaomi-token-plan-sgp",
+            "mimo-v2.5",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "ant-ling invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("ant-ling", "Ling-2.6-flash", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "minimax-cn invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("minimax-cn", "MiniMax-M2.5", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "moonshotai-cn invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("moonshotai-cn", "kimi-k2.5", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "qwen-token-plan-cn invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn(
+            "qwen-token-plan-cn",
+            "qwen3.7-max",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "qwen-token-plan-individual invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn(
+            "qwen-token-plan-individual",
+            "deepseek-v4-pro-0813",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "http://127.0.0.1:1",
+        );
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "zai-coding-cn invoke reaches the wire and classifies transport failure" {
+        let result = SendTurn("zai-coding-cn", "glm-5.3", "test-key", "hi", [], [], base_url = "http://127.0.0.1:1");
+        assert.equal(turn_result_label(result), "failure:network:retry_safe=true")
+    }
+
+    test "gateway missing gateway id fails fast naming the env var" {
+        // Explicit base_url with the account filled isolates the gateway
+        // check from ambient env (a bare catalog call hits the same arm
+        // whenever both ids are unset).
+        SendTurn(
+            "cloudflare-ai-gateway",
+            "openai/gpt-4o-mini",
+            "test-key",
+            "hi",
+            [],
+            [],
+            base_url = "https://gateway.ai.cloudflare.com/v1/acct/{CLOUDFLARE_GATEWAY_ID}/openai",
+        ) catch (e) {
+            baml.errors.InvalidArgument => {
+                assert.is_true(e.message.includes("CLOUDFLARE_GATEWAY_ID"))
+            },
+        }
+    }
+
     test "an unknown provider tag is a clean InvalidArgument, not a panic" {
         let outcome = SendTurn("bogus", "some-model", "test-key", "hi", [], []) catch_all (e) {
             _ => e.to_string(),
@@ -381,5 +539,33 @@ testset "turn plumbing" {
         let spec = TurnPrompt@spec("hello");
         assert.is_true(spec.tools().is_empty());
         assert.equal(spec.output_type().to_string(), "string")
+    }
+
+    // bi#01: a concrete client IS usable as ai.Client inside one VM call —
+    // only the host round-trip breaks it. Pins the in-VM side of the
+    // build-and-consume-in-one-call workaround (turn.baml header, point 1).
+    test "a built client dispatches through ai.Client in one call" {
+        let cl: ai.Client = build_client("anthropic", "claude-haiku-4-5", "test-key", null);
+        assert.equal(cl.id(), "anthropic/claude-haiku-4-5")
+    }
+
+    // bi#02: the string provider tag is validated at the boundary — an
+    // unknown tag is a clean InvalidArgument naming the tag, which is the
+    // typo-safety a real enum param would give (turn.baml header, point 2).
+    test "build_client rejects an unknown provider tag with InvalidArgument" {
+        build_client("bogus", "some-model", "test-key", null) catch (e) {
+            baml.errors.InvalidArgument => {
+                assert.equal(e.message, "unknown provider: bogus")
+            },
+        }
+    }
+
+    // bi#03: classify_failure narrows a caught Failure to a concrete kind +
+    // retry flag, which is what makes the returned TurnFailure decodable
+    // where the thrown interface value is not (turn.baml header, point 3).
+    test "classify_failure maps a RateLimited to a retry-safe TurnFailure" {
+        let f = classify_failure(ai.errors.RateLimited { provider: "anthropic", retry_after_ms: null, raw_body: null });
+        assert.equal(f.kind, "rate_limited");
+        assert.is_true(f.retry_safe)
     }
 }

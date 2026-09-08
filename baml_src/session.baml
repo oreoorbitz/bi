@@ -172,11 +172,7 @@ function trust_options() -> TrustOption[] {
             description: "trust until this session ends",
             decision: "session",
         },
-        TrustOption {
-            label: "No",
-            description: "stay untrusted, persist deny",
-            decision: "deny",
-        },
+        TrustOption { label: "No", description: "stay untrusted, persist deny", decision: "deny" },
     ]
 }
 
@@ -300,6 +296,239 @@ function gist_description(id: string, label: string?) -> string {
     match (label) {
         null => `bi session ${id}`,
         let l: string => `bi session ${id} — ${l}`,
+    }
+}
+
+// First-run setup (bi#93, via bi#30) — BAML owns the prompt copy +
+// choice schema; the host owns detection (env heuristic), live preview
+// (theme_preview), and persistence (~/.bi/settings.json + theme.json).
+// bi collects no telemetry, so the analytics answer persists as consent
+// state only, shown back by /settings. Esc at any step skips the rest
+// and still writes setup_done, so bi never asks twice.
+class SetupOption {
+    value: string,
+    label: string,
+    description: string,
+}
+
+// Theme choices mirror list_themes; the host preselects the detected
+// row, BAML only shapes the copy.
+function setup_theme_options() -> SetupOption[] {
+    [
+        SetupOption {
+            value: "default",
+            label: "Default",
+            description: "dark-background ANSI palette",
+        },
+        SetupOption { value: "light", label: "Light", description: "light-background ANSI palette" },
+        SetupOption { value: "none", label: "None", description: "plain text, no styling" },
+    ]
+}
+
+function setup_analytics_options() -> SetupOption[] {
+    [
+        SetupOption {
+            value: "share",
+            label: "Share anonymous usage data",
+            description: "record consent for future telemetry",
+        },
+        SetupOption {
+            value: "keep",
+            label: "Don't share",
+            description: "record decline, never re-prompt",
+        },
+    ]
+}
+
+function format_first_run_theme_step(detected: string) -> string {
+    `Welcome to bi, the minimal coding agent.\n\nPick a theme. Detected system appearance: ${detected}\n(Esc skips setup — bi won't ask again; /settings and /theme to change later)`
+}
+
+function format_first_run_analytics_step() -> string {
+    "Opt-in to anonymous usage data sharing?\nbi collects no telemetry today — this records consent only, changeable anytime in settings.json."
+}
+
+// "y/yes/share" shares; "n/no/keep/don't" declines; anything else is
+// null (the caller keeps the safe default — never guess consent).
+function parse_analytics_answer(word: string) -> bool? {
+    let w = word.trim();
+    if (w == "y" || w == "Y" || w == "yes" || w == "YES" || w == "share" || w == "Share") {
+        true
+    } else if (
+        w == "n"
+            || w == "N"
+            || w == "no"
+            || w == "NO"
+            || w == "keep"
+            || w == "Keep"
+            || w == "don't"
+            || w == "dont"
+    ) {
+        false
+    } else {
+        null
+    }
+}
+
+function format_first_run_done(theme: string, share_analytics: bool) -> string {
+    let a = if (share_analytics) {
+        "share anonymous usage data"
+    } else {
+        "don't share"
+    };
+    `Setup done — theme ${theme}, analytics: ${a}. (/settings shows these anytime)`
+}
+
+function format_setup_skipped() -> string {
+    "Setup skipped — defaults kept, bi won't ask again. (/settings and /theme to change later)"
+}
+
+// /settings shows the recorded first-run choices next to the backend
+// defaults. share null = never answered (bi collects nothing either
+// way); done false = the install predates the marker.
+function format_setup_status(theme: string, share_analytics: bool?, setup_done: bool) -> string {
+    let a = match (share_analytics) {
+        null => "(undecided — bi collects no telemetry)",
+        let s: bool => {
+            if (s) {
+                "share"
+            } else {
+                "don't share"
+            }
+        },
+    };
+    let d = if (setup_done) {
+        "done"
+    } else {
+        "pending"
+    };
+    `theme = ${theme}\nshare_analytics = ${a}\nsetup = ${d}\n`
+}
+
+// Branch tree (bi#87, via bi#30) — the host walks parent_session links
+// into display order (roots first, children by timestamp, orphans as
+// roots, cycle-safe) and BAML renders the gutters + rows. /tree stays
+// the directory browser; this list is the session-branch switcher.
+class BranchEntry {
+    id: string,
+    timestamp: string,
+    cwd: string,
+    turns: int,
+    label: string?,
+    parent: string?,
+}
+
+// One gutter cell per ancestor level below the root (empty for roots
+// and their children): true draws the continuing │, false draws blank
+// space. Each cell says whether that ancestor has a following sibling.
+// The connector names the node's own sibling position.
+function branch_row_prefix(depth: int, is_last: bool, guides: bool[]) -> string {
+    let out = "";
+    for (let g in guides) {
+        if (g) {
+            out = `${out}│  `
+        } else {
+            out = `${out}   `
+        }
+    }
+    if (depth > 0) {
+        if (is_last) {
+            out = `${out}└─ `
+        } else {
+            out = `${out}├─ `
+        }
+    }
+    out
+}
+
+function format_branch_row(
+    id: string,
+    label: string?,
+    turns: int,
+    current: bool,
+    prefix: string,
+) -> string {
+    let mark = if (current) {
+        "*"
+    } else {
+        " "
+    };
+    let tm = if (turns == 1) {
+        "1 turn"
+    } else {
+        `${turns} turns`
+    };
+    let name = match (label) {
+        null => "",
+        let l: string => ` — "${l}"`,
+    };
+    `${mark} ${prefix}${id}${name} — ${tm}`
+}
+
+function format_branches_list(rows: string[]) -> string {
+    if (rows.length() == 0) {
+        "no saved sessions — /fork or /clone to grow branches"
+    } else {
+        let out = "";
+        for (let r in rows) {
+            out = `${out}${r}\n`
+        }
+        out
+    }
+}
+
+// Branch summary (bi#88, via bi#30) — the transcript block after a
+// fork, clone, or branch switch. Names where from, what was kept, and
+// the new id; the host prints it right after its one-line notice.
+function format_branch_summary(
+    verb: string,
+    from_id: string,
+    kept_messages: int,
+    new_id: string,
+) -> string {
+    let what = if (kept_messages == 1) {
+        "1 message"
+    } else {
+        `${kept_messages} messages`
+    };
+    `[branch] ${verb} ${from_id} → ${new_id} — ${what} kept`
+}
+
+// Fork message picker (bi#86) — pi's user-message-selector rows ported
+// to BAML. The host passes the session's user-message texts oldest-first
+// and keeps the same array: the leading number is the `/fork <n>` pick
+// (bi#68 contract — numbers agree with the listed rows). Multi-line
+// texts flatten to one line; overlong rows truncate with an ellipsis.
+// Esc keeps today's transcript (the host never forks on cancel).
+function format_fork_row(index: int, total: int, text: string) -> string {
+    let one_line = text.split("\n")
+        .map((l) -> {
+            l.trim()
+        })
+        .filter((l) -> {
+            l.length() > 0
+        })
+        .join(" ")
+        .trim();
+    let short = if (one_line.length() > 80) {
+        `${one_line.slice(0, 79)}…`
+    } else {
+        one_line
+    };
+    `  ${index} Message ${index} of ${total} — ${short}`
+}
+
+function format_fork_list(texts: string[]) -> string {
+    if (texts.length() == 0) {
+        "no messages to fork from"
+    } else {
+        let out = "";
+        let n = 1;
+        for (let m in texts) {
+            out = `${out}${format_fork_row(n, texts.length(), m)}\n`;
+            n = n + 1
+        }
+        out
     }
 }
 
