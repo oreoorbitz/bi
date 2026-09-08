@@ -102,7 +102,7 @@ function harness(rows, tty, tips) {
 	h.footer.setHint("working — esc interrupts");
 	check(h.bytes().includes("working — esc interrupts"), "hint preempts the tips slot");
 	check(!h.bytes().includes("alpha"), "hint shows no tip while set");
-	check(h.bytes().includes("\x1b[38;2;79;168;255m"), "hint renders in primary #4FA8FF");
+	check(h.bytes().includes("\x1b[38;2;214;2;112m"), "hint renders in primary #D60270");
 	h.clear();
 	h.footer.setHint(null);
 	check(h.bytes().includes("alpha | bravo"), "clearing the hint releases back to the tip");

@@ -8,10 +8,10 @@ testset "chrome palette (bi#185)" {
             null => assert.is_true(false),
             let p: ChromePalette => {
                 assert.equal(p.text, "#E0E0E0");
-                assert.equal(p.text_dim, "#888888");
+                assert.equal(p.text_dim, "#9B4F96");
                 assert.equal(p.text_muted, "#6B6B6B");
-                assert.equal(p.primary, "#4FA8FF");
-                assert.equal(p.border, "#5A5A5A")
+                assert.equal(p.primary, "#D60270");
+                assert.equal(p.border, "#0038A8")
             },
         }
         assert.is_true(chrome_palette("bogus") is null)

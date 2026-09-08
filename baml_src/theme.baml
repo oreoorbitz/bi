@@ -437,12 +437,12 @@ function chrome_palettes() -> ChromePalette[] {
     [
         ChromePalette {
             name: "dark",
-            description: "Dark-background chrome palette (kimi dark mirror)",
+            description: "Dark-background chrome palette (bi flag theme: pink accent, purple dim, deep-blue border)",
             text: "#E0E0E0",
-            text_dim: "#888888",
+            text_dim: "#9B4F96",
             text_muted: "#6B6B6B",
-            primary: "#4FA8FF",
-            border: "#5A5A5A",
+            primary: "#D60270",
+            border: "#0038A8",
         },
     ]
 }

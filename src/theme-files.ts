@@ -212,10 +212,10 @@ export type ChromeTokens = Record<ChromeTokenName, string>;
 // BAML data by scripts/theme-chrome.mjs (one-test→one-impl tracer).
 export const DEFAULT_CHROME_TOKENS: ChromeTokens = {
 	text: "#E0E0E0",
-	text_dim: "#888888",
+	text_dim: "#9B4F96",
 	text_muted: "#6B6B6B",
-	primary: "#4FA8FF",
-	border: "#5A5A5A",
+	primary: "#D60270",
+	border: "#0038A8",
 };
 
 let currentChromeTokens: ChromeTokens = { ...DEFAULT_CHROME_TOKENS };

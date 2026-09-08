@@ -44,7 +44,7 @@ const check = (cond, msg) => {
 // 2 — render-time ANSI: truecolor from hex; levels resolve via BAML.
 {
 	check(tf.chromeAnsi("text_muted", {}) === "\x1b[38;2;107;107;107m", "textMuted renders #6B6B6B truecolor");
-	check(tf.chromeAnsi("primary", {}) === "\x1b[38;2;79;168;255m", "primary renders #4FA8FF truecolor");
+	check(tf.chromeAnsi("primary", {}) === "\x1b[38;2;214;2;112m", "primary renders #D60270 truecolor");
 	check((await chrome_token_for_level_async("hint")) === "text_muted", "hint level maps to textMuted");
 	check((await chrome_token_for_level_async("accent")) === "primary", "accent level maps to primary");
 }
@@ -90,12 +90,12 @@ const check = (cond, msg) => {
 		`bad hex warns with the token named (got ${JSON.stringify(warns)})`,
 	);
 	check(warns.some((w) => w.includes("border:")), "second bad row is also named");
-	check(after.primary === "#4FA8FF" && after.text_dim === "#888888", "bad file resets to defaults, never half-applies");
+	check(after.primary === "#D60270" && after.text_dim === "#9B4F96", "bad file resets to defaults, never half-applies");
 
 	writeFileSync(join(dir, "junk.json"), "not json{");
 	await tf.loadChromePalette(join(dir, "junk.json"), warn);
 	check(warns.some((w) => w.includes("not JSON")), "non-JSON warns with a named reason");
-	check(tf.chromeTokens().primary === "#4FA8FF", "defaults stay live after every bad file");
+	check(tf.chromeTokens().primary === "#D60270", "defaults stay live after every bad file");
 }
 
 if (failures) process.exit(1);
