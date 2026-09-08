@@ -6,9 +6,10 @@ import { execFile } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { GetTool_async, ListTools_async, render_tool_diff_async, refuse_bash_blocked_async, refuse_bash_timeout_async, refuse_read_binary_async, refuse_read_outside_root_async, refuse_read_too_large_async, refuse_write_outside_root_async, refuse_write_untrusted_async, refuse_write_too_large_async, edit_missing_text_async, gate_meta_tool_materialization_async, mine_meta_tools_async, write_guard_check_async, MaterializeRefuse, WriteGuardRefuse, type MetaToolProposal, type MetaToolSpec, type SessionTrace, type ToolSpec } from "../baml_sdk/index.js";
+import { GetTool_async, ListTools_async, render_tool_diff_async, approval_choices_async, approval_feedback_result_async, approval_header_async, refuse_approval_rejected_async, refuse_bash_blocked_async, refuse_bash_timeout_async, refuse_read_binary_async, refuse_read_outside_root_async, refuse_read_too_large_async, refuse_write_outside_root_async, refuse_write_untrusted_async, refuse_write_too_large_async, edit_missing_text_async, gate_meta_tool_materialization_async, mine_meta_tools_async, write_guard_check_async, MaterializeRefuse, WriteGuardRefuse, type MetaToolProposal, type MetaToolSpec, type SessionTrace, type ToolSpec } from "../baml_sdk/index.js";
 import { checkBaisIssues, createBaisIssue, graphBaisIssues, loadBaisIssues, moveBaisIssue, readyBaisIssues } from "./bais.js";
 import { colorizeDiffLines } from "./diff-render.js";
+import { askApproval, askText, promptAvailable } from "./prompt.js";
 import { getStoredTrust } from "./trust.js";
 
 export type { ToolSpec } from "../baml_sdk/index.js";
@@ -108,12 +109,59 @@ async function jailResolve(p: string, refuse: (path: string) => Promise<string>)
 	return real;
 }
 
+// bi#170 per-call approval. Session approvals latch per tool in memory
+// only (the stored trust file is untouched); interactive prompting is
+// opt-in per process (the REPL sets it, `bi run` never does) AND
+// TTY-gated, so pipes and non-interactive runs keep today's behavior
+// byte-identical. Stored deny refuses without prompting — an explicit
+// no is not re-asked. Undecided on a headless run refuses as before.
+const sessionApprovals = new Map<string, true>();
+let approvalInteractive = false;
+export function setApprovalInteractive(on: boolean): void {
+	approvalInteractive = on;
+}
+
+// Pure choice transition (drill-importable): what a prompt answer does
+// to the latch. Index order is the BAML approval_choices order (pinned
+// by baml test); unknown indices fail closed. The modal itself stays
+// behind promptAvailable — this function never touches the terminal.
+export function applyApprovalPick(latch: Map<string, true>, tool: string, pick: number): "once" | "session" | "reject" | "feedback" {
+	if (pick === 1) {
+		latch.set(tool, true);
+		return "session";
+	}
+	if (pick === 2) return "reject";
+	if (pick === 3) return "feedback";
+	if (pick === 0) return "once";
+	return "reject";
+}
+
+type ApprovalVerdict = { proceed: boolean; refusal?: string };
+async function approvalFor(tool: string, detail: string): Promise<ApprovalVerdict> {
+	if (sessionApprovals.has(tool)) return { proceed: true };
+	const pick = await askApproval(await approval_header_async(tool), detail, await approval_choices_async());
+	const kind = pick === null ? "reject" : applyApprovalPick(sessionApprovals, tool, pick);
+	if (kind === "once" || kind === "session") return { proceed: true };
+	// Null (Esc/Ctrl-C/Ctrl-D) lands here as reject; empty feedback
+	// degrades to the plain refusal rather than sending blank text.
+	if (kind === "feedback") {
+		const fb = await askText("Rejection feedback (Enter to send, Esc for plain reject):");
+		if (fb !== null && fb.trim()) return { proceed: false, refusal: await approval_feedback_result_async(tool, fb) };
+	}
+	return { proceed: false, refusal: await refuse_approval_rejected_async(tool) };
+}
+
 // Affirmative trust only: stored allow, or session trust for this run.
-// Stored deny AND undecided both refuse (named fix, BAML-owned).
-async function gateWriteTrust(): Promise<void> {
+// Stored deny refuses (named fix, BAML-owned) without prompting.
+// Undecided prompts per call on an interactive TTY and refuses headless.
+async function gateWriteTrust(tool: string, detail: string): Promise<void> {
 	const t = trustReader();
 	if (t === "allow" || t === "session") return;
-	throw new Error(await refuse_write_untrusted_async());
+	if (t === "deny" || !approvalInteractive || !promptAvailable()) {
+		throw new Error(await refuse_write_untrusted_async());
+	}
+	const v = await approvalFor(tool, detail);
+	if (!v.proceed) throw new Error(v.refusal);
 }
 
 function diffEnvelope(path: string, before: string, after: string): string {
@@ -128,7 +176,7 @@ async function execWrite(args: Record<string, unknown>): Promise<string> {
 	if (Buffer.byteLength(content) > TOOL_WRITE_CAP) {
 		throw new Error(await refuse_write_too_large_async(p, TOOL_WRITE_CAP));
 	}
-	await gateWriteTrust();
+	await gateWriteTrust("write", `write ${p} (${Buffer.byteLength(content)} bytes)`);
 	const abs = await jailResolve(p, refuse_write_outside_root_async);
 	const before = existsSync(abs) ? readFileSync(abs, "utf8") : "";
 	if (Buffer.byteLength(before) > TOOL_WRITE_CAP) {
@@ -144,7 +192,7 @@ async function execEdit(args: Record<string, unknown>): Promise<string> {
 	const edits = args.edits;
 	if (typeof p !== "string" || !p) throw new Error('edit requires a "path" string');
 	if (!Array.isArray(edits) || edits.length === 0) throw new Error('edit requires a non-empty "edits" array');
-	await gateWriteTrust();
+	await gateWriteTrust("edit", `edit ${p} (${edits.length} edit${edits.length === 1 ? "" : "s"})`);
 	const abs = await jailResolve(p, refuse_write_outside_root_async);
 	let current: string;
 	try {
@@ -252,6 +300,12 @@ async function execBash(args: Record<string, unknown>): Promise<string> {
 	const prog = bashProgram(command);
 	if (!prog || !BASH_ALLOW.has(prog)) {
 		throw new Error(await refuse_bash_blocked_async(command, [...BASH_ALLOW].sort().join(", ")));
+	}
+	// bi#170: allowlisted commands approve per call on an interactive
+	// TTY (session latch skips repeats); headless runs proceed as today.
+	if (approvalInteractive && promptAvailable()) {
+		const v = await approvalFor("bash", `run: ${command}`);
+		if (!v.proceed) throw new Error(v.refusal);
 	}
 	let raw: string;
 	try {

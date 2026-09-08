@@ -10,7 +10,7 @@ import { runAgent, runSingleImageTurn } from "./agent.js";
 import { HttpKeeperHub, LeaseKeeper } from "./keeper.js";
 import { HubSubscriber, TerminalNotifier, notifyApprovalRequired, notifyTurnComplete } from "./notify.js";
 import { loadBaisIssues, readyBaisIssues, filterReadyIssues, blastRadii, dispatchPack, parseFileClaims, warnUnknownShared, warnUnknownWithheld, createBaisIssue, moveBaisIssue, linkBaisIssues, checkBaisIssues, graphBaisIssues, scanBaisHeaders, scannedBlockers, loadStagedIssues, parseClaimDuration, renewBaisClaim, reapBaisClaims } from "./bais.js";
-import { listTools, handleTool, emitToolDiff, setTrustReader } from "./tools.js";
+import { listTools, handleTool, emitToolDiff, setApprovalInteractive, setTrustReader } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { showStagedImage, teardownInlineImages } from "./image-display.js";
 import { runAuthStatus, runLogin, runLogout, runOAuthLogin } from "./auth_cli.js";
@@ -2753,6 +2753,9 @@ async function printWelcomeFrame(backend: ReplBackend, sess: ReplSessionState, f
 // Ctrl-C mid-turn aborts the process (same as `bi run`) — the session file
 // and printed transcript remain.
 async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promise<void> {
+	// bi#170: per-call tool approval prompts live only in the interactive
+	// REPL — `bi run` and pipes keep non-interactive refuse/proceed behavior.
+	setApprovalInteractive(true);
 	// bi#188: BI_TUI=go covers the `bi run` turn-render path only — the
 	// interactive REPL (startup modals, slash commands, session pickers,
 	// prompt.ts runModal) is not routed through the Go shell yet. Named

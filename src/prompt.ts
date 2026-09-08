@@ -1074,6 +1074,80 @@ export async function pickList(title: string, rows: ScreenRow[], initial = 0): P
 	});
 }
 
+// Approval choice list (bi#170): fixed choices, no filter row — digits
+// select directly, ↑/↓ moves, Enter confirms, Esc/Ctrl-C/Ctrl-D rejects
+// (null). Same DynamicBorder frame as every modal picker; ASCII ">"
+// marker only (narrow-terminal grapheme caution, bi#153).
+export class ApprovalList extends Container implements Focusable {
+	private _focused = false;
+	get focused(): boolean {
+		return this._focused;
+	}
+	set focused(value: boolean) {
+		this._focused = value;
+	}
+	private at = 0;
+	private body = new Text("");
+	constructor(
+		private choices: string[],
+		private onResolve: (index: number | null) => void,
+	) {
+		super();
+		this.addChild(this.body);
+		this.paint();
+	}
+	private paint(): void {
+		this.body.setText(this.choices.map((c, i) => `${i === this.at ? ">" : " "} ${i + 1}. ${c}`).join("\n"));
+	}
+	handleInput(data: string): void {
+		const kb = getKeybindings();
+		if (data.length === 1 && data >= "1" && data <= "9") {
+			const n = Number(data) - 1;
+			if (n < this.choices.length) this.onResolve(n);
+			return;
+		}
+		if (kb.matches(data, "tui.select.up")) {
+			this.at = (this.at + this.choices.length - 1) % this.choices.length;
+			this.paint();
+			return;
+		}
+		if (kb.matches(data, "tui.select.down")) {
+			this.at = (this.at + 1) % this.choices.length;
+			this.paint();
+			return;
+		}
+		if (kb.matches(data, "tui.select.confirm")) {
+			this.onResolve(this.at);
+			return;
+		}
+		if (kb.matches(data, "tui.select.cancel") || data === "\x03" || data === "\x04") {
+			this.onResolve(null);
+			return;
+		}
+	}
+}
+
+// Per-call approval prompt (bi#170): BAML-shaped header + one detail
+// line over the numbered choices. Null means rejected (Esc/Ctrl-C/
+// Ctrl-D). runModal throws on no TTY — callers gate with
+// promptAvailable first, same as the other one-shot prompts.
+export async function askApproval(header: string, detail: string, choices: string[]): Promise<number | null> {
+	if (choices.length === 0) return null;
+	return runModal<number | null>((ui, root) => {
+		const border = new DynamicBorder();
+		root.addChild(border);
+		root.addChild(new Text(truncateVisual(header, termWidth())));
+		if (detail) root.addChild(new Text(truncateVisual(detail, termWidth())));
+		let list!: ApprovalList;
+		const wait = new Promise<number | null>((resolve) => {
+			list = new ApprovalList(choices, resolve);
+		});
+		root.addChild(list);
+		root.addChild(border);
+		return { wait, focus: list };
+	});
+}
+
 // Select-list prompt with a live preview pane (bi#105 theme selector —
 // pi's ThemeSelectorComponent shape: onSelectionChange repaints the
 // preview, Enter commits, Esc keeps). previewFor maps the highlighted

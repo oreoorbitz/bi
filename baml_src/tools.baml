@@ -327,6 +327,55 @@ function refuse_read_binary(tool: string, path: string) -> string {
     `refusing ${tool} "${path}": binary content looks present (NUL byte) — read tools serve text only`
 }
 
+// bi#170 per-call approval. The host prompts (TTY REPL only) when stored
+// or session trust does not cover a write/edit/bash call; BAML owns the
+// words — choice labels, per-tool headers, and both refusal results.
+function approval_choices() -> string[] {
+    [
+        "Approve once",
+        "Approve for this session",
+        "Reject",
+        "Reject with feedback",
+    ]
+}
+
+function approval_header(tool: string) -> string {
+    if (tool == "bash") {
+        "Run this command?"
+    } else if (tool == "write" || tool == "edit") {
+        "Apply these edits?"
+    } else {
+        "Allow this call?"
+    }
+}
+
+function refuse_approval_rejected(tool: string) -> string {
+    `operator rejected this ${tool} call with no feedback — do not retry the same call; offer an alternative or ask what changed`
+}
+
+function approval_feedback_result(tool: string, feedback: string) -> string {
+    `operator rejected this ${tool} call with feedback: "${feedback}" — address the feedback before retrying`
+}
+
+test "per-call approval words are BAML-shaped (bi#170)" {
+    assert.equal(
+        approval_choices(),
+        ["Approve once", "Approve for this session", "Reject", "Reject with feedback"],
+    );
+    assert.equal(approval_header("bash"), "Run this command?");
+    assert.equal(approval_header("write"), "Apply these edits?");
+    assert.equal(approval_header("edit"), "Apply these edits?");
+    assert.equal(approval_header("grep"), "Allow this call?");
+    assert.equal(
+        refuse_approval_rejected("write"),
+        "operator rejected this write call with no feedback — do not retry the same call; offer an alternative or ask what changed",
+    );
+    assert.equal(
+        approval_feedback_result("bash", "use rg instead"),
+        "operator rejected this bash call with feedback: \"use rg instead\" — address the feedback before retrying",
+    )
+}
+
 // Advertise/execute parity: ListTools names ONLY tools with a host
 // executor in src/tools.ts handleTool (bi#150 bash, bi#151 read/ls/grep/find,
 // bi#77 write/edit, plus bais_*/report_*). Delisting was the incident fix;
