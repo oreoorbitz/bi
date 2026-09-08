@@ -249,6 +249,44 @@ export function chromeAnsi(token: ChromeTokenName, env: NodeJS.ProcessEnv = proc
 	return hexSpecToAnsi(currentChromeTokens[token] ?? "");
 }
 
+// ---------------------------------------------------------------------------
+// bi#193: semantic transcript coloring. ONE mechanism, pinned: the host
+// wraps known segments at paint time through the two composers below —
+// BAML emits no token markers and no ANSI ever lands in BAML literals.
+// Every raw SGR byte lives in THIS file (grep-auditable): call sites only
+// compose chromeWrap/chromeToolLine output.
+//
+// CHROME_RESET is fg-default (39), not full reset (0): a wrapped segment
+// inside a BAML style_segment span must hand back the ambient default,
+// matching how pi-tui theme objects close their own wraps.
+export const CHROME_RESET = "\x1b[39m";
+
+// Wrap one segment in a token's color. Byte-identical passthrough when
+// suppressed (BI_THEME=none / NO_COLOR) — the escape-free posture holds
+// by construction, no call-site gate beyond TTY.
+export function chromeWrap(token: ChromeTokenName, s: string, env: NodeJS.ProcessEnv = process.env): string {
+	const open = chromeAnsi(token, env);
+	return open === "" ? s : `${open}${s}${CHROME_RESET}`;
+}
+
+// Tool start/done line (BAML format_tool_start/format_tool_done shaped):
+// the whole line recedes text_dim, the tool NAME pops primary — kimi's
+// "actions pop, details recede" read. The name is the first occurrence
+// by construction (glyph + space + name lead every shape), so indexOf
+// pins the segment without parsing. `paint` is the caller's TTY gate:
+// pipes pass false and get the BAML line byte-identical. Composes over a
+// six-role-themed line too (BAML's open leads, chrome re-colors the name
+// and dims the tail, BAML's close still terminates the span).
+export function chromeToolLine(line: string, name: string, paint: boolean, env: NodeJS.ProcessEnv = process.env): string {
+	if (!paint) return line;
+	const dim = chromeAnsi("text_dim", env);
+	const primary = chromeAnsi("primary", env);
+	if (dim === "" && primary === "") return line;
+	const at = line.indexOf(name);
+	if (at < 0) return line;
+	return `${dim}${line.slice(0, at)}${primary}${name}${dim}${line.slice(at + name.length)}${CHROME_RESET}`;
+}
+
 export function chromePalettePath(): string {
 	return join(dirname(getBiSessionsDir()), "chrome-palette.json");
 }

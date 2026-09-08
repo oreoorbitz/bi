@@ -25,6 +25,7 @@
 
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { format_status_label, status_event_tail } from "../baml_sdk/index.js";
+import { CHROME_RESET, chromeAnsi } from "./theme-files.js";
 
 export type StatusKind = "working" | "retry" | "compaction" | "branchSummary";
 export const STATUS_KINDS: StatusKind[] = ["working", "retry", "compaction", "branchSummary"];
@@ -110,6 +111,22 @@ export function clampStatusLine(line: string, width?: number): string {
 	const w = width ?? process.stderr.columns ?? 0;
 	if (typeof w !== "number" || !Number.isFinite(w) || w <= 0) return line;
 	return truncateToWidth(line, Math.floor(w));
+}
+
+// bi#193: status line chrome — the spinner glyph pops primary, the rest
+// of the line (label · elapsed · event tail, kimi's "thinking blocks"
+// shade) recedes text_dim. Host wraps known segments at paint time: the
+// spinner is a host-owned format_status argument, so it is pre-wrapped
+// primary and the dim open is re-closed around the whole line after.
+// chromeAnsi/CHROME_RESET are "" / inert under BI_THEME=none and NO_COLOR,
+// so the suppressed line is byte-identical to the unstyled one; paint
+// only runs on a TTY, so pipes never reach here.
+export function paintStatusLine(spinner: string, label: string, elapsedMs: number, event: string, formatStatus: (spinner: string, label: string, elapsedMs: number, event: string) => string): string {
+	const dim = chromeAnsi("text_dim");
+	const primary = chromeAnsi("primary");
+	const glyph = primary === "" ? spinner : `${primary}${spinner}${dim}`;
+	const line = formatStatus(glyph, label, elapsedMs, event);
+	return dim === "" ? line : `${dim}${line}${CHROME_RESET}`;
 }
 
 // Kind-aware turn status for stderr. Same contract as HostStatus: in-place
@@ -211,7 +228,7 @@ export class KindStatus implements StatusSink {
 		return Date.now() - this.startMs;
 	}
 	private paint(): void {
-		const line = this.formatStatus(spinnerFor(this.state.kind, this.tick), this.label, this.elapsed(), this.event);
+		const line = paintStatusLine(spinnerFor(this.state.kind, this.tick), this.label, this.elapsed(), this.event, this.formatStatus);
 		this.tick += 1;
 		process.stderr.write(`\r\x1b[2K${clampStatusLine(line)}`);
 	}

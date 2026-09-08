@@ -130,3 +130,42 @@ test "fence composition: refused patch implies skill stays user-owned" {
         assert.is_true(!owner_fence_allows(p))
     }
 }
+
+// hub#208: adoption is the explicit ownership transfer. User-origin adopts
+// into curator management (after which the fence lets curator patches
+// through); curator-origin adoption refuses — the fence cannot opt itself
+// in.
+test "adoption transfers ownership only at the user's request" {
+    let granted = adopt_skill(SkillAdoption { skill_name: "ground-first", requested_by: "user" });
+    assert.is_type<SkillAdopted>(granted);
+    if let ok: SkillAdopted = granted {
+        assert.equal(ok.owner, "curator");
+        // post-adoption, curator maintenance of this skill passes the fence
+        assert.is_true(
+            owner_fence_allows(
+                SkillPatch {
+                    skill_name: ok.skill_name,
+                    target_owner: ok.owner,
+                    origin: "curator",
+                    diff_summary: "curator maintains the adopted skill",
+                },
+            ),
+        );
+    }
+    let self_grant = adopt_skill(SkillAdoption { skill_name: "ground-first", requested_by: "curator" });
+    assert.is_type<SkillAdoptRefused>(self_grant);
+    if let no: SkillAdoptRefused = self_grant {
+        assert.is_true(no.reason.index_of("only the user may grant it") != null);
+        // and the skill is still user-owned: curator patches still refuse
+        assert.is_true(
+            !owner_fence_allows(
+                SkillPatch {
+                    skill_name: no.skill_name,
+                    target_owner: "user",
+                    origin: "curator",
+                    diff_summary: "curator tries after a refused adoption",
+                },
+            ),
+        );
+    }
+}

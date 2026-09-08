@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { GetTool_async, ListTools_async, render_tool_diff_async, refuse_bash_blocked_async, refuse_bash_timeout_async, refuse_read_binary_async, refuse_read_outside_root_async, refuse_read_too_large_async, refuse_write_outside_root_async, refuse_write_untrusted_async, refuse_write_too_large_async, edit_missing_text_async, gate_meta_tool_materialization_async, mine_meta_tools_async, MaterializeRefuse, type MetaToolProposal, type MetaToolSpec, type SessionTrace, type ToolSpec } from "../baml_sdk/index.js";
+import { GetTool_async, ListTools_async, render_tool_diff_async, refuse_bash_blocked_async, refuse_bash_timeout_async, refuse_read_binary_async, refuse_read_outside_root_async, refuse_read_too_large_async, refuse_write_outside_root_async, refuse_write_untrusted_async, refuse_write_too_large_async, edit_missing_text_async, gate_meta_tool_materialization_async, mine_meta_tools_async, write_guard_check_async, MaterializeRefuse, WriteGuardRefuse, type MetaToolProposal, type MetaToolSpec, type SessionTrace, type ToolSpec } from "../baml_sdk/index.js";
 import { checkBaisIssues, createBaisIssue, graphBaisIssues, loadBaisIssues, moveBaisIssue, readyBaisIssues } from "./bais.js";
 import { colorizeDiffLines } from "./diff-render.js";
 import { getStoredTrust } from "./trust.js";
@@ -78,12 +78,11 @@ export function setTrustReader(fn: () => string | null): void {
 	trustReader = fn;
 }
 
-// Resolve inside the project cwd or throw the caller's BAML refusal.
-// Symlink escapes resolve through the nearest existing ancestor, and an
-// already-existing final symlink resolves fully too, so a link pointing
-// outside still refuses. The refuse callback picks the refusal string:
-// write's for write/edit, read's for the read-only tools (bi#151).
-async function jailResolve(p: string, refuse: (path: string) => Promise<string>): Promise<string> {
+// Resolve inside the project cwd without judging: the cwd-jailed, symlink-
+// aware absolute path for p. Shared by the jail (which refuses escapes) and
+// the hub#208 read-mark set (which must key read and write on the SAME
+// resolved path or a symlink spelling would dodge the guard).
+function guardResolvePath(p: string): string {
 	const root = realpathSync(process.cwd());
 	const abs = resolve(root, p);
 	let probe = abs;
@@ -92,7 +91,17 @@ async function jailResolve(p: string, refuse: (path: string) => Promise<string>)
 		if (parent === probe) break;
 		probe = parent;
 	}
-	const real = existsSync(abs) ? realpathSync(abs) : realpathSync(probe) + abs.slice(probe.length);
+	return existsSync(abs) ? realpathSync(abs) : realpathSync(probe) + abs.slice(probe.length);
+}
+
+// Resolve inside the project cwd or throw the caller's BAML refusal.
+// Symlink escapes resolve through the nearest existing ancestor, and an
+// already-existing final symlink resolves fully too, so a link pointing
+// outside still refuses. The refuse callback picks the refusal string:
+// write's for write/edit, read's for the read-only tools (bi#151).
+async function jailResolve(p: string, refuse: (path: string) => Promise<string>): Promise<string> {
+	const root = realpathSync(process.cwd());
+	const real = guardResolvePath(p);
 	if (real !== root && !real.startsWith(root + sep)) {
 		throw new Error(await refuse(p));
 	}
@@ -512,6 +521,55 @@ export async function materializeMetaTool(proposal: MetaToolProposal): Promise<M
 		throw new Error(`meta-tool materialization refused: ${verdict.reason}`);
 	}
 	return verdict;
+}
+
+// hub#208 rail 1: READ-BEFORE-WRITE enforced by the tool layer, not the
+// prompt (hermes skill_manager_guards.py:55-71 read marks, 220-230
+// refusal). A ToolSession carries the per-session read marks — the resolved
+// absolute paths the `read` tool has served this session. The guarded entry
+// point consults BAML's write_guard_check (policy + named refusal live in
+// baml_src/write_guard.baml; the host owns only the mark set) before any
+// write/edit: edit always needs a mark, write needs one only when
+// overwriting an existing file (new-file creation is unfenced — there is
+// nothing to have read). ls/grep/find never mark: they show names and
+// fragments, not the content a write would destroy.
+//
+// Wiring: cli.ts still dispatches through bare handleTool (bi#193 owns that
+// file) — the guard ships as this opt-in wrapper; routing the agent loop
+// through newToolSession()/handleToolInSession is the named follow-up.
+export interface ToolSession {
+	readMarks: Set<string>;
+}
+
+export function newToolSession(): ToolSession {
+	return { readMarks: new Set<string>() };
+}
+
+export async function handleToolInSession(
+	session: ToolSession,
+	name: string,
+	args: Record<string, unknown>,
+): Promise<string> {
+	if (name === "write" || name === "edit") {
+		const p = args.path;
+		if (typeof p !== "string" || !p) throw new Error(`${name} requires a "path" string`);
+		const abs = guardResolvePath(p);
+		const verdict = await write_guard_check_async({
+			tool: name,
+			path: p,
+			target_exists: existsSync(abs),
+			read_this_session: session.readMarks.has(abs),
+		});
+		if (verdict instanceof WriteGuardRefuse) {
+			throw new Error(verdict.reason);
+		}
+	}
+	const out = await handleTool(name, args);
+	if (name === "read") {
+		const p = args.path;
+		if (typeof p === "string" && p) session.readMarks.add(guardResolvePath(p));
+	}
+	return out;
 }
 
 // BAML is spec, host is executor — dispatch table for the agent loop.

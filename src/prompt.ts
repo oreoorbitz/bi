@@ -48,6 +48,7 @@ import { currentKeybindingsManager } from "./keybindings.js";
 import { PasteBurst } from "./paste-burst.js";
 import { splitSecondWord } from "./paths.js";
 import { getBiSessionsDir } from "./session.js";
+import { chromeWrap } from "./theme-files.js";
 import { disposeReplTui, ensureReplTui, replTuiLeased, termWidth } from "./tui.js";
 
 export interface ScreenRow {
@@ -69,17 +70,24 @@ export function rowSearchTexts(rows: ScreenRow[]): string[] {
 	});
 }
 
-// Identity theme for now: no chalk in bi's deps, so no color mapping
-// yet — selection reads via the → prefix + scroll position.
-const plainSelectList = {
-	selectedPrefix: (s: string) => s,
-	selectedText: (s: string) => s,
-	description: (s: string) => s,
-	scrollInfo: (s: string) => s,
-	noMatch: (s: string) => s,
+// bi#193: select rows color through the chrome palette (host wraps known
+// segments at paint time — these identity passthroughs were the hook):
+// the selected row pops primary, the description column (session picker
+// timestamps/ids ride it) and scroll/no-match chrome recede. chromeWrap
+// is a byte-identical passthrough under BI_THEME=none / NO_COLOR, and
+// every consumer is a TTY-only modal, so pipes never see a byte.
+// Row labels stay plain through clean(): per-row SGR would fight the
+// whole-row selectedText wrap, so meta dimming lives in the description
+// channel, which pi-tui styles per row without a selection conflict.
+const chromeSelectList = {
+	selectedPrefix: (s: string) => chromeWrap("primary", s),
+	selectedText: (s: string) => chromeWrap("primary", s),
+	description: (s: string) => chromeWrap("text_dim", s),
+	scrollInfo: (s: string) => chromeWrap("text_muted", s),
+	noMatch: (s: string) => chromeWrap("text_muted", s),
 };
-const plainEditorTheme: EditorTheme = { borderColor: (s) => s, selectList: plainSelectList };
-const plainListTheme: SelectListTheme = { ...plainSelectList };
+const plainEditorTheme: EditorTheme = { borderColor: (s) => s, selectList: chromeSelectList };
+const plainListTheme: SelectListTheme = { ...chromeSelectList };
 
 export function promptAvailable(): boolean {
 	if (process.env.BI_SCREEN === "0") return false;

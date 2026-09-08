@@ -53,6 +53,20 @@
 //    (#42405 — that caps the model's retry loop, a tool-loop concern), and
 //    thousands-separator formatting in usage strings.
 //
+// hub#208 rail 2: PROVENANCE-AS-POLICY. Port of hermes' skill_provenance.py
+// + skill_manager_guards.py _background_review_write_guard (#67140):
+// created_by is a POLICY FLAG, not a provenance claim — autonomous/curator
+// passes may only touch owner="agent" artifacts, a MISSING owner and an
+// explicit owner="user" resolve IDENTICALLY (fail closed; keying on record
+// presence made the policy race the guard's own bookkeeping), and adoption
+// (memory_adopt) is the explicit ownership transfer, user-origin only. Each
+// block carries an owner (MemoryState.memory_owner/user_owner, null = user,
+// fail closed). The plain memory_add/replace/remove/apply_batch functions
+// stay the FOREGROUND path (user-origin, never fenced — hermes fences only
+// the autonomous fork); the *_as variants take an explicit origin and fence
+// on it, so the host's autonomous passes (review-fork approval, curator)
+// route through them.
+//
 // Plain-data FFI idiom (turn.baml limitations 2/4): every type here is
 // field-only classes and literal-string unions; the result union crosses the
 // bridge as a returned value, the direction that decodes cleanly.
@@ -83,10 +97,22 @@ function max_scan_chars() -> int {
 // Live memory state: the two bounded blocks. MEMORY.md is the agent's own
 // notes; USER.md is who the user is. Both are plain entry lists; the host
 // persists them as delimiter-joined text (serialize_entries below).
+//
+// hub#208: each block carries an owner. Optional so pre-hub#208 persisted
+// states (and every existing literal) load unchanged — null resolves to
+// "user" (fail closed, hermes #67140), never to agent-owned.
 class MemoryState {
     memory_entries: string[],
     user_entries: string[],
+    memory_owner: MemoryOwner?,
+    user_owner: MemoryOwner?,
 }
+
+// Provenance-as-policy (hub#208): "agent" blocks are curator-managed (the
+// self-improvement loop may patch them autonomously); "user" blocks are
+// user-authored or user-blessed and refuse agent-origin patches. User-origin
+// writes are always allowed (foreground is sovereign).
+type MemoryOwner = "user" | "agent";
 
 // One batch operation — hermes' operations[] item shape. Literal-string
 // union field, same idiom as review.baml's MemoryAdd.op.
@@ -147,12 +173,22 @@ class MemoryInvalid {
     message: string,
 }
 
+// Provenance fence refusal (hub#208): an agent-origin (autonomous) write hit
+// a block it does not own. Nothing changed; the message names the adopt fix.
+class MemoryOwnerRefused {
+    target: string,
+    owner: MemoryOwner, // resolved owner (null resolves to "user" first)
+    origin: MemoryOwner, // who attempted the write
+    message: string,
+}
+
 type MemoryWriteResult = MemoryWriteOk
     | MemoryOverflow
     | MemoryDuplicate
     | MemoryThreatBlocked
     | MemoryNoMatch
-    | MemoryInvalid;
+    | MemoryInvalid
+    | MemoryOwnerRefused;
 
 // Frozen load-time snapshot (hermes _system_prompt_snapshot): rendered once
 // at session start and injected verbatim; mid-session writes persist to the
@@ -191,8 +227,101 @@ function memory_entries_for(state: MemoryState, target: string) -> string[] {
 
 function memory_with_entries(state: MemoryState, target: string, entries: string[]) -> MemoryState {
     match (target) {
-        "memory" => MemoryState { memory_entries: entries, user_entries: state.user_entries },
-        "user" => MemoryState { memory_entries: state.memory_entries, user_entries: entries },
+        "memory" => {
+            MemoryState {
+                memory_entries: entries,
+                user_entries: state.user_entries,
+                memory_owner: state.memory_owner,
+                user_owner: state.user_owner,
+            }
+        },
+        "user" => {
+            MemoryState {
+                memory_entries: state.memory_entries,
+                user_entries: entries,
+                memory_owner: state.memory_owner,
+                user_owner: state.user_owner,
+            }
+        },
+        let other => {
+            throw baml.errors.InvalidArgument {
+                message: `unknown memory target: ${other} (want "memory" or "user")`,
+            }
+        },
+    }
+}
+
+// --- Provenance fence (hub#208 rail 2) ----------------------------------------
+
+// Resolve a block's owner, FAIL CLOSED (hermes #67140): a missing owner and
+// an explicit "user" resolve identically — NOT agent-owned. "Allowed exactly
+// once" is not a policy; null is user soil until memory_adopt says otherwise.
+function memory_block_owner(state: MemoryState, target: string) -> MemoryOwner {
+    let raw = match (target) {
+        "memory" => state.memory_owner,
+        "user" => state.user_owner,
+        let other => {
+            throw baml.errors.InvalidArgument {
+                message: `unknown memory target: ${other} (want "memory" or "user")`,
+            }
+        },
+    };
+    raw ?? "user"
+}
+
+// The fence: user-origin writes are sovereign (foreground is never fenced —
+// hermes fences only the autonomous fork); agent-origin writes may only
+// touch agent-owned blocks.
+function memory_fence_allows(owner: MemoryOwner, origin: MemoryOwner) -> bool {
+    if (origin == "user") {
+        true
+    } else {
+        owner == "agent"
+    }
+}
+
+// Preflight for an origin-tagged write: null when allowed, else the named
+// refusal (bi#55) carrying the adopt fix — hermes: "Run `hermes curator
+// adopt <name>` to opt it in."
+function memory_check_owner(
+    state: MemoryState,
+    target: string,
+    origin: MemoryOwner,
+) -> MemoryOwnerRefused? {
+    let owner = memory_block_owner(state, target);
+    if (memory_fence_allows(owner, origin)) {
+        null
+    } else {
+        MemoryOwnerRefused {
+            target: target,
+            owner: owner,
+            origin: origin,
+            message: `Refusing autonomous memory write to the ${target} block: the block is not agent-owned (owner=${owner}). User-owned memory is off-limits to autonomous curation. Adopt it first (memory_adopt — the explicit, user-approved ownership transfer), or leave it to the user.`,
+        }
+    }
+}
+
+// Adoption: the explicit ownership transfer (hub#208). Deliberately a
+// separate, host-invoked command — never a side effect of a write, so the
+// fence can never opt itself in. Entries are untouched; only the flag moves.
+function memory_adopt(state: MemoryState, target: string) -> MemoryState {
+    match (target) {
+        "memory" => {
+            MemoryState {
+                memory_entries: state.memory_entries,
+                user_entries: state.user_entries,
+                memory_owner: "agent",
+                user_owner: state.user_owner,
+            }
+        },
+        "user" => {
+            MemoryState {
+                memory_entries: state.memory_entries,
+                user_entries: state.user_entries,
+                memory_owner: state.memory_owner,
+                user_owner: "agent",
+            }
+        },
         let other => {
             throw baml.errors.InvalidArgument {
                 message: `unknown memory target: ${other} (want "memory" or "user")`,
@@ -999,6 +1128,64 @@ function memory_apply_batch(
         limit,
         memory_with_entries(state, target, working),
     )
+}
+
+// --- Origin-tagged entry points (hub#208) --------------------------------------
+//
+// The four functions above are the FOREGROUND path: user-origin, never
+// fenced (hermes fences only the autonomous fork — foreground/user-requested
+// artifacts are sovereign). Autonomous passes (review-fork approval,
+// curator consolidation) route through these *_as variants, which fence on
+// the declared origin BEFORE any validation, scan, or budget work — a
+// fenced-out write changes nothing and runs nothing.
+
+function memory_add_as(
+    state: MemoryState,
+    target: string,
+    content: string,
+    origin: MemoryOwner,
+) -> MemoryWriteResult {
+    if let refused: MemoryOwnerRefused = memory_check_owner(state, target, origin) {
+        return refused;
+    }
+    memory_add(state, target, content)
+}
+
+function memory_replace_as(
+    state: MemoryState,
+    target: string,
+    old_text: string,
+    new_content: string,
+    origin: MemoryOwner,
+) -> MemoryWriteResult {
+    if let refused: MemoryOwnerRefused = memory_check_owner(state, target, origin) {
+        return refused;
+    }
+    memory_replace(state, target, old_text, new_content)
+}
+
+function memory_remove_as(
+    state: MemoryState,
+    target: string,
+    old_text: string,
+    origin: MemoryOwner,
+) -> MemoryWriteResult {
+    if let refused: MemoryOwnerRefused = memory_check_owner(state, target, origin) {
+        return refused;
+    }
+    memory_remove(state, target, old_text)
+}
+
+function memory_apply_batch_as(
+    state: MemoryState,
+    target: string,
+    ops: MemoryOp[],
+    origin: MemoryOwner,
+) -> MemoryWriteResult {
+    if let refused: MemoryOwnerRefused = memory_check_owner(state, target, origin) {
+        return refused;
+    }
+    memory_apply_batch(state, target, ops)
 }
 
 // --- Persistence + frozen snapshot -------------------------------------------

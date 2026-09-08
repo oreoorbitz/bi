@@ -66,6 +66,40 @@ function owner_fence_allows(patch: SkillPatch) -> bool {
     }
 }
 
+// Adoption (hub#208 rail 2): the EXPLICIT ownership transfer — hermes
+// `hermes curator adopt <name>`, the only supported way a user-owned skill
+// enters curator management. Deliberately a standalone decision, never a
+// side effect of a patch: the fence can never opt itself in. Only a
+// user-origin request adopts; a curator-origin "adoption" is the fence's
+// own bypass and refuses with the reason named (bi#55).
+class SkillAdoption {
+    skill_name: string,
+    requested_by: SkillOwner,
+}
+
+class SkillAdopted {
+    skill_name: string,
+    owner: SkillOwner, // always "curator" — adopted INTO curator management
+}
+
+class SkillAdoptRefused {
+    skill_name: string,
+    reason: string,
+}
+
+type SkillAdoptResult = SkillAdopted | SkillAdoptRefused;
+
+function adopt_skill(req: SkillAdoption) -> SkillAdoptResult {
+    if (req.requested_by == "user") {
+        SkillAdopted { skill_name: req.skill_name, owner: "curator" }
+    } else {
+        SkillAdoptRefused {
+            skill_name: req.skill_name,
+            reason: `refusing curator-origin adoption of "${req.skill_name}": adoption is the explicit ownership transfer and only the user may grant it — a curator that could adopt user skills would be its own fence's bypass`,
+        }
+    }
+}
+
 // Registry filter: the skills whose executable When-to-Use fires on this
 // turn. Dynamic dispatch — a Skill[] holds any implementor.
 function active_skills(skills: Skill[], ctx: TurnContext) -> Skill[] {

@@ -4,7 +4,20 @@
 // "text (url)" with zero escapes left at theme null; (3) no line keeps
 // width padding; (4) BAML lexical highlight survives inside fences at a
 // real theme; (5) the pipe fallback is byte-identical to the legacy
-// render_markdown_text print path.
+// render_markdown_text print path; (8/9, bi#193) the named chrome
+// elements (headers → primary, inline code + fences → text_dim) byte-pin
+// their SGR codes through chromeAnsi, and NO_COLOR / BI_THEME=none
+// renders are escape-free.
+//
+// Env discipline: the shaping sections (1–6) pin the ESCAPE-FREE
+// contract, so NO_COLOR=1 is set for the whole file and cleared only
+// inside the color arms — the ambient env must never leak either way.
+//
+// Red-check (bi#57, bi#193 arm), executed 2026-09-08: reverted
+// plainTheme.heading to identity in bi/src/markdown.ts →
+//   FAIL: chrome heading byte-pins primary at theme null
+//   FAIL: theme default heading also chrome primary
+// restored → green. A color arm that cannot go red is camouflage.
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -13,10 +26,15 @@ const { renderMarkdownTui, expandLinks, markdownTuiAvailable } = await import(
 	join(ROOT, "..", "dist", "src", "markdown.js")
 );
 const { render_markdown_text_async } = await import(join(ROOT, "..", "dist", "baml_sdk", "index.js"));
+const tf = await import(join(ROOT, "..", "dist", "src", "theme-files.js"));
 const { setCapabilities, resetCapabilitiesCache } = await import("@earendil-works/pi-tui");
-// Sections 1–5 pin the incapable-terminal contract (fallback links, zero
-// escapes at theme null), so force hyperlinks off: the runner's own TERM
-// env must not leak into the fixture (bi#164 makes render env-sensitive).
+// Sections 1–7 pin the incapable-terminal contract (fallback links, zero
+// escapes when suppressed), so force hyperlinks off: the runner's own
+// TERM env must not leak into the fixture (bi#164 makes render
+// env-sensitive). Chrome suppression is forced too: the shaping
+// contract is byte-pinned escape-free regardless of the ambient env.
+process.env.NO_COLOR = "1";
+delete process.env.BI_THEME;
 setCapabilities({ images: null, trueColor: false, hyperlinks: false });
 
 let failures = 0;
@@ -117,25 +135,21 @@ resetCapabilitiesCache();
 
 // 7 — bi#165: real MarkdownTheme on the TTY path, none stays clean.
 // Expected codes derive from BAML style_segment (same role path the
-// host uses), never hardcoded palettes in this script.
+// host uses), never hardcoded palettes in this script. bi#193: the three
+// NAMED elements (heading, inline code, fence border) swapped from BAML
+// roles to chrome tokens — the color arms below byte-pin those through
+// chromeAnsi with a forced-unsuppressed env; emphasis + quote + hr stay
+// on the six-role theme.
 const { style_segment } = await import(join(ROOT, "..", "dist", "baml_sdk", "index.js"));
 const openCode = (role, theme) => {
 	const wrapped = style_segment("QXZ", role, theme);
 	return wrapped.slice(0, wrapped.indexOf("QXZ"));
 };
-const THEME_SRC = ["# h", "", "A **b** word with `c`.", "", "> q", "", "---", ""].join("\n");
+const THEME_SRC = ["# h", "", "A **b** word with `c`.", "", "- it", "", "> q", "", "---", ""].join("\n");
 const themed = renderMarkdownTui(THEME_SRC, 80, "default");
 const themedText = themed.join("\n");
 check(themedText.includes("\x1b["), "theme default emits ANSI on the TTY path");
 check(themed.some((l) => l.includes("\x1b[1m") && l.includes("b")), "bold uses SGR bold");
-check(
-	themed.some((l) => l.includes(openCode("accent", "default")) && l.includes("h")),
-	"heading uses the theme accent",
-);
-check(
-	themed.some((l) => l.includes(openCode("busy", "default")) && l.includes("c")),
-	"codespan uses the theme busy role",
-);
 check(themed.some((l) => l.includes("│") && l.includes("\x1b[")), "quote keeps a styled border");
 check(
 	themed.some((l) => /^─+$/.test(stripSgr(l)) && l.includes("\x1b[")),
@@ -146,8 +160,59 @@ check(
 setCapabilities({ images: null, trueColor: false, hyperlinks: false });
 check(
 	JSON.stringify(renderMarkdownTui(SRC, 80, "none")) === JSON.stringify(plain),
-	"theme none is byte-identical to theme null",
+	"theme none is byte-identical to theme null (suppressed)",
 );
+
+// 8 — bi#193 color arms: chrome tokens byte-pinned at the named sites.
+// NO_COLOR is cleared for exactly this section (chromeAnsi reads the env
+// live) and restored right after; expected codes come from chromeAnsi
+// itself with a forced-unsuppressed env, then the raw bytes are pinned.
+delete process.env.NO_COLOR;
+delete process.env.BI_THEME;
+const PRIMARY = tf.chromeAnsi("primary", {});
+const DIM = tf.chromeAnsi("text_dim", {});
+const RESET = tf.CHROME_RESET;
+check(PRIMARY === "\x1b[38;2;79;168;255m", "primary byte-pin #4FA8FF");
+check(DIM === "\x1b[38;2;136;136;136m", "text_dim byte-pin #888888");
+const colored = renderMarkdownTui(SRC, 80, null);
+check(
+	colored.some((l) => l.includes(`${PRIMARY}Title${RESET}`)),
+	"chrome heading byte-pins primary at theme null",
+);
+check(
+	colored.some((l) => l.includes(DIM) && l.includes("const x: number = 42; // hi")),
+	"chrome fence content byte-pins text_dim at theme null",
+);
+const themedColored = renderMarkdownTui(THEME_SRC, 80, "default");
+// pi-tui pre-styles the heading text with bold+underline at a real
+// theme, so pin the wrap, not the interior: primary-open … h … reset.
+check(
+	themedColored.some((l) => l.startsWith(PRIMARY) && l.includes("h") && l.endsWith(RESET)),
+	"theme default heading also chrome primary",
+);
+check(
+	themedColored.some((l) => l.includes(`${DIM}c${RESET}`)),
+	"theme default codespan also chrome text_dim",
+);
+check(
+	themedColored.some((l) => l.includes(openCode("accent", "default")) && l.includes("it")),
+	"non-named roles (list bullet) keep the BAML six-role path",
+);
+
+// 9 — bi#193 escape-free arms: both suppression gates are byte-clean.
+process.env.NO_COLOR = "1";
+check(
+	!renderMarkdownTui(SRC, 80, null).some((l) => l.includes("\x1b")),
+	"NO_COLOR theme null leaves zero escapes",
+);
+delete process.env.NO_COLOR;
+process.env.BI_THEME = "none";
+check(
+	!renderMarkdownTui(SRC, 80, null).some((l) => l.includes("\x1b")),
+	"BI_THEME=none theme null leaves zero escapes",
+);
+delete process.env.BI_THEME;
+process.env.NO_COLOR = "1";
 resetCapabilitiesCache();
 
 if (failures) process.exit(1);

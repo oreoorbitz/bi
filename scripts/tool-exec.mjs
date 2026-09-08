@@ -160,6 +160,47 @@ try {
 	check(errText(e).includes("outside the project root"), "find escape refuses with BAML reason");
 }
 
+// --- bi#193 color arm: tool names primary, args/result tail text_dim ---
+// Pins the chrome composition the cli tool path paints (chromeToolLine in
+// theme-files.ts) over the real BAML-shaped start/done lines. Red-check
+// (bi#57), executed 2026-09-08: reverted chromeToolLine's primary wrap to
+// pass the name through plain => FAIL tool start name pops primary
+// (got: plain name), restored => green.
+{
+	const tf = await import(join(BI, "src", "theme-files.js"));
+	const { format_tool_start_async, format_tool_done_async } = await import(join(BI, "baml_sdk", "index.js"));
+	const PRIMARY = tf.chromeAnsi("primary", {});
+	const DIM = tf.chromeAnsi("text_dim", {});
+	const RESET = tf.CHROME_RESET;
+	check(PRIMARY === "\x1b[38;2;79;168;255m" && DIM === "\x1b[38;2;136;136;136m", "tool chrome byte-pins #4FA8FF / #888888");
+
+	const start = await format_tool_start_async("read", JSON.stringify({ path: "sub/a.txt" }), { theme: null });
+	const startColored = tf.chromeToolLine(start, "read", true, {});
+	check(
+		startColored === `${DIM}◌ ${PRIMARY}read${DIM} — {"path":"sub/a.txt"}${RESET}`,
+		`tool start name pops primary, args tail dims (got: ${JSON.stringify(startColored).slice(0, 90)})`,
+	);
+	const done = await format_tool_done_async("read", "hello\nworld\n", false, { theme: null });
+	check(
+		tf.chromeToolLine(done, "read", true, {}) === `${DIM}✓ ${PRIMARY}read${DIM} · 12 chars${RESET}`,
+		"tool done name pops primary, result tail dims",
+	);
+	const failed = await format_tool_done_async("read", "open sub/nope.txt: no such file", true, { theme: null });
+	const failedColored = tf.chromeToolLine(failed, "read", true, {});
+	check(
+		failedColored === `${DIM}✗ ${PRIMARY}read${DIM} — open sub/nope.txt: no such file${RESET}`,
+		`failed done keeps the ✗ shape, path tail dims (got: ${JSON.stringify(failedColored).slice(0, 90)})`,
+	);
+	// Pipes (paint=false) and both suppression gates are byte-identical.
+	check(tf.chromeToolLine(start, "read", false, {}) === start, "pipe paint=false is the BAML line byte-identical");
+	check(tf.chromeToolLine(start, "read", true, { NO_COLOR: "1" }) === start, "NO_COLOR is the BAML line byte-identical");
+	check(tf.chromeToolLine(start, "read", true, { BI_THEME: "none" }) === start, "BI_THEME=none is the BAML line byte-identical");
+	// A themed BAML line still composes (chrome re-colors inside the span).
+	const themed = await format_tool_start_async("read", JSON.stringify({ path: "sub/a.txt" }), { theme: "default" });
+	const themedColored = tf.chromeToolLine(themed, "read", true, {});
+	check(themedColored.includes(`${PRIMARY}read${DIM}`) && themedColored.endsWith(RESET), "themed line composes without a splice fight");
+}
+
 // --- parity self-check: every advertised name executes (no 'unknown tool') ---
 const advertised = await sdkList();
 for (const t of advertised) {

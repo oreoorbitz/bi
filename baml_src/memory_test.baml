@@ -408,3 +408,132 @@ testset "memory policy (hub#209)" {
         );
     }
 }
+
+// hub#208 rail 2 tests — provenance-as-policy on memory blocks, literal
+// data. hermes contract (skill_provenance.py + #67140): created_by is a
+// policy flag; a missing owner and an explicit "user" resolve identically
+// (fail closed); adoption is the explicit ownership transfer.
+//
+// Red-check record (bi#57):
+//   4. Owner-fence net — hunk: in memory.baml memory_fence_allows, change
+//      the body to a bare `true`. Expected reason: the autonomous-refusal
+//      tests see MemoryWriteOk instead of MemoryOwnerRefused.
+//      Observed: FAIL memory provenance (hub#208)::autonomous patch to
+//      owner="user" is refused with the named reason —
+//      `assert.is_type<MemoryOwnerRefused>(res)` failed (result was
+//      MemoryWriteOk, the agent silently patched user-owned memory —
+//      exactly what the fence exists to prevent). Restored, suite green.
+testset "memory provenance (hub#208)" {
+    test "autonomous patch to owner=\"user\" is refused with the named reason" {
+        let s0 = MemoryState {
+            memory_entries: ["User's own note."],
+            user_entries: [],
+            memory_owner: "user",
+            user_owner: null,
+        };
+        let res = memory_add_as(s0, "memory", "Curator consolidation note.", "agent");
+        assert.is_type<MemoryOwnerRefused>(res);
+        if let r: MemoryOwnerRefused = res {
+            assert.equal(r.target, "memory");
+            assert.equal(r.owner, "user");
+            assert.equal(r.origin, "agent");
+            assert.contains(r.message, "not agent-owned");
+            // the fix is named: adoption is the explicit transfer
+            assert.contains(r.message, "memory_adopt");
+        }
+    }
+
+    test "autonomous patch to a null-owner block is refused (fail closed)" {
+        // hermes #67140: missing owner and explicit "user" resolve
+        // IDENTICALLY — a pre-hub#208 persisted state is user soil.
+        let s0 = MemoryState {
+            memory_entries: ["Legacy note."],
+            user_entries: [],
+            memory_owner: null,
+            user_owner: null,
+        };
+        let res = memory_add_as(s0, "memory", "Curator note.", "agent");
+        assert.is_type<MemoryOwnerRefused>(res);
+        if let r: MemoryOwnerRefused = res {
+            assert.equal(r.owner, "user");
+        }
+    }
+
+    test "autonomous patch to owner=\"agent\" succeeds" {
+        let s0 = MemoryState {
+            memory_entries: ["Agent lesson."],
+            user_entries: [],
+            memory_owner: "agent",
+            user_owner: null,
+        };
+        let res = memory_add_as(s0, "memory", "Another curator note.", "agent");
+        assert.is_type<MemoryWriteOk>(res);
+        if let ok: MemoryWriteOk = res {
+            assert.equal(ok.entry_count, 2);
+            // the write preserves the owner flag
+            assert.equal(memory_block_owner(ok.state, "memory"), "agent");
+        }
+    }
+
+    test "user-origin writes are sovereign over owner=\"user\" blocks" {
+        let s0 = MemoryState {
+            memory_entries: ["User's note."],
+            user_entries: [],
+            memory_owner: "user",
+            user_owner: null,
+        };
+        let res = memory_add_as(s0, "memory", "Foreground addition.", "user");
+        assert.is_type<MemoryWriteOk>(res);
+    }
+
+    test "adoption is the explicit ownership transfer" {
+        let s0 = MemoryState {
+            memory_entries: ["User note the curator should maintain."],
+            user_entries: ["Adrian prefers snake_case."],
+            memory_owner: "user",
+            user_owner: "user",
+        };
+        // before adoption: refused
+        assert.is_type<MemoryOwnerRefused>(memory_add_as(s0, "memory", "x", "agent"));
+        // adopt the memory block only
+        let adopted = memory_adopt(s0, "memory");
+        assert.equal(memory_block_owner(adopted, "memory"), "agent");
+        // entries and the OTHER block's owner are untouched
+        assert.is_true(adopted.memory_entries.includes("User note the curator should maintain."));
+        assert.equal(memory_block_owner(adopted, "user"), "user");
+        // after adoption: the autonomous write lands
+        let res = memory_add_as(adopted, "memory", "Curator note.", "agent");
+        assert.is_type<MemoryWriteOk>(res);
+        // the user block still refuses autonomous writes
+        assert.is_type<MemoryOwnerRefused>(memory_add_as(adopted, "user", "y", "agent"));
+    }
+
+    test "autonomous batch to a user-owned block is refused before any op runs" {
+        let s0 = MemoryState {
+            memory_entries: ["keep me"],
+            user_entries: [],
+            memory_owner: "user",
+            user_owner: null,
+        };
+        let res = memory_apply_batch_as(s0, "memory", [MemoryOp { action: "remove", content: null, old_text: "keep me" }], "agent");
+        assert.is_type<MemoryOwnerRefused>(res);
+        // nothing changed — the refusal carries no state, the block is intact
+        assert.equal(s0.memory_entries.length(), 1);
+    }
+
+    test "fence refuses agent-origin replace and remove on user-owned blocks" {
+        let s0 = MemoryState {
+            memory_entries: ["alpha beta"],
+            user_entries: [],
+            memory_owner: "user",
+            user_owner: null,
+        };
+        assert.is_type<MemoryOwnerRefused>(
+            memory_replace_as(s0, "memory", "beta", "gamma", "agent"),
+        );
+        assert.is_type<MemoryOwnerRefused>(memory_remove_as(s0, "memory", "beta", "agent"));
+        // and the same calls user-origin pass the fence
+        assert.is_type<MemoryWriteOk>(memory_replace_as(s0, "memory", "beta", "gamma", "user"));
+        assert.is_type<MemoryWriteOk>(memory_remove_as(s0, "memory", "beta", "user"));
+    }
+}

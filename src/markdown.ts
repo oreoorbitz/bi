@@ -8,12 +8,20 @@
 // byte-identical to the old print path.
 import { Markdown, type MarkdownTheme, getCapabilities } from "@earendil-works/pi-tui";
 import { highlight_code_line, is_mermaid_fence, render_markdown_text_async, style_segment, text_attr } from "../baml_sdk/index.js";
+import { chromeWrap, type ChromeTokenName } from "./theme-files.js";
 import { termWidth } from "./tui.js";
 
 const id = (s: string): string => s;
+// bi#193: named markdown elements render through the chrome palette
+// (host wraps known segments at paint time — the former identity
+// passthroughs were the hook): headers pop primary, inline code and
+// fence chrome tint text_dim. chromeWrap is a byte-identical passthrough
+// under BI_THEME=none / NO_COLOR, so the escape-free posture holds by
+// construction; this path only runs on a TTY (markdownTuiAvailable).
+const chromeToken = (token: ChromeTokenName): ((s: string) => string) => (s) => chromeWrap(token, s);
 const plainTheme: MarkdownTheme = {
-	heading: id, link: id, linkUrl: id, code: id, codeBlock: id,
-	codeBlockBorder: id, quote: id, quoteBorder: id, hr: id,
+	heading: chromeToken("primary"), link: id, linkUrl: id, code: chromeToken("text_dim"), codeBlock: id,
+	codeBlockBorder: chromeToken("text_dim"), quote: id, quoteBorder: id, hr: id,
 	listBullet: id, bold: id, italic: id, strikethrough: id, underline: id,
 };
 
@@ -58,16 +66,20 @@ export function expandMermaidFences(text: string): string {
 // BAML-owned so no host file hardcodes ANSI. codeBlock stays identity
 // — the highlightCode hook owns fence color — and quote stays identity
 // because the component already applies italic() to quote text itself.
+// bi#193: the three NAMED elements (heading, inline code, fence border)
+// swap from BAML roles to chrome tokens, same as plainTheme above — the
+// chrome palette governs them at every theme, the six-role theme keeps
+// the rest (links, bullets, rules, emphasis).
 function bamlMarkdownTheme(theme: string): MarkdownTheme {
 	const role = (r: string): ((s: string) => string) => (s) => style_segment(s, r, theme);
 	const attr = (a: string): ((s: string) => string) => (s) => text_attr(s, a, theme);
 	return {
-		heading: role("accent"),
+		heading: chromeToken("primary"),
 		link: role("accent"),
 		linkUrl: role("dim"),
-		code: role("busy"),
+		code: chromeToken("text_dim"),
 		codeBlock: id,
-		codeBlockBorder: role("dim"),
+		codeBlockBorder: chromeToken("text_dim"),
 		quote: id,
 		quoteBorder: role("dim"),
 		hr: role("dim"),
@@ -90,7 +102,11 @@ export function renderMarkdownTui(text: string, width: number, theme: string | n
 			let inBlock = false;
 			for (const line of code.split("\n")) {
 				const r = highlight_code_line(line, lang ?? "", theme, inBlock);
-				out.push(r.text);
+				// bi#193: fence blocks tint text_dim. A BAML-highlighted line
+				// already carries lexical SGR (the six-role theme owns it);
+				// only plain lines (theme null/none) take the chrome tint —
+				// wrapping styled output would fight the inner resets.
+				out.push(r.text.includes("\x1b") ? r.text : chromeWrap("text_dim", r.text));
 				inBlock = r.in_block;
 			}
 			return out;

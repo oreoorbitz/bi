@@ -21,6 +21,14 @@
 //   FAIL every event segment within tail window — [132,2,2,6]
 //   FAIL a paint carries the word-boundary tail — …is the most
 //   PROBE 3 FAILURES
+//
+// Env discipline (bi#193): the shaping sections pin the ESCAPE-FREE
+// contract, so NO_COLOR=1 is forced for them and cleared only inside the
+// color arm at the bottom — the ambient env must never leak either way.
+// Red-check (bi#57, bi#193 arm), executed 2026-09-08: reverted
+// paintStatusLine's spinner wrap to pass the raw spinner →
+//   FAIL paint spinner pops primary — …
+// restored → green.
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -39,6 +47,13 @@ const { compactHistory } = await import(join(ROOT, "..", "dist", "src", "compact
 const { format_status_label, format_status, format_turn_summary, TurnFailure } = await import(
 	join(ROOT, "..", "dist", "baml_sdk", "index.js")
 );
+const tf = await import(join(ROOT, "..", "dist", "src", "theme-files.js"));
+
+// bi#193: shaping sections pin the escape-free contract (the chrome wrap
+// is a byte-identical passthrough when suppressed) — force suppression
+// here; the color arm at the bottom clears it for exactly its section.
+process.env.NO_COLOR = "1";
+delete process.env.BI_THEME;
 
 const results = [];
 function check(name, ok, detail = "") {
@@ -211,6 +226,86 @@ const fns = { formatStatus: format_status, formatSummary: format_turn_summary };
 	// short head of the tail that survives truncation, not the whole tail.
 	const tailHead = [...expectedTail].slice(0, 12).join("");
 	check("a paint carries the word-boundary tail", buf.includes(tailHead), tailHead);
+}
+
+// --- bi#193 color arm: spinner primary, status line text_dim ---
+// Drives the REAL KindStatus paint loop against a captured fake TTY with
+// suppression lifted for exactly this section. Byte-pins: the paint opens
+// text_dim, re-opens primary for the spinner glyph, closes fg-default;
+// the settled summary stays off the chrome path (BAML good/bad owns it).
+{
+	delete process.env.NO_COLOR;
+	delete process.env.BI_THEME;
+	const PRIMARY = tf.chromeAnsi("primary", {});
+	const DIM = tf.chromeAnsi("text_dim", {});
+	const RESET = tf.CHROME_RESET;
+	check("primary byte-pin #4FA8FF", PRIMARY === "\x1b[38;2;79;168;255m");
+	check("text_dim byte-pin #888888", DIM === "\x1b[38;2;136;136;136m");
+
+	const { paintStatusLine } = await import(join(ROOT, "..", "dist", "src", "status.js"));
+	const painted = paintStatusLine("⠋", "thinking", 4200, "", format_status);
+	check(
+		"paint line composition byte-pinned",
+		painted === `${DIM}${PRIMARY}⠋${DIM} thinking · 4.2s · …${RESET}`,
+		JSON.stringify(painted),
+	);
+	process.env.NO_COLOR = "1";
+	check(
+		"suppressed paint line is the BAML line verbatim",
+		paintStatusLine("⠋", "thinking", 4200, "", format_status) === format_status("⠋", "thinking", 4200, ""),
+		"suppression not byte-identical",
+	);
+	delete process.env.NO_COLOR;
+
+	let buf = "";
+	const realWrite = process.stderr.write.bind(process.stderr);
+	const realIsTTY = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+	process.stderr.write = (s) => {
+		buf += s;
+		return true;
+	};
+	Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+	try {
+		const s = new KindStatus("thinking", fns);
+		s.start();
+		await new Promise((r) => setTimeout(r, 250)); // a few paints
+		s.stop({ failed: false, detail: "", turns: 1, messages: 2, theme: null });
+	} finally {
+		process.stderr.write = realWrite;
+		if (realIsTTY) Object.defineProperty(process.stderr, "isTTY", realIsTTY);
+	}
+	check("paint spinner pops primary", buf.includes(`${PRIMARY}⠋${DIM}`) || buf.includes(`${PRIMARY}⠙${DIM}`), "no primary spinner in stream");
+	check("paint label recedes text_dim", buf.includes(`${DIM} thinking ·`), "no dim thinking label in stream");
+	check("paint line closes fg-default", buf.includes(`${RESET}`), "no reset in stream");
+	// Paints rewrite in place with \r, so the settled row is the last
+	// \r-segment of the last \n-line — the BAML summary, off the chrome path.
+	const summaryRow = (buf.trimEnd().split("\n").pop() ?? "").split("\r").pop() ?? "";
+	check("settled summary stays off chrome (no 38;2)", !summaryRow.includes("\x1b[38;2;") && summaryRow.includes("✓ done"), JSON.stringify(summaryRow.slice(0, 60)));
+
+	// Escape-free arms: both gates leave zero color SGR in the stream.
+	for (const [name, set] of [["NO_COLOR", () => (process.env.NO_COLOR = "1")], ["BI_THEME=none", () => (process.env.BI_THEME = "none")]]) {
+		delete process.env.NO_COLOR;
+		delete process.env.BI_THEME;
+		set();
+		let b2 = "";
+		process.stderr.write = (s) => {
+			b2 += s;
+			return true;
+		};
+		Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+		try {
+			const s = new KindStatus("thinking", fns);
+			s.start();
+			await new Promise((r) => setTimeout(r, 220));
+			s.stop({ failed: false, detail: "", turns: 1, messages: 2, theme: null });
+		} finally {
+			process.stderr.write = realWrite;
+			if (realIsTTY) Object.defineProperty(process.stderr, "isTTY", realIsTTY);
+		}
+		check(`${name} status stream is color-escape-free`, !b2.includes("\x1b[38;2;") && !b2.includes("\x1b[39m"), "color SGR leaked");
+	}
+	delete process.env.BI_THEME;
+	process.env.NO_COLOR = "1";
 }
 
 const failed = results.filter((r) => !r.ok);
