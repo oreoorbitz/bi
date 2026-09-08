@@ -24,7 +24,6 @@ import { runResultToJsonLines, finalText } from "./events.js";
 import { getBiSessionsDir, createSessionFile, listSessions, findMostRecentSession, validateSessionIdOrThrow, appendSessionEntries, loadSessionTranscript, sessionResumeList, sessionIdFromFile, setSessionLabel, importSessionFile, shareSessionGist, detectTerminalThemeFromEnv, sessionBranchList, orderBranchRows, branchSwitchState, BI_AGENT_DIR_ENV } from "./session.js";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { Text } from "@earendil-works/pi-tui";
 import { colorizeDiffLines } from "./diff-render.js";
 import {
 	parseUnifiedDiff, buildHunkQueue, assertQueueCoversDiffOnce, applyDecisionInputs,
@@ -276,11 +275,11 @@ function bamlErrorMessage(e: unknown): string {
 	const raw = e instanceof Error ? e.message : String(e);
 	return raw.replace(/^baml error: (baml\.errors\.\w+: )?/, "").split("\n")[0];
 }
-import { HostTui, HostFooter, renderSelectList, releaseReplTui, retainReplTui, ensureReplTui, runTranscriptSearch, termWidth, composeFrame } from "./tui.js";
+import { HostTui, HostFooter, renderSelectList, releaseReplTui, retainReplTui, runTranscriptSearch, termWidth, composeFrame } from "./tui.js";
 import { FullscreenSession, fullscreenRequested, teeOutputTo } from "./screen-fullscreen.js";
 import { KindStatus, statusEventTailUpdater } from "./status.js";
 import { ActionLog, safeJson } from "./actionlog.js";
-import { promptAvailable, askEdit, askText, pickList, pickListWithPreview, type SlashPool } from "./prompt.js";
+import { promptAvailable, askEdit, askText, pickList, pickListWithPreview, stageBaseFrame, type SlashPool } from "./prompt.js";
 import { completePathPrefix, splitSecondWord, unquotePath } from "./paths.js";
 import { allThemeNames, customThemesDir, listCustomThemes, mergedThemeList, previewForTheme, validateCustomFile } from "./theme-files.js";
 import { getKeybindingsPath, getUserKeybindings, listKeybindingRows, loadKeybindingsFile, reloadKeybindings, renderKeybindingJson, renderKeybindingList, resetKeybindings, saveKeybindings, type KeybindingFileEntry } from "./keybindings.js";
@@ -2584,10 +2583,17 @@ function biVersion(): string {
 
 // bi#180: welcome entry frame (BAML-shaped render_welcome_frame, kimi
 // welcome.ts:49-107 mirror) with the ready-BAIS frame beneath it.
-// Mounted once from repl() AFTER the last startup modal (trust /
-// first-run / session picker) hides. A future /clear re-renders by
-// calling this again (bi has no /clear today). Gates: interactive TTY,
-// not fullscreen — pipes and the alt-screen shell stay byte-stable.
+// Staged once from repl() AFTER the last startup modal (trust /
+// first-run / session picker) hides; the first editor modal mounts it
+// into the host's base layer (stageBaseFrame, prompt.ts) — never
+// console.log (modal repaints erase bypass prints, how the pre-modal
+// ready frame was lost) and never a direct ensureReplTui here (creating
+// the host outside the modal envelope fires the kitty query while
+// readline still owns stdin — its listener echoes the reply as
+// caret-notation keypresses, the `^[[?64;1;2…52c` leak). A future
+// /clear re-renders by calling this again (bi has no /clear today).
+// Gates: interactive TTY, not fullscreen — pipes and the alt-screen
+// shell stay byte-stable.
 async function printWelcomeFrame(backend: ReplBackend, sess: ReplSessionState, fullscreen: boolean): Promise<void> {
 	if (fullscreen || !promptAvailable()) return;
 	try {
@@ -2605,16 +2611,7 @@ async function printWelcomeFrame(backend: ReplBackend, sess: ReplSessionState, f
 			ready.map((f) => ({ id: f.issue.id, title: f.issue.title })),
 			width,
 		);
-		// Render INTO the modal host's base layer — never console.log:
-		// modal show/hide repaints the base frame, so bypass prints are
-		// erased by the next modal's mount render (how the pre-modal
-		// ready frame was lost) while base content survives every repaint
-		// by construction. The host is the REPL-lifetime one (bi#162
-		// lease held by repl()); creating it here when no picker ran just
-		// moves the one kitty negotiation earlier — the first editor
-		// modal settles it as usual.
-		const host = ensureReplTui(dirname(getBiSessionsDir()));
-		host.ui.addChild(new Text([...welcome, ...readyLines].join("\n"), 0, 0));
+		stageBaseFrame([...welcome, ...readyLines]);
 	} catch {
 		// The entry frame is cosmetic — never brick REPL startup.
 	}

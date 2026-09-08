@@ -709,6 +709,19 @@ async function runModal<T>(
 // byte-for-byte. History is oldest-first (file order); the caller
 // persists submissions as before. opts.onCycleForward (bi#90) wires the
 // Ctrl+P model-cycle binding; without it the key falls through.
+//
+// bi#180: staged base-layer content (welcome entry frame + ready BAIS).
+// The welcome must render INTO the modal host's base layer, but creating
+// the host fires the kitty negotiation — that must only ever happen
+// inside the modal envelope (readline suspended, raw asserted before
+// the query, settle before focus): staging here and mounting in askEdit
+// below keeps it so. Outside the envelope a reply races readline's
+// listener, which echoes it as caret-notation keypresses (the
+// `^[[?64;1;2…52c` leak, e2e-pty no-reply-bytes invariant).
+let stagedBaseLines: string[] | null = null;
+export function stageBaseFrame(lines: string[]): void {
+	stagedBaseLines = lines;
+}
 export async function askEdit(
 	prompt: string,
 	history: string[],
@@ -721,11 +734,19 @@ export async function askEdit(
 	// grows upward as it wraps — never over the footer. All other
 	// modals keep the top-left geometry (runModal default).
 	return runModal<string>((ui, root) => {
+		// bi#180: mount staged base-layer content (welcome frame) into the
+		// host root first — it composites under this and every later
+		// modal. Runs inside the modal envelope, so a host created for
+		// this modal negotiates with readline already detached.
+		if (stagedBaseLines) {
+			ui.addChild(new Text(stagedBaseLines.join("\n"), 0, 0));
+			stagedBaseLines = null;
+		}
 		// bi#181: no separate label row — the BAML-shaped prompt label
 		// lives IN the editor's rounded top border and the `>` glyph at
-		// column 2 inside the box (kimi CustomEditor composition), so
-		// prompt and box read as one component. paddingX 4 makes room
-		// for the glyph (kimi's injectPromptSymbol precondition).
+		// column 2 inside the box (kimi CustomEditor composition).
+		// paddingX 4 makes room for the glyph (kimi's injectPromptSymbol
+		// precondition).
 		const ed = new PromptEditor(ui, plainEditorTheme, { paddingX: 4 });
 		ed.promptLabel = prompt;
 		ed.borderTheme = opts.theme ?? null;

@@ -23,7 +23,7 @@
 //
 // Red-check record (bi#57), executed 2026-09-08:
 //   Hunk: printWelcomeFrame base-layer mount (bi/src/cli.ts) — replaced
-//         the ensureReplTui+addChild pair with bypass console.log lines.
+//         the base-layer mount with bypass console.log lines.
 //   Expected failure: wf-welcome/wf-labels/wf-ready — the editor
 //         modal's mount render erases bypass prints from the grid.
 //   Observed (bypassed): FAIL wf-welcome (no title row), FAIL
@@ -31,6 +31,16 @@
 //         wf-editor/wf-exit/wf-pipes stayed ok — the erasure is the
 //         mount render, not the frame construction. Restored: all six
 //         checks ok, drill green.
+//   Refinement (same day): the mount moved from a direct
+//         ensureReplTui+addChild in cli.ts to stageBaseFrame consumed by
+//         the first askEdit (prompt.ts) — creating the host outside the
+//         modal envelope fired the kitty query while readline still
+//         owned stdin, and readline echoed the DA reply as
+//         caret-notation keypresses (e2e-pty help-skills-note
+//         `/64;1;2/` leak FAIL; green after the move). The drill's
+//         viewport is 60 rows: welcome(11)+ready(N) overflows 40 and
+//         the box top scrolls off — correct transcript behavior, but
+//         the drill asserts survival and needs the headroom.
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,7 +69,10 @@ if (!hasPty) {
 		JSON.stringify({ id: "a1b2c3d4", timestamp: "2026-09-07T00:00:00.000Z", cwd: home, parent_session: null, label: null }) + "\n",
 	);
 	const run = spawnSync("python3", [join(HERE, "paint-chain-pty.py"),
-		process.env.PC_ROWS ?? "40", process.env.PC_COLS ?? "160", home, CLI], {
+		// 60 rows: the 11-row welcome box + a long ready list overflow a
+		// 40-row viewport and the box top scrolls off (correct transcript
+		// behavior — the drill asserts survival, so it needs headroom).
+		process.env.PC_ROWS ?? "60", process.env.PC_COLS ?? "160", home, CLI], {
 		env: { ...process.env, HOME: home, TERM: "xterm-kitty", PC_TIMEOUT: "70", PC_DUMP_GRID: "1" },
 		encoding: "utf8",
 		timeout: 120000,
