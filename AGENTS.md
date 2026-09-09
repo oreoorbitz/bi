@@ -1,31 +1,39 @@
 # AGENTS.md — bi
 
-> Read `../AGENTS.md` first — this file is the `bi` specialization.
+> Read `../AGENTS.md` first. BI is the Pi-inspired coding agent; namespace `bi` / `.bi`.
 
-## What this is
+## Ownership and entry points
 
-`bi` is `pi/packages/ai` → BAML. Port where it makes sense: **BAML owns LLM-calling logic** (`turn.baml` `SendTurn/StreamTurn/StartIncrementalStream` via `ai.Client`, `models/provider/tools/agent/image/stream`, `TurnPrompt` spec only), **thin TS host wraps `baml_sdk`** (`src/anthropic|openai-responses|google|conversation|tools|agent|provider|models|bais|cli`, `toHistory`/`toToolSpecs`).
+* BAML owns provider calls (`turn.baml`), incremental streaming/media, model/tool/session types, and loop, retry, review, memory and skill policies.
+* `src/agent.ts` executes the turn/tool loop; `agent_loop.ts` wraps BAML loop validation. The host also owns authentication, filesystem tools, session persistence, compaction plumbing and terminal rendering.
+* `src/bais.ts` loads BAIS through the built sibling host wrapper. `src/tools.ts` executes tools; `baml_src/tools.baml` declares their data. Keep those surfaces aligned.
+* Bare `bi` shows ready issues and enters the REPL on a TTY; non-TTY startup lists ready issues. `bi run` executes a prompt. Inspect CLI help/source for current flags.
+* `BI_TUI=go` routes supported human-facing `bi run` rendering through the Go shell; the interactive REPL still falls back to pi-tui. Full Go parity is `bi#189`. Read `tui-go/AGENTS.md` before Go changes. The seam uses fds 3/4; update the host catalog and Go shapes together.
 
-Namespace is `bi` / `.bi`, not `pi`.
+## Integration boundaries
 
-## Toolchain
+* `baml.toml [dependencies] bais` is reserved for Phase B. No cross-package BAML imports are active. Keep BI standalone; BAIS runtime interop uses TS-host `file://` loading of `bais/dist/src/toml.js`.
+* Keep 0.17.0 bridge workarounds until executed repros prove they can be removed: string provider tags, concrete `TurnFailure`, plain `ToolSpec`, in-VM client/media construction, incremental `BamlStream`. A newer VM alone does not prove bridge compatibility. Current stream deltas use single strings; do not introduce 0.18 API shapes incidentally.
+* `baml_src/memory.baml` is tier-1 policy. Persistence and frozen session injection are tracked by `hub#220`; policy tests do not establish session behavior.
+* `baml_src/ns_skills/` holds compiled skill interfaces/policies; `baml_src/skills.baml` is the separate markdown registry model.
+* Issues migrated to the workspace root `.bais/issues/`. Tracked deletions under `bi/.bais/` belong to that migration; never restore or commit them incidentally.
+* Upstream Pi is `../../pi` from this project directory. Read it for port semantics; never edit it. FFI reports live in `../proposals/`.
 
-Pinned `0.17.0` (wrapper `0.2.4`, toolchain `0.17.0 canary`, bridge `0.17.0` —
-SDK and bridge versions must match). 0.18-isms (`ai.ModelTurn.calls`,
-`string[]` stream deltas, cross-package `bais.*` refs) were reverted:
-stream arms take single `string`, bais ToolSpecs are vendored into
-`baml_src/tools.baml` until `[dependencies]` lands.
+## Toolchain and gates
 
+Follow the root [storage hygiene rules](../AGENTS.md#storage-hygiene): set `BAML_PROFILE=0` in the actual launcher environment, watch for new dumps after long runs, and retain Rust build artifacts only while needed. These projects use the installed CLI/bridge; normal work does not require compiling the BAML Rust checkout.
+
+Wrapper `0.2.4`, toolchain `0.17.0`, bridge `0.17.0`; keep bridge/toolchain aligned. Use `BAML_PROFILE=0` before runtime initialization (root instructions explain shell/GUI setup). From the workspace root:
+
+```bash
+baml check --project bi
+baml test --project bi
+baml fmt --project bi
+baml generate --project bi
+npm run build --prefix bi
+npm run typecheck --prefix bi
 ```
-baml check --project bi    # 56 files Finished
-baml test --project bi     # 448 passed
-baml generate --project bi # 68 files → baml_sdk
-```
 
-## Project wiring
+Never hand-edit `baml_sdk/` or `dist/`. Report observed test results; historical counts are not a current gate result.
 
-* `baml.toml` `[dependencies] bais = { path = "../bais" }` → `bais.Issue` is `bais.Issue` in BAML (Phase-B `Dependency` root; verified via isolated probe vs wrapper `unresolved bais`).
-* FFI shims to keep until `baml-bridge 0.18.0`: `provider: string` tag (`bi#02`), `TurnFailure` concrete union (`bi#03`), `build_client` + consume in one BAML call (`bi#01`), `CreateMediaBlock` in-VM (`bi#06`). `0.18.0` VM already `string[]` / `throws never` clean.
-* Issues live in the ROOT `.bais/issues/` (`bi#NNN`, board migrated out of `bi/.bais` — the `D .bais/*` deletions in `git status` are that migration; never commit them) — see `../proposals/` for FFI reports. `bi/tui-go/` is the bi#187 Go Bubble Tea v2 shell, wired behind `BI_TUI=go` by bi#188 (`src/tui_seam.ts`, seam on fds 3/4 — see its own AGENTS.md — v1/v2 APIs differ).
-
-When in doubt, read `../pi/packages/ai` as ground truth, never edit `../pi`.
+Host gates: `npm test --prefix bi`, `npm run test:e2e --prefix bi`, and `npm run test:seam --prefix bi`; select those relevant to the change.
