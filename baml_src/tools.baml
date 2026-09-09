@@ -140,13 +140,45 @@ function _tool_find() -> ToolSpec {
 function _tool_bais_list() -> ToolSpec {
     ToolSpec {
         name: "bais_list",
-        description: "List BAIS issues from .bais/issues/*.toml (BAML-validated via bais parser). Returns {issues, unparseable}: files the parser rejected are reported in `unparseable`, never guessed at — treat a non-empty `unparseable` as a gap in the list, not as zero issues. Returns ROWS by default (id/status/kind/title/area per issue) — full bodies ride `bais show` or a result narrowed to one issue; pass include_bodies:true for full records. Results are compact JSON capped near 60k bytes, with a truncation notice naming the refinement (status filter / bais show), never silent.",
+        description: "List BAIS issues from .bais/issues/*.toml (BAML-validated via bais parser). Returns {issues, unparseable}: files the parser rejected are reported in `unparseable`, never guessed at — treat a non-empty `unparseable` as a gap in the list, not as zero issues. Returns ROWS by default (id/status/kind/title/area per issue) — full bodies ride `bais show` or a result narrowed to one issue; pass include_bodies:true for full records. Structured filters mirror the schema keys (all optional, ANDed, rows by default so a search costs rows, never bodies): exact status/kind/area/severity, query (case-insensitive substring over id + title), title_regex/body_regex (invalid patterns refuse loud naming the pattern, never silent empty), id_min/id_max (numeric-part bounds per namespace, e.g. 100..199). An empty result is explicit ({issues: []}), not an error. Results are compact JSON capped near 60k bytes, with a truncation notice naming the refinement (status filter / bais show), never silent.",
         input_schema: {
             "type": "object",
             "properties": {
                 "status": {
                     "type": "string",
                     "description": "Filter by status (Open/Doing/Blocked/Done/Dropped) — optional",
+                },
+                "kind": {
+                    "type": "string",
+                    "description": "Exact kind filter (Bug/Feat/Proposal/Debt/Flake/Spike) — optional",
+                },
+                "area": {
+                    "type": "string",
+                    "description": "Exact area filter e.g. cli/bi — optional",
+                },
+                "severity": {
+                    "type": "number",
+                    "description": "Exact severity filter — optional",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Case-insensitive substring over id + title — optional",
+                },
+                "title_regex": {
+                    "type": "string",
+                    "description": "Pattern over the title (invalid patterns refuse loud) — optional",
+                },
+                "body_regex": {
+                    "type": "string",
+                    "description": "Pattern over the body, covers Problem:/Proposal: section searches (invalid patterns refuse loud) — optional",
+                },
+                "id_min": {
+                    "type": "number",
+                    "description": "Numeric-part lower bound per namespace (bi#100 -> 100) — optional",
+                },
+                "id_max": {
+                    "type": "number",
+                    "description": "Numeric-part upper bound per namespace — optional",
                 },
                 "include_bodies": {
                     "type": "boolean",
@@ -161,8 +193,17 @@ function _tool_bais_list() -> ToolSpec {
 function _tool_bais_ready() -> ToolSpec {
     ToolSpec {
         name: "bais_ready",
-        description: "List ready BAIS issues (Open where not blocked by Blocks edge via bais ready_issues).",
-        input_schema: { "type": "object", "properties": {}, "additionalProperties": false },
+        description: "List ready BAIS issues (Open where not blocked by Blocks edge via bais ready_issues). Returns ROWS by default (id/status/kind/title/area per issue) — full bodies ride `bais show` or a result narrowed to one issue; pass include_bodies:true for full records. Results are compact JSON capped near 60k bytes, with a truncation notice naming the refinement (bais show), never silent.",
+        input_schema: {
+            "type": "object",
+            "properties": {
+                "include_bodies": {
+                    "type": "boolean",
+                    "description": "Return full issue records (body + edges) instead of rows — optional, default false",
+                },
+            },
+            "additionalProperties": false,
+        },
     }
 }
 
@@ -216,7 +257,7 @@ function _tool_bais_move() -> ToolSpec {
 function _tool_bais_check() -> ToolSpec {
     ToolSpec {
         name: "bais_check",
-        description: "Validate every .bais/issues/*.toml via bais BAML parser (compact JSON result capped near 60k bytes, truncation notice names bais show — the check itself is unchanged). Returns {ok, bad, dangling, cycles}: `bad` is per-file parse failures, `dangling` is edge ends naming an id that does not exist — status Missing (this project: a defect, it parks the target issue because an unresolvable blocker blocks) or External (another project's id, not resolvable from here) — `cycles` is ids in a Blocks/DependsOn dependency cycle (or downstream of one), which ready_issues reports only as silence.",
+        description: "Validate every .bais/issues/*.toml via bais BAML parser (compact JSON result capped near 60k bytes, truncation notice names bais show — the check itself is unchanged). Returns per-file verdict rows {ok, bad, dangling, cycles, evidence}, never bodies: `ok` is passing ids only, `bad` is per-file parse failures — failures serialize first and `ok` last so a cap truncation cuts ok ids, never a failure (verdict rows complete by construction). `dangling` is edge ends naming an id that does not exist — status Missing (this project: a defect, it parks the target issue because an unresolvable blocker blocks) or External (another project's id, not resolvable from here) — `cycles` is ids in a Blocks/DependsOn dependency cycle (or downstream of one), which ready_issues reports only as silence.",
         input_schema: { "type": "object", "properties": {}, "additionalProperties": false },
     }
 }
@@ -224,10 +265,20 @@ function _tool_bais_check() -> ToolSpec {
 function _tool_bais_graph() -> ToolSpec {
     ToolSpec {
         name: "bais_graph",
-        description: "Graph traversal from a BAIS issue via Blocks/DependsOn/etc edges (BFS).",
+        description: "Graph traversal from a BAIS issue via Blocks/DependsOn/etc edges (bounded BFS, both directions). Returns ROWS by default (id/status/kind/title/area per issue) — full bodies ride `bais show` or a result narrowed to one issue; pass include_bodies:true for full records. Traversal is depth-capped (default 3, pass depth for shallower/deeper) and node-capped near 200 rows: over-cap results carry truncated:true plus a notice naming the refinement (narrower --from, shallower depth), never silent. Results are compact JSON capped near 60k bytes.",
         input_schema: {
             "type": "object",
-            "properties": { "from": { "type": "string", "description": "Starting issue id e.g. bi#04" } },
+            "properties": {
+                "from": { "type": "string", "description": "Starting issue id e.g. bi#04" },
+                "depth": {
+                    "type": "number",
+                    "description": "Max BFS hops from `from` (default 3, 0 is just `from` itself) — optional",
+                },
+                "include_bodies": {
+                    "type": "boolean",
+                    "description": "Return full issue records (body + edges) instead of rows — optional, default false",
+                },
+            },
             "required": ["from"],
             "additionalProperties": false,
         },

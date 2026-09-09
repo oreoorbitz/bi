@@ -7,7 +7,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSy
 import { basename, dirname, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { GetTool_async, ListTools_async, render_tool_diff_async, approval_choices_async, approval_feedback_result_async, approval_header_async, refuse_approval_rejected_async, refuse_bash_blocked_async, refuse_bash_timeout_async, refuse_read_binary_async, refuse_read_outside_root_async, refuse_read_too_large_async, refuse_write_outside_root_async, refuse_write_untrusted_async, refuse_write_too_large_async, edit_missing_text_async, gate_meta_tool_materialization_async, mine_meta_tools_async, write_guard_check_async, MaterializeRefuse, WriteGuardRefuse, type MetaToolProposal, type MetaToolSpec, type SessionTrace, type ToolSpec } from "../baml_sdk/index.js";
-import { checkBaisIssues, createBaisIssue, graphBaisIssues, loadBaisIssues, moveBaisIssue, readyBaisIssues, type BaisFile } from "./bais.js";
+import { checkBaisIssues, createBaisIssue, loadBaisIssues, moveBaisIssue, readyBaisIssues, type BaisEdge, type BaisFile } from "./bais.js";
 import { colorizeDiffLines } from "./diff-render.js";
 import { askApproval, askText, promptAvailable } from "./prompt.js";
 import { getStoredTrust } from "./trust.js";
@@ -651,6 +651,121 @@ export function capBaisPayload(compact: string, refine: string): string {
 	return buf.subarray(0, BAIS_TOOL_RESULT_CAP).toString("utf8") + `\n…truncated at ${BAIS_TOOL_RESULT_CAP} bytes, refine with ${refine}`;
 }
 
+// bi#214: bais_list structured filters (schema keys + query + regexes +
+// id ranges). Compiled once per call so an invalid pattern refuses before
+// any scan — loud (naming the pattern, bi#55), never a silent empty.
+export interface BaisListFilters {
+	kind: string | null;
+	area: string | null;
+	severity: number | null;
+	query: string | null;
+	titleRe: RegExp | null;
+	titlePattern: string | null;
+	bodyRe: RegExp | null;
+	bodyPattern: string | null;
+	idMin: number | null;
+	idMax: number | null;
+}
+
+function baisListCompile(pattern: string, arg: string): RegExp {
+	try {
+		return new RegExp(pattern);
+	} catch {
+		throw new Error(`bais_list: invalid ${arg} ${JSON.stringify(pattern)} — fix the pattern, nothing was filtered`);
+	}
+}
+
+// Trailing numeric part of an id ("bi#100" -> 100, "bi#hotfix" -> null):
+// id_min/id_max bound namespaces ("more than 100, less than 10" style).
+// A bound issue without a numeric part cannot satisfy a numeric bound,
+// so it does not match while either bound is present.
+export function baisIdNumber(id: string): number | null {
+	const m = /#(\d+)$/.exec(id);
+	return m ? parseInt(m[1], 10) : null;
+}
+
+export function baisListFilters(args: Record<string, unknown>): BaisListFilters {
+	const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
+	const num = (v: unknown): number | null => {
+		if (v === undefined || v === null || v === "") return null;
+		const n = Number(v);
+		return Number.isFinite(n) ? n : null;
+	};
+	const titlePattern = str(args.title_regex);
+	const bodyPattern = str(args.body_regex);
+	return {
+		kind: str(args.kind),
+		area: str(args.area),
+		severity: num(args.severity),
+		query: str(args.query)?.toLowerCase() ?? null,
+		titleRe: titlePattern !== null ? baisListCompile(titlePattern, "title_regex") : null,
+		titlePattern,
+		bodyRe: bodyPattern !== null ? baisListCompile(bodyPattern, "body_regex") : null,
+		bodyPattern,
+		idMin: num(args.id_min),
+		idMax: num(args.id_max),
+	};
+}
+
+export function baisListMatches(f: BaisFile, flt: BaisListFilters): boolean {
+	const i = f.issue;
+	if (flt.kind !== null && i.kind !== flt.kind) return false;
+	if (flt.area !== null && (i.area ?? null) !== flt.area) return false;
+	if (flt.severity !== null && i.severity !== flt.severity) return false;
+	if (flt.query !== null && !`${i.id} ${i.title}`.toLowerCase().includes(flt.query)) return false;
+	if (flt.titleRe !== null && !flt.titleRe.test(i.title)) return false;
+	if (flt.bodyRe !== null && !flt.bodyRe.test(i.body)) return false;
+	if (flt.idMin !== null || flt.idMax !== null) {
+		const n = baisIdNumber(i.id);
+		if (n === null) return false;
+		if (flt.idMin !== null && n < flt.idMin) return false;
+		if (flt.idMax !== null && n > flt.idMax) return false;
+	}
+	return true;
+}
+
+// bi#213: bounded graph traversal for the bais_graph TOOL (the CLI keeps
+// the unbounded graphBaisIssues in bais.ts — discovery-sized, not
+// tool-sized). BFS from `from` over all edge kinds (both directions, same
+// reachability), but expansion stops past `depth` hops and collection stops
+// at `limit` nodes. `truncated` is true when either bound bit — the tool
+// names the refinement (narrower --from, shallower depth), never silent
+// (bi#55). Depth 0 is just `from` itself.
+export const BAIS_GRAPH_DEFAULT_DEPTH = 3;
+export const BAIS_GRAPH_NODE_CAP = 200;
+
+async function graphBaisIssuesBounded(
+	fromId: string,
+	opts: { depth?: number; limit?: number } = {},
+): Promise<{ files: BaisFile[]; truncated: boolean }> {
+	const depth = opts.depth ?? BAIS_GRAPH_DEFAULT_DEPTH;
+	const limit = opts.limit ?? BAIS_GRAPH_NODE_CAP;
+	const { issues } = await loadBaisIssues();
+	const edges: BaisEdge[] = issues.flatMap((f) => f.edges);
+	const byId = new Map(issues.map((f) => [f.issue.id, f]));
+	const seen = new Map<string, number>([[fromId, 0]]);
+	const queue = [fromId];
+	while (queue.length) {
+		const cur = queue.shift()!;
+		const d = seen.get(cur)!;
+		if (d >= depth) continue;
+		for (const e of edges) {
+			for (const nxt of e.from === cur ? [e.to] : e.to === cur ? [e.from] : []) {
+				if (!seen.has(nxt)) {
+					seen.set(nxt, d + 1);
+					queue.push(nxt);
+				}
+			}
+		}
+	}
+	const ids = [...seen.keys()].sort((a, b) => (seen.get(a)! - seen.get(b)!) || (a < b ? -1 : 1));
+	const kept = ids.slice(0, limit);
+	return {
+		files: kept.flatMap((id) => (byId.get(id) ? [byId.get(id)!] : [])),
+		truncated: kept.length < ids.length,
+	};
+}
+
 // BAML is spec, host is executor — dispatch table for the agent loop.
 // bais_* tools are first-class here so the LLM can manage .bais.
 export async function handleTool(name: string, args: Record<string, unknown>): Promise<string> {
@@ -685,7 +800,11 @@ export async function handleTool(name: string, args: Record<string, unknown>): P
 			const status = (args.status as string | undefined) ?? null;
 			const includeBodies = args.include_bodies === true;
 			const { issues, failures } = await loadBaisIssues();
-			const filtered = status ? issues.filter((f) => f.issue.status === status) : issues;
+			// bi#214: structured filters mirroring the TOML schema keys —
+			// one discovery tool, not two. All optional and ANDed; rows by
+			// default per bi#212, so a search costs rows, never bodies.
+			const filters = baisListFilters(args);
+			const filtered = issues.filter((f) => (status ? f.issue.status === status : true) && baisListMatches(f, filters));
 			// `unparseable` is always present, even when empty: a tool that silently
 			// omits files teaches the model the list is complete when it is not.
 			// Full records only on demand (include_bodies) or when the result
@@ -698,8 +817,18 @@ export async function handleTool(name: string, args: Record<string, unknown>): P
 			return capBaisPayload(JSON.stringify(payload), refine);
 		}
 		case "bais_ready": {
+			// bi#213: rows by default, bodies on demand — the same shape
+			// and rule as bais_list (include_bodies, or a result narrowed
+			// to one issue whose body is the point). `unparseable` stays
+			// always present (same invariant as the list tool).
+			const includeBodies = args.include_bodies === true;
 			const files = await readyBaisIssues();
-			return capBaisPayload(JSON.stringify(files), "bais show <id>");
+			const { failures } = await loadBaisIssues();
+			const full = includeBodies || files.length === 1;
+			const payload = full
+				? { issues: files, unparseable: failures }
+				: { issues: files.map(toBaisIssueRow), unparseable: failures };
+			return capBaisPayload(JSON.stringify(payload), "bais show <id>");
 		}
 		case "bais_new": {
 			const title = String(args.title ?? "");
@@ -721,14 +850,49 @@ export async function handleTool(name: string, args: Record<string, unknown>): P
 			return capBaisPayload(JSON.stringify(file), "bais show <id>");
 		}
 		case "bais_check": {
+			// bi#213: per-file verdict rows, never bodies. `ok` is ids
+			// only (bodies ride bais show); `bad`/`dangling`/`cycles`/
+			// `evidence` are already body-free. Key order is the safety:
+			// failures serialize FIRST and `ok` LAST, so a byte-cap
+			// truncation cuts ok ids, never a failure — verdict rows stay
+			// complete by construction (a truncated-away failure would be
+			// a silent pass, bi#55). Check semantics unchanged — the CLI
+			// still reads checkBaisIssues directly.
 			const res = await checkBaisIssues();
-			return capBaisPayload(JSON.stringify(res), "bais show <id>");
+			const payload = {
+				bad: res.bad,
+				dangling: res.dangling,
+				cycles: res.cycles,
+				evidence: res.evidence,
+				ok: res.ok.map((f) => f.issue.id),
+			};
+			return capBaisPayload(JSON.stringify(payload), "bais show <id>");
 		}
 		case "bais_graph": {
+			// bi#213: rows by default (same rule as list/ready), bounded
+			// BFS (depth + node cap) with a notice naming the refinement —
+			// the old unbounded full-body traversal was the worst dose
+			// (~109k tokens from one --from).
 			const from = String(args.from ?? "");
 			if (!from) throw new Error("bais_graph requires from");
-			const files = await graphBaisIssues(from);
-			return capBaisPayload(JSON.stringify(files), "bais show <id>");
+			const wantDepth = Number(args.depth);
+			const depth = Number.isFinite(wantDepth) && wantDepth >= 0 ? Math.floor(wantDepth) : BAIS_GRAPH_DEFAULT_DEPTH;
+			const includeBodies = args.include_bodies === true;
+			const { files, truncated } = await graphBaisIssuesBounded(from, { depth, limit: BAIS_GRAPH_NODE_CAP });
+			const full = includeBodies || files.length === 1;
+			const payload: Record<string, unknown> = {
+				from,
+				depth,
+				issues: full ? files : files.map(toBaisIssueRow),
+				truncated,
+			};
+			if (truncated) {
+				payload.notice = `…truncated at depth ${depth} / ${BAIS_GRAPH_NODE_CAP} nodes — refine with a narrower --from, a shallower depth, or bais show <id> for bodies`;
+			}
+			return capBaisPayload(
+				JSON.stringify(payload),
+				"a narrower --from, a shallower depth, or bais show <id>",
+			);
 		}
 		case "write": {
 			return execWrite(args);

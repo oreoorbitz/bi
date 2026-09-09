@@ -92,6 +92,80 @@ testset "bais_list rows-by-default contract (bi#212)" {
     }
 }
 
+testset "bais_list structured filters (bi#214)" {
+    test "bais_list advertises the filter set and the loud-refuse + explicit-empty rules" {
+        let t = GetTool("bais_list");
+        assert.not_null(t);
+        match (t) {
+            let tool: ToolSpec => {
+                assert.contains(tool.description, "title_regex");
+                assert.contains(tool.description, "body_regex");
+                assert.contains(tool.description, "id_min");
+                assert.contains(tool.description, "query");
+                assert.contains(tool.description, "refuse loud naming the pattern");
+                assert.contains(tool.description, "explicit ({issues: []})")
+            },
+            _ => assert.is_true(false),
+        }
+    }
+}
+
+testset "bais_ready/check/graph row-mode contracts (bi#213)" {
+    test "bais_ready advertises rows + include_bodies like bais_list" {
+        let t = GetTool("bais_ready");
+        assert.not_null(t);
+        match (t) {
+            let tool: ToolSpec => {
+                assert.contains(tool.description, "ROWS");
+                assert.contains(tool.description, "include_bodies");
+                assert.contains(tool.description, "60k");
+                assert.contains(tool.description, "bais show")
+            },
+            _ => assert.is_true(false),
+        }
+    }
+
+    test "bais_ready names its new arg in the description (schema pinned host-side by the drill)" {
+        let t = GetTool("bais_ready");
+        assert.not_null(t);
+        match (t) {
+            let tool: ToolSpec => {
+                assert.contains(tool.description, "include_bodies:true")
+            },
+            _ => assert.is_true(false),
+        }
+    }
+
+    test "bais_check advertises verdict rows, never bodies, failures first" {
+        let t = GetTool("bais_check");
+        assert.not_null(t);
+        match (t) {
+            let tool: ToolSpec => {
+                assert.contains(tool.description, "verdict rows");
+                assert.contains(tool.description, "never bodies");
+                assert.contains(tool.description, "complete by construction")
+            },
+            _ => assert.is_true(false),
+        }
+    }
+
+    test "bais_graph advertises rows + depth cap + named refinement" {
+        let t = GetTool("bais_graph");
+        assert.not_null(t);
+        match (t) {
+            let tool: ToolSpec => {
+                assert.contains(tool.description, "ROWS");
+                assert.contains(tool.description, "include_bodies");
+                assert.contains(tool.description, "depth");
+                assert.contains(tool.description, "narrower --from, shallower depth");
+                assert.contains(tool.description, "pass depth for shallower/deeper");
+                assert.contains(tool.description, "include_bodies:true")
+            },
+            _ => assert.is_true(false),
+        }
+    }
+}
+
 testset "write/edit refusal policy (bi#77)" {
     test "refusals name the fix" {
         assert.contains(refuse_write_outside_root("../x"), "outside the project root");
