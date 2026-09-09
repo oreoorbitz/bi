@@ -11,6 +11,10 @@
 > honest by `bi/scripts/seam-parity.mjs` — land catalog and struct
 > changes together.
 
+## BAIS issue work
+
+The root [required BAIS workflow](../../AGENTS.md#required-bais-workflow) applies here. Use standalone `bais` with `--hub /absolute/path/to/workspace` for shared issues, including `bi#` issues. Use native commands for supported changes; do not write issue TOML from Go, shell, or Python to manage the board.
+
 ## Build / run / drill
 
 ```bash

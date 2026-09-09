@@ -2,6 +2,10 @@
 
 > Read `../AGENTS.md` first. BI is the Pi-inspired coding agent; namespace `bi` / `.bi`.
 
+## Required BAIS tooling
+
+Follow the root [required BAIS workflow](../AGENTS.md#required-bais-workflow). Use standalone `bais` commands for supported reads, issue creation, edits, status changes, and claims. Do not replace these operations with ad hoc scripts or direct TOML/SQLite edits. The shipped JSON helper is allowed for reads. Target the shared backlog with `--hub /absolute/path/to/workspace`; do not infer the board from the issue prefix. Use the root workflow's narrow exceptions for unsupported operations, malformed-file repair, and fixture/internal development; record the reason and validate the result.
+
 ## Ownership and entry points
 
 * BAML owns provider calls (`turn.baml`), incremental streaming/media, model/tool/session types, and loop, retry, review, memory and skill policies.
