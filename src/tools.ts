@@ -7,7 +7,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSy
 import { basename, dirname, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { GetTool_async, ListTools_async, render_tool_diff_async, approval_choices_async, approval_feedback_result_async, approval_header_async, refuse_approval_rejected_async, refuse_bash_blocked_async, refuse_bash_timeout_async, refuse_read_binary_async, refuse_read_outside_root_async, refuse_read_too_large_async, refuse_write_outside_root_async, refuse_write_untrusted_async, refuse_write_too_large_async, edit_missing_text_async, gate_meta_tool_materialization_async, mine_meta_tools_async, write_guard_check_async, MaterializeRefuse, WriteGuardRefuse, type MetaToolProposal, type MetaToolSpec, type SessionTrace, type ToolSpec } from "../baml_sdk/index.js";
-import { checkBaisIssues, createBaisIssue, loadBaisIssues, moveBaisIssue, readyBaisIssues, type BaisEdge, type BaisFile } from "./bais.js";
+import { checkBaisIssues, createBaisIssue, linkBaisIssues, loadBaisIssues, moveBaisIssue, parseClaimDuration, readyBaisIssues, reapBaisClaims, renewBaisClaim, type BaisEdge, type BaisFile } from "./bais.js";
 import { colorizeDiffLines } from "./diff-render.js";
 import { askApproval, askText, promptAvailable } from "./prompt.js";
 import { getStoredTrust } from "./trust.js";
@@ -833,12 +833,27 @@ export async function handleTool(name: string, args: Record<string, unknown>): P
 		case "bais_new": {
 			const title = String(args.title ?? "");
 			if (!title) throw new Error("bais_new requires title");
+			// bi#215: edges at birth ride `edges: [{kind, to}]`, validated
+			// like the CLI inside createBaisIssue (known kind, existing
+			// ends, no self-links/dups — a refusal names the reason and
+			// nothing reaches disk). Shape-checked here so a malformed
+			// entry refuses at the tool boundary, not inside the writer.
+			const rawEdges = args.edges ?? [];
+			if (!Array.isArray(rawEdges)) throw new Error("bais_new: edges must be [{kind, to}]");
+			const edges: { kind: string; to: string }[] = rawEdges.map((e, i) => {
+				const r = e as Record<string, unknown>;
+				if (typeof r?.kind !== "string" || !r.kind || typeof r?.to !== "string" || !r.to) {
+					throw new Error(`bais_new: edges[${i}] needs string kind/to`);
+				}
+				return { kind: r.kind, to: r.to };
+			});
 			const file = await createBaisIssue({
 				title,
 				kind: (args.kind as string | undefined) ?? "Feat",
 				area: (args.area as string | undefined) ?? undefined,
 				body: (args.body as string | undefined) ?? undefined,
 				status: (args.status as string | undefined) ?? "Open",
+				edges,
 			});
 			return capBaisPayload(JSON.stringify(file), "bais show <id>");
 		}
@@ -846,8 +861,66 @@ export async function handleTool(name: string, args: Record<string, unknown>): P
 			const id = String(args.id ?? "");
 			const status = String(args.status ?? "");
 			if (!id || !status) throw new Error("bais_move requires id and status");
-			const file = await moveBaisIssue(id, status);
+			// bi#215: claim-capable move. `as` + `for` mirror the CLI
+			// exactly: `for` without `as` is ignored (bare move keeps
+			// today's anonymous-but-instantly-stale contract), an invalid
+			// `for` refuses loud naming the value.
+			const as = typeof args.as === "string" && args.as ? args.as : null;
+			const forRaw = typeof args.for === "string" && args.for ? args.for : null;
+			let forMs: number | undefined;
+			if (forRaw != null) {
+				const p = parseClaimDuration(forRaw);
+				if (p == null) throw new Error(`bais_move: --for ${JSON.stringify(forRaw)} needs <n>s|m|h|d`);
+				forMs = p;
+			}
+			const file = await moveBaisIssue(id, status, undefined, as != null ? { as, forMs } : undefined);
 			return capBaisPayload(JSON.stringify(file), "bais show <id>");
+		}
+		case "bais_show": {
+			// bi#215: the single-issue read path (CLI `bais show` parity).
+			// Unknown ids fail closed naming themselves — never an empty
+			// render. A single full record carries its body by definition
+			// (the bi#212 rows rule is for discovery-sized results).
+			const id = String(args.id ?? "");
+			if (!id) throw new Error("bais_show requires id");
+			const { issues } = await loadBaisIssues();
+			const found = issues.find((f) => f.issue.id === id);
+			if (!found) throw new Error(`bais_show: unknown issue ${JSON.stringify(id)} — \`bi bais list\` lists ids`);
+			return capBaisPayload(JSON.stringify(found), "bais show <id>");
+		}
+		case "bais_link": {
+			// bi#215: link over linkBaisIssues — CLI `bais link` validation
+			// (known kind, existing ends, no self-links/dups/cycles) with
+			// the same loud refusals, nothing half-written.
+			const from = String(args.from ?? "");
+			const kind = String(args.kind ?? "");
+			const to = String(args.to ?? "");
+			if (!from || !kind || !to) throw new Error("bais_link requires from, kind, and to");
+			const file = await linkBaisIssues(from, kind, to);
+			return capBaisPayload(JSON.stringify(file), "bais show <id>");
+		}
+		case "bais_renew": {
+			// bi#215: heartbeat over renewBaisClaim — only the recorded
+			// holder extends a live claim (strangers refuse naming both
+			// holders). `for` parses like the CLI; invalid refuses loud.
+			const id = String(args.id ?? "");
+			const as = String(args.as ?? "");
+			if (!id || !as) throw new Error("bais_renew requires id and as");
+			const forRaw = typeof args.for === "string" && args.for ? args.for : null;
+			let forMs = 4 * 3600000;
+			if (forRaw != null) {
+				const p = parseClaimDuration(forRaw);
+				if (p == null) throw new Error(`bais_renew: --for ${JSON.stringify(forRaw)} needs <n>s|m|h|d`);
+				forMs = p;
+			}
+			const file = await renewBaisClaim(id, as, forMs);
+			return capBaisPayload(JSON.stringify(file), "bais show <id>");
+		}
+		case "bais_reap": {
+			// bi#215: reclamation over reapBaisClaims — expired-only, the
+			// same lease predicate as the CLI reap. Live claims untouched.
+			const reaped = await reapBaisClaims(Date.now());
+			return capBaisPayload(JSON.stringify({ reaped }), "bais show <id>");
 		}
 		case "bais_check": {
 			// bi#213: per-file verdict rows, never bodies. `ok` is ids

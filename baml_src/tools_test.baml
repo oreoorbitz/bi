@@ -1,6 +1,6 @@
 testset "tools registry" {
-    test "ListTools returns 15 (7 pi + 6 bais + 2 report)" {
-        assert.equal(ListTools().length(), 15)
+    test "ListTools returns 19 (7 pi + 10 bais + 2 report)" {
+        assert.equal(ListTools().length(), 19)
     }
 
     test "read/bash/ls/grep/find are listed now that executors landed (bi#150/151)" {
@@ -160,6 +160,95 @@ testset "bais_ready/check/graph row-mode contracts (bi#213)" {
                 assert.contains(tool.description, "narrower --from, shallower depth");
                 assert.contains(tool.description, "pass depth for shallower/deeper");
                 assert.contains(tool.description, "include_bodies:true")
+            },
+            _ => assert.is_true(false),
+        }
+    }
+}
+
+testset "bais CRUD tools (bi#215)" {
+    test "show/link/renew/reap are listed with GetTool" {
+        for (let name in ["bais_show", "bais_link", "bais_renew", "bais_reap"]) {
+            let t = GetTool(name);
+            assert.not_null(t);
+            match (t) {
+                let tool: ToolSpec => assert.equal(tool.name, name),
+                _ => assert.is_true(false),
+            }
+        }
+    }
+
+    test "bais_show advertises the full record + fail-closed unknown" {
+        let t = GetTool("bais_show");
+        assert.not_null(t);
+        match (t) {
+            let tool: ToolSpec => {
+                assert.contains(tool.description, "full record");
+                assert.contains(tool.description, "holder/lease");
+                assert.contains(tool.description, "fail closed naming themselves");
+                assert.contains(tool.description, "compact JSON")
+            },
+            _ => assert.is_true(false),
+        }
+    }
+
+    test "bais_new advertises edges at birth" {
+        let t = GetTool("bais_new");
+        assert.not_null(t);
+        match (t) {
+            let tool: ToolSpec => {
+                assert.contains(tool.description, "edges");
+                assert.contains(tool.description, "kind, to");
+                assert.contains(tool.description, "existing ends")
+            },
+            _ => assert.is_true(false),
+        }
+    }
+
+    test "bais_move advertises claim-capable as/for with the bare-move contract" {
+        let t = GetTool("bais_move");
+        assert.not_null(t);
+        match (t) {
+            let tool: ToolSpec => {
+                assert.contains(tool.description, "`as`");
+                assert.contains(tool.description, "`for`");
+                assert.contains(tool.description, "anonymous-but-instantly-stale")
+            },
+            _ => assert.is_true(false),
+        }
+    }
+
+    test "bais_link advertises validated edges over linkBaisIssues" {
+        let t = GetTool("bais_link");
+        assert.not_null(t);
+        match (t) {
+            let tool: ToolSpec => {
+                assert.contains(tool.description, "no self-links/dups/cycles");
+                assert.contains(tool.description, "never half-writes")
+            },
+            _ => assert.is_true(false),
+        }
+    }
+
+    test "bais_renew advertises the holder-only heartbeat" {
+        let t = GetTool("bais_renew");
+        assert.not_null(t);
+        match (t) {
+            let tool: ToolSpec => {
+                assert.contains(tool.description, "recorded holder");
+                assert.contains(tool.description, "heartbeat")
+            },
+            _ => assert.is_true(false),
+        }
+    }
+
+    test "bais_reap advertises expired-only with live claims untouched" {
+        let t = GetTool("bais_reap");
+        assert.not_null(t);
+        match (t) {
+            let tool: ToolSpec => {
+                assert.contains(tool.description, "expired-only");
+                assert.contains(tool.description, "never touched")
             },
             _ => assert.is_true(false),
         }

@@ -210,7 +210,7 @@ function _tool_bais_ready() -> ToolSpec {
 function _tool_bais_new() -> ToolSpec {
     ToolSpec {
         name: "bais_new",
-        description: "Create a new BAIS issue .bais/issues/<id>.toml (BAML-serialized via bais parser). Self-adjust: call when you discover a pattern (e.g. sub-agent timeout too short, reconcile conflicts, flaky tool) — title/body should capture repro + acceptance.",
+        description: "Create a new BAIS issue .bais/issues/<id>.toml (BAML-serialized via bais parser). Self-adjust: call when you discover a pattern (e.g. sub-agent timeout too short, reconcile conflicts, flaky tool) — title/body should capture repro + acceptance. Edges at birth ride `edges: [{kind, to}]` (validated like the CLI: known kind, existing ends, no self-links/dups — a refusal names the reason, never half-writes). Results are compact JSON capped near 60k bytes, with a truncation notice naming the refinement (bais show), never silent.",
         input_schema: {
             "type": "object",
             "properties": {
@@ -231,6 +231,18 @@ function _tool_bais_new() -> ToolSpec {
                     "type": "string",
                     "description": "Status: Open/Doing/Blocked/Done/Dropped (default Open)",
                 },
+                "edges": {
+                    "type": "array",
+                    "description": "Edges declared at birth, e.g. [{kind: Blocks, to: bi#04}] — ends must exist (optional)",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": { "type": "string", "description": "Edge kind: Blocks/DependsOn/SubtaskOf/DuplicateOf/Related/Fixes/Replaces" },
+                            "to": { "type": "string", "description": "Target issue id e.g. bi#04" },
+                        },
+                        "required": ["kind", "to"],
+                    },
+                },
             },
             "required": ["title"],
             "additionalProperties": false,
@@ -241,16 +253,84 @@ function _tool_bais_new() -> ToolSpec {
 function _tool_bais_move() -> ToolSpec {
     ToolSpec {
         name: "bais_move",
-        description: "Move a BAIS issue to a new Status (re-serializes via bais BAML parser).",
+        description: "Move a BAIS issue to a new Status (re-serializes via bais BAML parser). Claim-capable: pass `as` (owner id) + `for` (<n>s|m|h|d) to hold Doing work through the tool surface — a bare move to Doing keeps today's anonymous-but-instantly-stale contract (reap reclaims on sight). Results are compact JSON capped near 60k bytes, with a truncation notice naming the refinement (bais show), never silent.",
         input_schema: {
             "type": "object",
             "properties": {
                 "id": { "type": "string", "description": "Issue id e.g. bi#09" },
                 "status": { "type": "string", "description": "New status: Open/Doing/Blocked/Done/Dropped" },
+                "as": {
+                    "type": "string",
+                    "description": "Claim owner id for Doing (optional — without it the move stays anonymous and instantly stale)",
+                },
+                "for": {
+                    "type": "string",
+                    "description": "Lease duration <n>s|m|h|d e.g. 4h (optional, needs `as`; invalid values refuse loud naming the value)",
+                },
             },
             "required": ["id", "status"],
             "additionalProperties": false,
         },
+    }
+}
+
+function _tool_bais_show() -> ToolSpec {
+    ToolSpec {
+        name: "bais_show",
+        description: "Read one BAIS issue: the full record (body + edges + holder/lease). Unknown ids fail closed naming themselves — `bi bais list` lists ids. A single full record rides compact JSON capped near 60k bytes, with a truncation notice naming the refinement, never silent.",
+        input_schema: {
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "Issue id e.g. bi#09" },
+            },
+            "required": ["id"],
+            "additionalProperties": false,
+        },
+    }
+}
+
+function _tool_bais_link() -> ToolSpec {
+    ToolSpec {
+        name: "bais_link",
+        description: "Link two BAIS issues with an edge (known kind, existing ends, no self-links/dups/cycles — a refusal names the reason, never half-writes). Results are compact JSON capped near 60k bytes, with a truncation notice naming the refinement (bais show), never silent.",
+        input_schema: {
+            "type": "object",
+            "properties": {
+                "from": { "type": "string", "description": "Source issue id e.g. bi#09" },
+                "kind": { "type": "string", "description": "Edge kind: Blocks/DependsOn/SubtaskOf/DuplicateOf/Related/Fixes/Replaces" },
+                "to": { "type": "string", "description": "Target issue id e.g. bi#04" },
+            },
+            "required": ["from", "kind", "to"],
+            "additionalProperties": false,
+        },
+    }
+}
+
+function _tool_bais_renew() -> ToolSpec {
+    ToolSpec {
+        name: "bais_renew",
+        description: "Renew a live Doing claim (heartbeat): only the recorded holder extends it, strangers refuse loud naming both holders. Results are compact JSON capped near 60k bytes, with a truncation notice naming the refinement (bais show), never silent.",
+        input_schema: {
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "Issue id e.g. bi#09" },
+                "as": { "type": "string", "description": "Claim owner id (must match the recorded holder)" },
+                "for": {
+                    "type": "string",
+                    "description": "Lease duration <n>s|m|h|d e.g. 4h (optional, default 4h; invalid values refuse loud naming the value)",
+                },
+            },
+            "required": ["id", "as"],
+            "additionalProperties": false,
+        },
+    }
+}
+
+function _tool_bais_reap() -> ToolSpec {
+    ToolSpec {
+        name: "bais_reap",
+        description: "Reclaim expired Doing claims (expired-only, same predicate as the CLI reap): every Doing with an expired or missing lease flips to Open with the claim cleared. Live claims are never touched. Results are compact JSON capped near 60k bytes, with a truncation notice naming the refinement (bais show), never silent.",
+        input_schema: { "type": "object", "properties": {}, "additionalProperties": false },
     }
 }
 
@@ -448,6 +528,10 @@ function ListTools() -> ToolSpec[] {
         _tool_bais_ready(),
         _tool_bais_new(),
         _tool_bais_move(),
+        _tool_bais_show(),
+        _tool_bais_link(),
+        _tool_bais_renew(),
+        _tool_bais_reap(),
         _tool_bais_check(),
         _tool_bais_graph(),
         _tool_report_subagent_timeout(),
