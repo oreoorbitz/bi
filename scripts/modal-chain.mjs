@@ -31,7 +31,8 @@
 //     repeats FAIL: `FAIL  mc-chain trust→picker→prompt survives, exit 0
 //     — code=0 prompts=1` (the remounted bi[0]> never paints — the
 //     exact invisible-remount mechanism; mc-help/mc-kept still green).
-//     Restored → green.
+//     Restored → green. (bi#201 note: these records predate the label
+//     change — `bi[0]>` below reads `bi>` on current builds.)
 //   step 2 (raw/resume reset) removed → all three checks FAIL
 //     (mc-chain prompts=1, mc-help, mc-kept; exit 0) — the bi#179
 //     post-picker vanish signature, reproducing the salvage red-check.
@@ -64,7 +65,8 @@ if (!hasPty) {
 		writeFileSync(join(home, ".bi", "settings.json"), JSON.stringify({ setup_done: true }) + "\n");
 		// One seeded session so the resume picker fires (modal two of
 		// two). Header-only: zero turns, so the post-chain prompt reads
-		// bi[0]> (a seeded user turn would make it bi[1]>).
+		// bi> at every turn (bi#201 dropped the counter; a seeded
+		// user turn used to read bi[1]>).
 		writeFileSync(
 			join(home, ".bi", "sessions", "a1b2c3d4.jsonl"),
 			JSON.stringify({ id: "a1b2c3d4", timestamp: "2026-09-07T00:00:00.000Z", cwd: home, parent_session: null, label: null }) + "\n",
@@ -98,8 +100,9 @@ if (!hasPty) {
 	});
 	// Live prompt rows carry SGR styling between the label chars —
 	// strip ANSI before counting (the replay path is plain text).
+	// bi#201: the footer label is plain `bi>` (was `bi[0]>`).
 	const clean = out.replace(/\x1b\[[0-9;?]*[a-zA-Z]|\x1b[()][AB0]|\x1b[=>]|\x1b\][^\x07]*\x07/g, "");
-	const prompts = clean.split("bi[0]>").length - 1;
+	const prompts = clean.split("bi>").length - 1;
 	check("mc-chain trust→picker→prompt survives, exit 0", code === 0 && prompts >= 2, `code=${code} prompts=${prompts}`);
 	check("mc-help /help runs past the chain", out.includes("slash commands:"), `code=${code}`);
 	check("mc-kept session kept on quit", out.includes("session kept"), `code=${code}`);

@@ -11,7 +11,7 @@
 // line on the last two rows, clean exit 0.
 //
 // Pty (needs python3 with stdlib pty; SKIP otherwise, exit 0):
-//   pc-dock        trust→picker→editor: the BAML-shaped label (bi[0]>)
+//   pc-dock        trust→picker→editor: the BAML-shaped label (bi>, bi#201)
 //                  lives IN the box's top border (label row == box top)
 //   pc-glyph       `>` prompt glyph at column 2 of the first interior
 //                  row, side bars intact (row1='│ > …')
@@ -55,7 +55,7 @@ if (!hasPty) {
 	const home = mkdtempSync(join(tmpdir(), "bi-pc-"));
 	mkdirSync(join(home, ".bi", "sessions"), { recursive: true });
 	writeFileSync(join(home, ".bi", "settings.json"), JSON.stringify({ setup_done: true }) + "\n");
-	// Header-only session: zero turns, so the prompt label reads bi[0]>.
+	// Header-only session: zero turns, so the prompt label reads bi> (bi#201).
 	writeFileSync(
 		join(home, ".bi", "sessions", "a1b2c3d4.jsonl"),
 		JSON.stringify({ id: "a1b2c3d4", timestamp: "2026-09-07T00:00:00.000Z", cwd: home, parent_session: null, label: null }) + "\n",

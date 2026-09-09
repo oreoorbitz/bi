@@ -236,8 +236,11 @@ function dash_run(n: int) -> string {
     out
 }
 
+// bi#201: the footer prompt is an invitation, not an odometer — plain
+// `bi>` at every turn count (turns already read in the status line).
+// The turn arg stays so call sites keep passing sess.turn unchanged.
 function format_prompt_label(turn: int) -> string {
-    `bi[${turn}]>`
+    "bi>"
 }
 
 function prompt_glyph() -> string {

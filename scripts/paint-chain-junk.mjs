@@ -9,7 +9,7 @@
 // freshly focused Editor inserts into its buffer (proposals/14 class).
 //
 // Drill: the pty driver holds its negotiation replies until the editor
-// prompt has painted (PC_REPLY_ON='bi[0]>'), waits out the mount render
+// prompt has painted (PC_REPLY_ON='bi>'), waits out the mount render
 // (PC_REPLY_DELAY=0.8 from arming — the settle window keeps stdin
 // paused, so earlier writes coalesce into harmless whole replies in the
 // kernel buffer), then delivers them split with a 300ms intra-reply gap
@@ -77,7 +77,7 @@ if (!hasPty) {
 	const home = mkdtempSync(join(tmpdir(), "bi-pcj-"));
 	mkdirSync(join(home, ".bi", "sessions"), { recursive: true });
 	writeFileSync(join(home, ".bi", "settings.json"), JSON.stringify({ setup_done: true }) + "\n");
-	// Header-only session: zero turns, so the prompt reads bi[0]>.
+	// Header-only session: zero turns, so the prompt reads bi> (bi#201).
 	writeFileSync(
 		join(home, ".bi", "sessions", "a1b2c3d4.jsonl"),
 		JSON.stringify({ id: "a1b2c3d4", timestamp: "2026-09-07T00:00:00.000Z", cwd: home, parent_session: null, label: null }) + "\n",
@@ -94,7 +94,7 @@ if (!hasPty) {
 			// arrive split with the tail past pi-tui's 150ms flush window.
 			// Delay is from ARMING (driver-side), so the prefix is read
 			// promptly post-focus and the tail lands in a separate read.
-			PC_REPLY_ON: "bi[0]>",
+			PC_REPLY_ON: "bi>",
 			PC_REPLY_DELAY: "0.8",
 			PC_SPLIT: "1",
 			PC_SPLIT_GAP: "0.3",

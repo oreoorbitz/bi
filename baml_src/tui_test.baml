@@ -39,6 +39,21 @@ testset "tui" {
         assert.equal(render_ready_frame([], 80).length(), 1)
     }
 
+    test "ready frame emits plain text, host wraps ids (bi#199)" {
+        // bi#193 doctrine: BAML emits no markers — the host wraps the
+        // id column in primary at paint time (cli.ts colorReadyRow,
+        // header wordmark bi#200 via colorReadyHeader). This pins the
+        // plain shapes the wraps ride on.
+        let rows = [
+            ReadyRow { id: "bi#199", title: "Short" },
+            ReadyRow { id: "hub#181", title: "Other" },
+        ];
+        let frame = render_ready_frame(rows, 80);
+        assert.equal(frame.at(0) ?? "", "bi — ready BAIS");
+        assert.equal(frame.at(1) ?? "", "bi#199  Short");
+        assert.equal(frame.at(2) ?? "", "hub#181  Other");
+    }
+
     test "diff_lines" {
         let a = diff_lines(["a", "b", "c"], ["a", "x", "c"]);
         assert.equal(a, ["1"]);
@@ -177,20 +192,22 @@ testset "tui" {
         assert.is_true(!lines2[0].includes(cursor_marker()));
     }
 
-    test "prompt label, glyph, and editor border shapes (bi#181)" {
-        assert.equal(format_prompt_label(0), "bi[0]>");
-        assert.equal(format_prompt_label(12), "bi[12]>");
+    test "prompt label, glyph, and editor border shapes (bi#181, bi#201)" {
+        // bi#201: plain `bi>` at every turn count — no odometer.
+        assert.equal(format_prompt_label(0), "bi>");
+        assert.equal(format_prompt_label(12), "bi>");
         assert.equal(prompt_glyph(), ">");
         assert.equal(editor_side_border(), "│");
         // Label splices one space after the left corner; dashes fill.
         assert.equal(
-            render_editor_top_border("bi[0]>", 20),
-            "╭ bi[0]> ──────────╮",
+            render_editor_top_border("bi>", 20),
+            "╭ bi> ─────────────╮",
         );
-        assert.equal(render_editor_top_border("bi[0]>", 20).length(), 20);
-        // Narrow fallback drops the label, never the corners.
-        assert.equal(render_editor_top_border("bi[0]>", 10), "╭────────╮");
-        assert.equal(render_editor_top_border("bi[0]>", 1), "╭");
+        assert.equal(render_editor_top_border("bi>", 20).length(), 20);
+        // The short label still fits at width 10 (bi#201 behavior change:
+        // `bi[0]>` fell back to bare dashes here).
+        assert.equal(render_editor_top_border("bi>", 10), "╭ bi> ───╮");
+        assert.equal(render_editor_top_border("bi>", 1), "╭");
         assert.equal(render_editor_bottom_border(10), "╰────────╯");
         assert.equal(render_editor_bottom_border(1), "╰");
     }

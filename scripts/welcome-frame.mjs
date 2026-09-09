@@ -74,7 +74,7 @@ if (!hasPty) {
 	const home = mkdtempSync(join(tmpdir(), "bi-wf-"));
 	mkdirSync(join(home, ".bi", "sessions"), { recursive: true });
 	writeFileSync(join(home, ".bi", "settings.json"), JSON.stringify({ setup_done: true }) + "\n");
-	// Header-only session: zero turns, so the prompt label reads bi[0]>.
+	// Header-only session: zero turns, so the prompt label reads bi> (bi#201).
 	writeFileSync(
 		join(home, ".bi", "sessions", "a1b2c3d4.jsonl"),
 		JSON.stringify({ id: "a1b2c3d4", timestamp: "2026-09-07T00:00:00.000Z", cwd: home, parent_session: null, label: null }) + "\n",

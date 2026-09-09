@@ -3,10 +3,18 @@ emulate the final grid, print one GEOM line. Invoked by paint-chain.mjs.
 Usage: paint-chain-pty.py <rows> <cols> <home-dir> <cli-path>
 Beats are timed (transport-friendly): trust accept, session pick, quit x2.
 PC_REPLY_ON='<marker>' (bi#183): hold negotiation replies until the marker
-bytes appear in the child's output (e.g. 'bi[0]>' = editor mounted), then
+bytes appear in the child's output (e.g. 'bi>' = editor mounted), then
 deliver them with the adversarial options — a split reply whose tail lands
 after focus is the junk-glyph straggler class (proposals/14).
 """
+
+# bi#201: the footer prompt label is plain `bi>` (was `bi[N]>`). Both
+# spellings count as "the prompt painted" so pre-201 recordings and
+# drills keep working through the transition.
+def _has_prompt(data):
+    if isinstance(data, (bytes, bytearray)):
+        return b'bi>' in data or b'bi[0]>' in data
+    return 'bi>' in data or 'bi[0]>' in data
 import fcntl
 import os
 import pty
@@ -331,7 +339,7 @@ while _now() - t0 < TIMEOUT:
         if not _s['done'] and _due(_s, _now()):
             _s['done'] = True
             snaps.append((_s['tag'], [list(row) for row in scr.g]))
-    if out.count(b'bi[0]>') >= 1 and _now() - t0 > 18 and _now() - last_byte_at > 2.5:
+    if _has_prompt(out) and _now() - t0 > 18 and _now() - last_byte_at > 2.5:
         # Snapshot a QUIET screen only, then demand stability: internal
         # timer-driven renders (async autocomplete open/close) emit no
         # pty bytes, so silence alone cannot prove settledness. Take up
@@ -414,7 +422,7 @@ except OSError:
 interiors = []
 for sh in shots:
     g = [''.join(sh[r]).rstrip() for r in range(ROWS)]
-    pr = [r + 1 for r in range(ROWS) if 'bi[0]>' in g[r]]
+    pr = [r + 1 for r in range(ROWS) if _has_prompt(g[r])]
     bx = [r + 1 for r in range(ROWS) if g[r].count('─') > 20]
     inn = ''
     if len(bx) >= 2:
@@ -428,7 +436,7 @@ if os.environ.get('PROBE_RAW'):
     open(os.environ['PROBE_RAW'], 'wb').write(out)
     print(f'SHOTAT {shot_at_bytes if shot is not None else -1} of {len(out)}')
 grid = [''.join(shot[r]).rstrip() if shot else scr.row(r) for r in range(ROWS)]
-prompt = [r + 1 for r in range(ROWS) if 'bi[0]>' in grid[r]]
+prompt = [r + 1 for r in range(ROWS) if _has_prompt(grid[r])]
 box = [r + 1 for r in range(ROWS) if grid[r].count('─') > 20]
 # The editor box is the LAST dash-row pair on the grid (bi#180's welcome
 # box also has dash borders; it sits above in scrollback).

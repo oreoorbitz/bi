@@ -15,8 +15,8 @@ import { listImageModels } from "./image.js";
 import { showStagedImage, teardownInlineImages } from "./image-display.js";
 import { runAuthStatus, runLogin, runLogout, runOAuthLogin } from "./auth_cli.js";
 import { getOAuthFlow } from "./oauth.js";
-import { listCredentials } from "./auth.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, abort_hint_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, render_footer_frame_async, render_model_line_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, group_resume_sessions_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, trust_options_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, format_skill_history_entry_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, setup_theme_options_async, setup_analytics_options_async, format_first_run_theme_step_async, format_first_run_analytics_step_async, format_first_run_done_async, format_setup_skipped_async, format_setup_status_async, branch_row_prefix_async, format_branch_row_async, format_branches_list_async, format_branch_summary_async, format_fork_list_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, format_issue_row_async, format_issue_context_async, render_ready_frame_async, render_welcome_frame_async, format_prompt_label, format_image_placeholder_async, staged_image_label_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { getAuth, listCredentials } from "./auth.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, abort_hint_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, render_footer_frame_async, render_model_line_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, group_resume_sessions_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, trust_options_async, ModelSupportsImage_async, ListProviders_async, MissingKeyMessage_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, format_skill_history_entry_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, setup_theme_options_async, setup_analytics_options_async, format_first_run_theme_step_async, format_first_run_analytics_step_async, format_first_run_done_async, format_setup_skipped_async, format_setup_status_async, branch_row_prefix_async, format_branch_row_async, format_branches_list_async, format_branch_summary_async, format_fork_list_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, format_issue_row_async, format_issue_context_async, render_ready_frame_async, render_welcome_frame_async, format_prompt_label, format_image_placeholder_async, staged_image_label_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
 import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
 import { readClipboardImage, writeClipboardText, clipboardSupportsImage, extensionForImageMime, sniffImageMime } from "./clipboard.js";
@@ -637,6 +637,23 @@ function groupedSessionPickerRows(
 	return { rows, at: (row) => at[row] ?? null, rowFor: (session) => rowFor[session] ?? headCount };
 }
 
+// bi#203: post-switch / startup auth precheck. Consults the real chain
+// (getAuth over stored credentials + the canonical env var); when
+// nothing is configured, prints a loud warning naming the concrete
+// fix (MissingKeyMessage: the exact env var or `bi login <provider>`).
+// The switch itself always lands and startup stays permissive
+// (bi#121) — warn-first, never fail-closed (bi#55). Never throws: an
+// auth-layer failure degrades to a named one-liner, never a brick.
+async function warnIfProviderUnauthed(provider: string): Promise<void> {
+	try {
+		const auth = await getAuth(provider, null);
+		if (auth.source !== "none") return;
+		console.error(`[bi] no auth configured for ${provider} — ${await MissingKeyMessage_async(provider)}`);
+	} catch (e) {
+		console.error(`[bi] auth check failed for ${provider} (${e instanceof Error ? e.message : e}) — switch landed, verify with /oauth`);
+	}
+}
+
 // raw carries the REPL's line-input suspend/resume for pi-tui modals;
 // null off-REPL or on pipes (numeric fallback, byte-identical).
 async function handleSlash(line: string, skills: Skill[], history: any[], signal?: TurnSignal, backend?: ReplBackend, sess?: ReplSessionState, raw?: { suspend(): void; resume(): void } | null): Promise<any[] | "quit" | "none"> {
@@ -1023,6 +1040,14 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 					raw.resume();
 				}
 				if (at !== null && disp[at] && rows[at]) {
+					// bi#202: a picked dir implies the next action — name
+					// it before the recursion browses (the picked-file
+					// arm already hints `/attach <n>` via the numeric
+					// path). Pick-driven only: typed `/tree <dir>`
+					// keeps today's output byte-identical.
+					if (rows[at].is_dir) {
+						console.error(`browsed ${join(sess.treeRoot, rows[at].path)} — pick a file number or /attach <n>`);
+					}
 					return handleSlash(`/tree ${at + 1}`, skills, history, signal, backend, sess, raw);
 				}
 			}
@@ -1119,6 +1144,9 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 					return history;
 				}
 				console.error(`[bi] backend now ${m.provider}/${m.id} (saved)`);
+				// bi#203: the switch lands first — then the missing-auth
+				// warning names its fix at the switch, not mid-turn.
+				await warnIfProviderUnauthed(m.provider);
 				return history;
 			};
 			if (!t.args) {
@@ -2805,6 +2833,38 @@ export function colorWelcomeRow(line: string): string {
 	return line;
 }
 
+// bi#199: ready-row id column — BAML shapes `${id}  ${title}` plain
+// (tui.baml render_ready_frame) and the host wraps the id (the first
+// token before the double-space run) in primary at paint time — the
+// bi#193-pinned mechanism, no SGR in BAML literals. The header row
+// (`bi — ready BAIS`) has no double space after its first token, so it
+// passes through here untouched (bi#200 owns the header wordmark).
+// `paint` defaults to stdout TTY: pipes keep the plain BAML frame
+// byte-identical; suppression (BI_THEME=none / NO_COLOR) degrades
+// inside chromeWrap by construction.
+export function colorReadyRow(line: string, paint: boolean = process.stdout.isTTY === true): string {
+	if (!paint) return line;
+	const m = /^(\S+)  /.exec(line);
+	if (!m) return line;
+	return chromeWrap("primary", m[1]) + line.slice(m[1].length);
+}
+
+// bi#200: header wordmark — the `bi` in `bi — ready BAIS` pops primary,
+// `— ready BAIS` stays text. Same paint-time doctrine as bi#199; the
+// wrap keys on the leading `bi` (row ids like `bi#01` never reach this
+// — colorReadyFrame routes index 0 here, rows to colorReadyRow).
+export function colorReadyHeader(line: string, paint: boolean = process.stdout.isTTY === true): string {
+	if (!paint) return line;
+	if (!line.startsWith("bi")) return line;
+	return chromeWrap("primary", "bi") + line.slice(2);
+}
+
+// One frame map for both ready paint sites: line 0 is the header,
+// the rest are rows (render_ready_frame always leads the header).
+export function colorReadyFrame(lines: string[]): string[] {
+	return lines.map((l, i) => (i === 0 ? colorReadyHeader(l) : colorReadyRow(l)));
+}
+
 // bi#180: welcome entry frame (BAML-shaped render_welcome_frame, kimi
 // welcome.ts:49-107 mirror) with the ready-BAIS frame beneath it.
 // Staged once from repl() AFTER the last startup modal (trust /
@@ -2837,7 +2897,7 @@ async function printWelcomeFrame(backend: ReplBackend, sess: ReplSessionState, f
 			ready.map((f) => ({ id: f.issue.id, title: f.issue.title })),
 			width,
 		);
-		stageBaseFrame([...welcome.map(colorWelcomeRow), ...readyLines]);
+		stageBaseFrame([...welcome.map(colorWelcomeRow), ...colorReadyFrame(readyLines)]);
 	} catch {
 		// The entry frame is cosmetic — never brick REPL startup.
 	}
@@ -3010,6 +3070,9 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 		console.error(`[bi] stored settings invalid (${bamlErrorMessage(e)}) — using builtins`);
 		backend = { provider: "anthropic", model: "claude-haiku-4-5", thinking: null };
 	}
+	// bi#203: same check for the resolved default (one line, named).
+	// Startup stays permissive (bi#121) — warn only, never refuse.
+	await warnIfProviderUnauthed(backend.provider);
 	// bi#30: session pointer — file/turn/persisted mutate via /new /resume
 	// /fork; turns append to the file as they land (memory authoritative).
 	// A startup-adopted session (bi#100) seeds all three from the file.
@@ -3279,9 +3342,14 @@ async function main(): Promise<void> {
 			composeFrame(
 				[
 					{
-						lines: await render_ready_frame_async(
-							ready.map((f) => ({ id: f.issue.id, title: f.issue.title })),
-							readyWidth,
+						// bi#199/200: id column + header wordmark pop primary
+						// at paint time (colorReadyFrame: TTY-gated,
+						// suppression-clean).
+						lines: colorReadyFrame(
+							await render_ready_frame_async(
+								ready.map((f) => ({ id: f.issue.id, title: f.issue.title })),
+								readyWidth,
+							),
 						),
 						grow: 1,
 						shrink: 1,

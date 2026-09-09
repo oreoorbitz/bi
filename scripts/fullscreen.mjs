@@ -16,7 +16,7 @@
 //   fs-enter-exit  BI_FULLSCREEN=1 enters (1049h) and exits (1049l) the
 //                  alt screen, exit code 0.
 //   fs-replay      the tail after 1049l holds the transcript ("/quit",
-//                  "session kept") and the dock prompt row ("bi[0]> ")
+//                  "session kept") and the dock prompt row ("bi> " post-bi#201)
 //                  — the host replay path.
 //   fs-no-leak     the replayed tail holds no 1049h of its own.
 //   fs-unset       without the flag no alt screen is entered.
