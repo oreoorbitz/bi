@@ -16,7 +16,7 @@ import { showStagedImage, teardownInlineImages } from "./image-display.js";
 import { runAuthStatus, runLogin, runLogout, runOAuthLogin } from "./auth_cli.js";
 import { getOAuthFlow } from "./oauth.js";
 import { getAuth, listCredentials } from "./auth.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, abort_hint_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, render_footer_frame_async, render_model_line_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, group_resume_sessions_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, trust_options_async, ModelSupportsImage_async, ListProviders_async, MissingKeyMessage_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, format_skill_history_entry_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, setup_theme_options_async, setup_analytics_options_async, format_first_run_theme_step_async, format_first_run_analytics_step_async, format_first_run_done_async, format_setup_skipped_async, format_setup_status_async, branch_row_prefix_async, format_branch_row_async, format_branches_list_async, format_branch_summary_async, format_fork_list_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, format_issue_row_async, format_issue_context_async, render_ready_frame_async, render_welcome_frame_async, format_prompt_label, format_image_placeholder_async, staged_image_label_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, abort_hint_text_async, format_model_list_async, format_thinking_list_async, thinking_levels_async, thinking_level_description_async, format_repl_footer_async, render_footer_frame_async, render_model_line_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, group_resume_sessions_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, trust_options_async, ModelSupportsImage_async, ListProviders_async, MissingKeyMessage_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, format_skill_history_entry_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, setup_theme_options_async, setup_analytics_options_async, format_first_run_theme_step_async, format_first_run_analytics_step_async, format_first_run_done_async, format_setup_skipped_async, format_setup_status_async, branch_row_prefix_async, format_branch_row_async, format_branches_list_async, format_branch_summary_async, format_fork_list_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, format_issue_row_async, format_issue_context_async, render_ready_frame_async, render_welcome_frame_async, format_prompt_label, format_image_placeholder_async, staged_image_label_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
 import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
 import { readClipboardImage, writeClipboardText, clipboardSupportsImage, extensionForImageMime, sniffImageMime } from "./clipboard.js";
@@ -169,6 +169,16 @@ async function printBlock(text: string): Promise<void> {
 	await stdoutRule(await activeTheme());
 }
 
+// bi#204: levels/budgets are global tables; only reasoning:true models
+// consume them. Name the inert state (null when the live model reasons
+// or is unknown — an unresolvable ref warns nowhere, never blocks).
+async function thinkingNoReasonNote(model: string | undefined): Promise<string | null> {
+	if (!model) return null;
+	const rec = await resolve_model_ref_async(model);
+	if (rec?.reasoning === false) return `${model} does not reason — levels apply when you switch to a reasoning model`;
+	return null;
+}
+
 // Second-word Tab pools per slash command. Static pools mirror the
 // BAML-validated sets (thinking levels, theme names, trust verbs);
 // dynamic pools come from the VM (model catalog, setting keys,
@@ -285,7 +295,7 @@ import { KindStatus, statusEventTailUpdater } from "./status.js";
 import { ActionLog, safeJson } from "./actionlog.js";
 import { promptAvailable, askEdit, askText, pickList, pickListWithPreview, stageBaseFrame, type SlashPool } from "./prompt.js";
 import { completePathPrefix, splitSecondWord, unquotePath } from "./paths.js";
-import { allThemeNames, chromeToolLine, chromeWrap, customThemesDir, listCustomThemes, mergedThemeList, previewForTheme, validateCustomFile } from "./theme-files.js";
+import { allThemeNames, CHROME_RESET, chromeAnsi, chromeToolLine, chromeWrap, customThemesDir, listCustomThemes, mergedThemeList, previewForTheme, validateCustomFile } from "./theme-files.js";
 import { getKeybindingsPath, getUserKeybindings, listKeybindingRows, loadKeybindingsFile, reloadKeybindings, renderKeybindingJson, renderKeybindingList, resetKeybindings, saveKeybindings, type KeybindingFileEntry } from "./keybindings.js";
 import { screenModelAvailable, screenPickModel } from "./screen-model.js";
 import { format_status, format_turn_summary, format_turn_error } from "../baml_sdk/index.js";
@@ -293,7 +303,7 @@ import { runBiLoop } from "./agent_loop.js";
 import { streamTextIncremental } from "./incremental.js";
 import { editInExternalEditor, editorCommand } from "./editor.js";
 import { footerCwd, gitBranch } from "./footer_info.js";
-import { printMarkdownText } from "./markdown.js";
+import { markdownTuiAvailable, printMarkdownText, renderMarkdownTui } from "./markdown.js";
 import { replayCompactionBlocks, estimateHistoryTokens } from "./compaction.js";
 import { printCompactionSummary, printSkillBlock } from "./summary-blocks.js";
 import { GoTuiSeam, goTuiRequested, fixtureLlmFn } from "./tui_seam.js";
@@ -1314,27 +1324,113 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 		// bi#28: bare /thinking lists levels with pi's descriptions, with
 		// an argument it sets the live level (validated by BAML). Budgets
 		// reach anthropic turns via thinking_config_for_level; other APIs
-		// ignore the config, and non-reasoning models are guarded out.
+		// ignore the config.
+		// bi#204: bare /thinking is a picker like /model (screen tier
+		// first, host tier over the BAML rows, static list on pipes/Esc);
+		// the live level rides the cursor and Enter applies through the
+		// shared set path below. Levels/budgets are global tables while
+		// model records carry only reasoning true/false — a level on a
+		// reasoning:false model saves but stays inert, and both paths name
+		// that instead of pretending.
 		if (t.name === "thinking") {
+			// Shared apply path (validation + persist + saved line): the
+			// picker (Enter) and `/thinking <level>` resolve through here.
+			const applyThinkingLevel = async (level: string) => {
+				if (!is_valid_thinking_level(level)) {
+					console.error(`unknown thinking level "${level}" — bare /thinking lists off/minimal/low/medium/high/xhigh/max`);
+					return history;
+				}
+				if (backend) backend.thinking = level;
+				// bi#121: same persist rule as /model (startup resolves
+				// default_thinking; invalid levels can't reach here).
+				try {
+					saveUserSettings({ ...loadUserSettings(), default_thinking: level });
+				} catch (e) {
+					console.error(`[bi] settings persist failed (${e instanceof Error ? e.message : e})`);
+					return history;
+				}
+				console.error(`[bi] thinking now ${level} (saved)`);
+				const note = await thinkingNoReasonNote(backend?.model);
+				if (note) console.error(`[bi] ${note}`);
+				return history;
+			};
 			if (!t.args) {
-				await printBlock(await format_thinking_list_async(backend?.thinking ?? "off", { theme: await activeTheme() }));
+				const live = backend?.thinking ?? "off";
+				const theme = await activeTheme();
+				const text = await format_thinking_list_async(live, { theme });
+				// BAML owns row order (format_thinking_list walks
+				// thinking_levels), so the cursor and the picked index both
+				// address the levels array — no SGR stripping in the host.
+				const levels = await thinking_levels_async();
+				const rows = text.split("\n").filter((l) => l.length > 0);
+				const cursor = Math.max(0, levels.indexOf(live));
+				// The picker names the no-reason state up front (same
+				// sentence as the setter path).
+				const note = await thinkingNoReasonNote(backend?.model);
+				if (note) console.error(`[bi] ${note}`);
+				// Screen tier: filterable structured rows over BAML levels
+				// + descriptions (same widget as /model's screen pick). A
+				// screen failure falls through to the host tier below —
+				// /thinking never bricks on widgets.
+				if (raw && screenModelAvailable()) {
+					let failed = false;
+					raw.suspend();
+					try {
+						const at = await pickList(
+							"Select thinking level (↑↓ navigate · type to filter · Enter applies · Esc keeps)",
+							await Promise.all(
+								levels.map(async (level) => ({
+									label: level,
+									description: await thinking_level_description_async(level),
+									searchText: level,
+								})),
+							),
+							cursor,
+						);
+						if (at !== null && levels[at]) return applyThinkingLevel(levels[at]!);
+					} catch (e) {
+						failed = true;
+						console.error(`[bi] screen picker failed (${e instanceof Error ? e.message : e}) — falling back`);
+					} finally {
+						raw.resume();
+					}
+					if (!failed) {
+						await renderSelectList(text, cursor, undefined, theme);
+						return history;
+					}
+				}
+				// Host tier over the BAML rows 1:1 (Enter applies, Esc keeps
+				// the static list with names still working); pipes keep
+				// today's printBlock path byte-identical below.
+				if (raw && promptAvailable()) {
+					if (rows.length !== levels.length) {
+						console.error(`[bi] thinking list shape changed (${rows.length} rows for ${levels.length} levels) — cannot pick, static list below`);
+						await printBlock(text);
+						return history;
+					}
+					raw.suspend();
+					let at: number | null;
+					try {
+						at = await pickList("Pick thinking level (↑↓ navigate · Enter applies · Esc keeps)", rows.map((label) => ({ label })), cursor);
+					} finally {
+						raw.resume();
+					}
+					if (at === null) {
+						await renderSelectList(text, cursor, undefined, theme);
+						return history;
+					}
+					const level = levels[at];
+					if (!level) {
+						console.error(`[bi] pick ${at} is outside the ${levels.length} thinking levels — nothing applied`);
+						await renderSelectList(text, cursor, undefined, theme);
+						return history;
+					}
+					return applyThinkingLevel(level);
+				}
+				await printBlock(text);
 				return history;
 			}
-			if (!is_valid_thinking_level(t.args)) {
-				console.error(`unknown thinking level "${t.args}" — bare /thinking lists off/minimal/low/medium/high/xhigh/max`);
-				return history;
-			}
-			if (backend) backend.thinking = t.args;
-			// bi#121: same persist rule as /model (startup resolves
-			// default_thinking; invalid levels can't reach here).
-			try {
-				saveUserSettings({ ...loadUserSettings(), default_thinking: t.args });
-			} catch (e) {
-				console.error(`[bi] settings persist failed (${e instanceof Error ? e.message : e})`);
-				return history;
-			}
-			console.error(`[bi] thinking now ${t.args} (saved)`);
-			return history;
+			return applyThinkingLevel(t.args);
 		}
 		// bi#30: session commands. History flows through the return value;
 		// the sess pointer (file/turn/persisted) mutates in place.
@@ -2989,6 +3085,9 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 	// the first turn-end paint, torn down when the REPL leaves.
 	// Fullscreen never installs it — the dock owns the footer frame.
 	const footer = new HostFooter();
+	// bi#208: the footer settles the prompt row by DSR while readline
+	// is detached — wire the reader's suspend as the query gate.
+	footer.setInputGate({ suspend: () => reader.suspendLineInput() });
 	// bi#171: exactly-once terminal page per completed REPL turn.
 	const turnNotifier = new TerminalNotifier();
 	// Tab completes first-word slashes (builtins + loaded skills, same
@@ -3091,7 +3190,7 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 		reader.editorTheme = loadTheme;
 		// bi#169: load paint carries context% on TTY; pipes stay byte-identical.
 		const loadUsed = process.stdout.isTTY === true ? estimateHistoryTokens(history) : null;
-		footer.show(
+		await footer.showAsync(
 			await render_footer_frame_async(backend.provider, backend.model, loadThinking, sess.turn, history.length, termWidth(), { theme: loadTheme, cwd: footerCwd(), branch: gitBranch(), used_tokens: loadUsed }),
 			await render_model_line_async(backend.provider, backend.model, loadThinking, termWidth(), { theme: loadTheme }),
 			await format_repl_footer_async(backend.provider, backend.model, loadThinking, sess.turn, history.length, { theme: loadTheme, cwd: footerCwd(), branch: gitBranch(), used_tokens: loadUsed }),
@@ -3122,8 +3221,9 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 			let line: string;
 			try {
 				// bi#67: the prompt draws as part of the footer block —
-				// homed to the row directly above the pinned rows.
-				footer.homeInput();
+				// homed above the footer rows (bi#208: settled by DSR,
+				// hugging content until the fold pins it).
+				await footer.homeInput();
 				// bi#160: the dock's prompt row mirrors the live label;
 				// readline still owns the keystrokes (v1, see NOTES).
 				// bi#181: the label text is BAML-shaped (format_prompt_label).
@@ -3197,7 +3297,7 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 							await render_model_line_async(backend.provider, backend.model, thinking, termWidth(), { theme }),
 						]);
 					} else {
-						footer.show(
+						await footer.showAsync(
 							await render_footer_frame_async(backend.provider, backend.model, thinking, sess.turn, history.length, termWidth(), { theme, cwd, branch, used_tokens: used }),
 							await render_model_line_async(backend.provider, backend.model, thinking, termWidth(), { theme }),
 							fallback,
