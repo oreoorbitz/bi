@@ -7,7 +7,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSy
 import { basename, dirname, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { GetTool_async, ListTools_async, render_tool_diff_async, approval_choices_async, approval_feedback_result_async, approval_header_async, refuse_approval_rejected_async, refuse_bash_blocked_async, refuse_bash_timeout_async, refuse_read_binary_async, refuse_read_outside_root_async, refuse_read_too_large_async, refuse_write_outside_root_async, refuse_write_untrusted_async, refuse_write_too_large_async, edit_missing_text_async, gate_meta_tool_materialization_async, mine_meta_tools_async, write_guard_check_async, MaterializeRefuse, WriteGuardRefuse, type MetaToolProposal, type MetaToolSpec, type SessionTrace, type ToolSpec } from "../baml_sdk/index.js";
-import { checkBaisIssues, createBaisIssue, graphBaisIssues, loadBaisIssues, moveBaisIssue, readyBaisIssues } from "./bais.js";
+import { checkBaisIssues, createBaisIssue, graphBaisIssues, loadBaisIssues, moveBaisIssue, readyBaisIssues, type BaisFile } from "./bais.js";
 import { colorizeDiffLines } from "./diff-render.js";
 import { askApproval, askText, promptAvailable } from "./prompt.js";
 import { getStoredTrust } from "./trust.js";
@@ -626,6 +626,31 @@ export async function handleToolInSession(
 	return out;
 }
 
+// bi#212: BAIS tool-result payload caps. A fresh-session discovery once
+// burned ~276k tokens on two pretty-printed full-body results, so:
+// bais_list returns ROWS by default (full bodies only via include_bodies
+// or a result narrowed to one issue), every bais_* executor emits compact
+// JSON, and anything over the byte cap truncates with a notice naming the
+// refinement — never silent (bi#55). `unparseable` stays always present
+// (the invariant below): rows stay complete, bodies ride bais show.
+export const BAIS_TOOL_RESULT_CAP = 60_000;
+
+export type BaisIssueRow = { id: string; status: string; kind: string; title: string; area: string | null };
+
+// Row projection for bais_list: discovery costs rows, not bodies.
+export function toBaisIssueRow(f: BaisFile): BaisIssueRow {
+	return { id: f.issue.id, status: f.issue.status, kind: f.issue.kind, title: f.issue.title, area: f.issue.area ?? null };
+}
+
+// Cap a compact-JSON tool payload: at or under the cap it passes through
+// byte-identical; over it the string truncates at the cap with a notice
+// naming the refinement (status filter / bais show).
+export function capBaisPayload(compact: string, refine: string): string {
+	if (Buffer.byteLength(compact) <= BAIS_TOOL_RESULT_CAP) return compact;
+	const buf = Buffer.from(compact);
+	return buf.subarray(0, BAIS_TOOL_RESULT_CAP).toString("utf8") + `\n…truncated at ${BAIS_TOOL_RESULT_CAP} bytes, refine with ${refine}`;
+}
+
 // BAML is spec, host is executor — dispatch table for the agent loop.
 // bais_* tools are first-class here so the LLM can manage .bais.
 export async function handleTool(name: string, args: Record<string, unknown>): Promise<string> {
@@ -641,7 +666,7 @@ export async function handleTool(name: string, args: Record<string, unknown>): P
 			area,
 			body: `Self-adjust report from Bi.\n\nDirective: ${directive}\nDuration: ${duration_ms}ms\nTimeout: ${timeout_ms}ms\n\nPattern: sub-agent timed out before completing. Consider increasing timeout or splitting directive. Repro: run Bi sub-agent with directive above, observe timeout. Acceptance: timeout raised or directive chunked, no timeout on retry.\n\nCreated via \`report_subagent_timeout\` tool.`,
 		});
-		return JSON.stringify(file, null, 2);
+		return capBaisPayload(JSON.stringify(file), "bais show <id>");
 	}
 	if (name === "report_reconcile_conflict") {
 		const conflict_count = Number(args.conflict_count ?? 0);
@@ -653,20 +678,28 @@ export async function handleTool(name: string, args: Record<string, unknown>): P
 			area,
 			body: `Self-adjust report from Bi.\n\nConflicts: ${conflict_count}\nFiles: ${files.join(", ") || "(unknown)"}\n\nPattern: parallel sub-agents produced conflicting edits. Consider tightening file ownership or reconcile strategy. Acceptance: re-run with isolated worktrees / clearer directive, no conflicts.\n\nCreated via \`report_reconcile_conflict\` tool.`,
 		});
-		return JSON.stringify(file, null, 2);
+		return capBaisPayload(JSON.stringify(file), "bais show <id>");
 	}
 	switch (name) {
 		case "bais_list": {
 			const status = (args.status as string | undefined) ?? null;
+			const includeBodies = args.include_bodies === true;
 			const { issues, failures } = await loadBaisIssues();
 			const filtered = status ? issues.filter((f) => f.issue.status === status) : issues;
 			// `unparseable` is always present, even when empty: a tool that silently
 			// omits files teaches the model the list is complete when it is not.
-			return JSON.stringify({ issues: filtered, unparseable: failures }, null, 2);
+			// Full records only on demand (include_bodies) or when the result
+			// narrows to one issue — its body is the point, not discovery cost.
+			const full = includeBodies || filtered.length === 1;
+			const payload = full
+				? { issues: filtered, unparseable: failures }
+				: { issues: filtered.map(toBaisIssueRow), unparseable: failures };
+			const refine = status ? "bais show <id>" : "status=<Open|Doing|Blocked|Done|Dropped> or bais show <id>";
+			return capBaisPayload(JSON.stringify(payload), refine);
 		}
 		case "bais_ready": {
 			const files = await readyBaisIssues();
-			return JSON.stringify(files, null, 2);
+			return capBaisPayload(JSON.stringify(files), "bais show <id>");
 		}
 		case "bais_new": {
 			const title = String(args.title ?? "");
@@ -678,24 +711,24 @@ export async function handleTool(name: string, args: Record<string, unknown>): P
 				body: (args.body as string | undefined) ?? undefined,
 				status: (args.status as string | undefined) ?? "Open",
 			});
-			return JSON.stringify(file, null, 2);
+			return capBaisPayload(JSON.stringify(file), "bais show <id>");
 		}
 		case "bais_move": {
 			const id = String(args.id ?? "");
 			const status = String(args.status ?? "");
 			if (!id || !status) throw new Error("bais_move requires id and status");
 			const file = await moveBaisIssue(id, status);
-			return JSON.stringify(file, null, 2);
+			return capBaisPayload(JSON.stringify(file), "bais show <id>");
 		}
 		case "bais_check": {
 			const res = await checkBaisIssues();
-			return JSON.stringify(res, null, 2);
+			return capBaisPayload(JSON.stringify(res), "bais show <id>");
 		}
 		case "bais_graph": {
 			const from = String(args.from ?? "");
 			if (!from) throw new Error("bais_graph requires from");
 			const files = await graphBaisIssues(from);
-			return JSON.stringify(files, null, 2);
+			return capBaisPayload(JSON.stringify(files), "bais show <id>");
 		}
 		case "write": {
 			return execWrite(args);

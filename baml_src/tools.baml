@@ -140,13 +140,17 @@ function _tool_find() -> ToolSpec {
 function _tool_bais_list() -> ToolSpec {
     ToolSpec {
         name: "bais_list",
-        description: "List BAIS issues from .bais/issues/*.toml (BAML-validated via bais parser). Returns {issues, unparseable}: files the parser rejected are reported in `unparseable`, never guessed at — treat a non-empty `unparseable` as a gap in the list, not as zero issues.",
+        description: "List BAIS issues from .bais/issues/*.toml (BAML-validated via bais parser). Returns {issues, unparseable}: files the parser rejected are reported in `unparseable`, never guessed at — treat a non-empty `unparseable` as a gap in the list, not as zero issues. Returns ROWS by default (id/status/kind/title/area per issue) — full bodies ride `bais show` or a result narrowed to one issue; pass include_bodies:true for full records. Results are compact JSON capped near 60k bytes, with a truncation notice naming the refinement (status filter / bais show), never silent.",
         input_schema: {
             "type": "object",
             "properties": {
                 "status": {
                     "type": "string",
                     "description": "Filter by status (Open/Doing/Blocked/Done/Dropped) — optional",
+                },
+                "include_bodies": {
+                    "type": "boolean",
+                    "description": "Return full issue records (body + edges) instead of rows — optional, default false",
                 },
             },
             "additionalProperties": false,
@@ -212,7 +216,7 @@ function _tool_bais_move() -> ToolSpec {
 function _tool_bais_check() -> ToolSpec {
     ToolSpec {
         name: "bais_check",
-        description: "Validate every .bais/issues/*.toml via bais BAML parser. Returns {ok, bad, dangling, cycles}: `bad` is per-file parse failures, `dangling` is edge ends naming an id that does not exist — status Missing (this project: a defect, it parks the target issue because an unresolvable blocker blocks) or External (another project's id, not resolvable from here) — `cycles` is ids in a Blocks/DependsOn dependency cycle (or downstream of one), which ready_issues reports only as silence.",
+        description: "Validate every .bais/issues/*.toml via bais BAML parser (compact JSON result capped near 60k bytes, truncation notice names bais show — the check itself is unchanged). Returns {ok, bad, dangling, cycles}: `bad` is per-file parse failures, `dangling` is edge ends naming an id that does not exist — status Missing (this project: a defect, it parks the target issue because an unresolvable blocker blocks) or External (another project's id, not resolvable from here) — `cycles` is ids in a Blocks/DependsOn dependency cycle (or downstream of one), which ready_issues reports only as silence.",
         input_schema: { "type": "object", "properties": {}, "additionalProperties": false },
     }
 }

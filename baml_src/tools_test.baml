@@ -64,6 +64,34 @@ testset "bash/read refusal policy (bi#150/151)" {
     }
 }
 
+testset "bais_list rows-by-default contract (bi#212)" {
+    test "bais_list advertises include_bodies and rows in its description" {
+        let t = GetTool("bais_list");
+        assert.not_null(t);
+        match (t) {
+            let tool: ToolSpec => {
+                assert.contains(tool.description, "ROWS");
+                assert.contains(tool.description, "include_bodies");
+                assert.contains(tool.description, "unparseable");
+                assert.contains(tool.description, "60k")
+            },
+            _ => assert.is_true(false),
+        }
+    }
+
+    test "bais_check advertises compact + capped results" {
+        let t = GetTool("bais_check");
+        assert.not_null(t);
+        match (t) {
+            let tool: ToolSpec => {
+                assert.contains(tool.description, "compact");
+                assert.contains(tool.description, "60k")
+            },
+            _ => assert.is_true(false),
+        }
+    }
+}
+
 testset "write/edit refusal policy (bi#77)" {
     test "refusals name the fix" {
         assert.contains(refuse_write_outside_root("../x"), "outside the project root");
