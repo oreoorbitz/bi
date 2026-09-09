@@ -1,7 +1,0 @@
-id = "bi#80"
-title = "Deterministic stale-issue pruning (bais stale)"
-status = "Open"
-kind = "Feat"
-area = "bais"
-body = """
-Backlog rots silently: bi#31 still says Bi has 6 builtin slashes when the registry holds 32, and done children leave parent epics Open. Add a deterministic pass, bais stale, that flags candidates with named reasons and never auto-closes (moves stay explicit per bi#55). Pure functions over files, mtimes, and graph only — no LLM judgment. Flag rules: (1) UNBLOCKED-IDLE: Open, all DependsOn targets Done/Dropped, file mtime older than N days; (2) SHIPPED-COUNT: body states a countable claim (command count, registry names) that a script can re-verify false today; (3) EPIC-DRIFT: epic Open while all linked children Done/Dropped; (4) PARKED-TYPO: DependsOn a Missing id (overlaps dangling check — deduplicate). Output TSV id, rule, reason; --json for gates; exit nonzero when candidates exist so CI can pin zero-stale. Acceptance: bais stale lists bi#31 with SHIPPED-COUNT and bi#28/29/30 with UNBLOCKED-IDLE-or-shipped, each with its reason; bais check stays green."""

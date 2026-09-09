@@ -1,7 +1,0 @@
-id = "bi#79"
-title = "/issues command: staged issue context for the agent loop"
-status = "Done"
-kind = "Feat"
-area = "tui"
-body = """
-Seeded via `bi bais new` for bi#79."""
