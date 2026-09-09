@@ -8,7 +8,7 @@
 // byte-identical to the old print path.
 import { Markdown, type MarkdownTheme, getCapabilities } from "@earendil-works/pi-tui";
 import { format_tool_start_async, highlight_code_line, is_mermaid_fence, render_markdown_text_async, style_segment, text_attr } from "../baml_sdk/index.js";
-import { chromeToolLine, chromeWrap, type ChromeTokenName } from "./theme-files.js";
+import { chromeAnsi, chromeToolLine, chromeWrap, type ChromeTokenName } from "./theme-files.js";
 import { termWidth } from "./tui.js";
 
 const id = (s: string): string => s;
@@ -120,13 +120,30 @@ export function renderMarkdownTui(text: string, width: number, theme: string | n
 	return md.render(width).map((l) => links(l).trimEnd());
 }
 
-export async function printMarkdownText(text: string, theme?: string | null): Promise<void> {
+export interface PrintMarkdownOptions {
+	// Base token for the body: each emitted line opens with it and every
+	// inner full reset falls back to it, so explicitly-chromed spans
+	// (code tint, headers, dim) keep their SGR while plain prose reads
+	// the token. Unset (or suppressed/TTY-off) prints exactly as before.
+	base?: ChromeTokenName;
+	// TTY gate for the wrap (chromeToolLine paint discipline); defaults
+	// to the live stdout. Drills pass true to pin chrome headlessly.
+	paint?: boolean;
+}
+const SGR_RESET = "\x1b[0m";
+function baseWrap(line: string, open: string): string {
+	if (open === "") return line;
+	return `${open}${line.split(SGR_RESET).join(`${SGR_RESET}${open}`)}${SGR_RESET}`;
+}
+export async function printMarkdownText(text: string, theme?: string | null, opts?: PrintMarkdownOptions): Promise<void> {
 	const t = theme ?? null;
+	const open = opts?.base ? (opts.paint ?? !!process.stdout.isTTY ? chromeAnsi(opts.base) : "") : "";
+	const emit = (line: string) => console.log(baseWrap(line, open));
 	if (markdownTuiAvailable()) {
-		for (const line of renderMarkdownTui(text, termWidth(), t)) console.log(line);
+		for (const line of renderMarkdownTui(text, termWidth(), t)) emit(line);
 		return;
 	}
-	console.log(await render_markdown_text_async(text, { theme: t }));
+	for (const line of (await render_markdown_text_async(text, { theme: t })).split("\n")) emit(line);
 }
 
 // bi#209: one assistant-message renderer for every transcript site.
@@ -137,16 +154,19 @@ export async function printMarkdownText(text: string, theme?: string | null): Pr
 // parts as the same tool-start chrome the live turn prints — never
 // raw JSON. Unknown block types are skipped; the turn itself is never
 // dropped from history, only unrenderable bytes from the transcript.
-export async function printAssistantMessage(msg: unknown, theme?: string | null): Promise<void> {
+export async function printAssistantMessage(msg: unknown, theme?: string | null, paint?: boolean): Promise<void> {
 	const m = msg as { text?: unknown; content?: unknown } | null;
+	// bi#207: settled response body reads the text token; tool chrome
+	// and explicitly-dimmed spans keep their SGR through the wrap.
+	const base = { base: "text" as const, paint };
 	if (typeof m?.text === "string") {
-		await printMarkdownText(m.text, theme);
+		await printMarkdownText(m.text, theme, base);
 		return;
 	}
 	if (Array.isArray(m?.content)) {
 		for (const b of m.content) {
 			const block = b as { type?: unknown; text?: unknown; name?: unknown; args?: unknown } | null;
-			if (block?.type === "text" && typeof block.text === "string") await printMarkdownText(block.text, theme);
+			if (block?.type === "text" && typeof block.text === "string") await printMarkdownText(block.text, theme, base);
 			else if (block?.type === "toolUse" && typeof block.name === "string")
 				console.log(
 					chromeToolLine(await format_tool_start_async(block.name, JSON.stringify(block.args), { theme: theme ?? null }), block.name, !!process.stdout.isTTY),
