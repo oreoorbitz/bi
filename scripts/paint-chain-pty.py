@@ -193,13 +193,70 @@ out = b''
 scr = Screen(ROWS, COLS)
 shot = None  # grid snapshot while the editor is still open (quit clears it)
 code = 3
-beats = [(4, b'\r'), (10, b'1\r'), (36, b'/quit\r'), (42, b'/quit\r')]
+# bi#192: scripted scenarios replace the paint-chain beats outright.
+# Each PC_BEATS entry is `WHEN:keys` (python escapes) where WHEN is an
+# absolute time (`6:...`) or a marker gate (`@marker+N:...` — fire N
+# seconds after `marker` first appears in the child's output; N
+# defaults to 0). Gated beats fire IN LIST ORDER (a beat waits for all
+# earlier beats), so boot-delay flakes disappear: keys land relative
+# to observed paint, never wall-clock. Markers/keys must avoid literal
+# ',' (entry separator) and markers must avoid ':'. The kitty reply
+# machinery is untouched. PC_SNAP_AT takes the same WHEN forms for
+# timed snapshots (SNAP lines at the end). Neither is set by
+# paint-chain.mjs, so its geometry pins are unaffected.
+def _parse_when(spec):
+    if spec.startswith('@'):
+        _body = spec[1:]
+        if '+' in _body:
+            _mk, _, _dl = _body.rpartition('+')
+            return ('gate', _mk, float(_dl))
+        return ('gate', _body, 0.0)
+    return ('abs', float(spec), 0.0)
+
+
+def _parse_keys(s):
+    return s.encode().decode('unicode_escape').encode('latin-1')
+
+
+beats = [
+    {'when': ('abs', 4.0, 0.0), 'keys': b'\r', 'fired': False, 'seen_at': None},
+    {'when': ('abs', 10.0, 0.0), 'keys': b'1\r', 'fired': False, 'seen_at': None},
+    {'when': ('abs', 36.0, 0.0), 'keys': b'/quit\r', 'fired': False, 'seen_at': None},
+    {'when': ('abs', 42.0, 0.0), 'keys': b'/quit\r', 'fired': False, 'seen_at': None},
+]
+_custom = os.environ.get('PC_BEATS', '')
+if _custom:
+    beats = []
+    for _part in _custom.split(','):
+        _w, _, _keys = _part.partition(':')
+        beats.append({'when': _parse_when(_w), 'keys': _parse_keys(_keys), 'fired': False, 'seen_at': None})
+_snaps_at = []
+for _part in os.environ.get('PC_SNAP_AT', '').split(','):
+    if not _part.strip():
+        continue
+    _w, _, _tag = _part.partition(':')
+    _snaps_at.append({'when': _parse_when(_w), 'tag': _tag, 'done': False, 'seen_at': None})
+
+
+def _due(entry, now):
+    kind = entry['when'][0]
+    if kind == 'abs':
+        return now - t0 >= entry['when'][1]
+    _mk, _dl = entry['when'][1], entry['when'][2]
+    if entry['seen_at'] is None and _mk.encode() in out:
+        entry['seen_at'] = now
+    return entry['seen_at'] is not None and now - entry['seen_at'] >= _dl
+
+
+snaps = []
 junk = os.environ.get('PC_JUNK', '')
 if junk and ':' in junk:
     jb, jt = junk.rsplit(':', 1)
-    beats.append((float(jt), jb.encode()))
-    beats.sort()
-t0, bi, seen = time.time(), 0, b''
+    beats.append({'when': ('abs', float(jt), 0.0), 'keys': jb.encode(), 'fired': False, 'seen_at': None})
+_now = time.monotonic  # bi#192: monotonic — wall-clock jumps (naps/NTP) must never fast-forward beats, snaps, or the exit grace
+t0, seen = _now(), b''
+_final_status = None  # reaped child status (loop break source of truth)
+_kept_at = None  # first sighting of `session kept` (post-kept linger)
 last_byte_at = t0
 shots = []
 adv = {
@@ -215,21 +272,27 @@ armed = reply_on == b''
 armed_at = 0.0
 pending = []  # (reply bytes, queued at) — delivered once armed + delay
 replies_sent = 0
-while time.time() - t0 < TIMEOUT:
-    while bi < len(beats) and time.time() - t0 >= beats[bi][0]:
-        try:
-            os.write(fd, beats[bi][1])
-        except OSError:
-            pass
-        bi += 1
+while _now() - t0 < TIMEOUT:
+    # bi#192: beats fire in list order — a gated beat waits for every
+    # earlier beat, so one slow modal cannot reorder the script.
+    for _b in beats:
+        if _b['fired']:
+            continue
+        if _due(_b, _now()):
+            try:
+                os.write(fd, _b['keys'])
+            except OSError:
+                pass
+            _b['fired'] = True
+        break
     if not armed and reply_on in out:
         armed = True
-        armed_at = time.time()
+        armed_at = _now()
     # Delay is measured from ARMING, not queueing: queries seen at the
     # first modal would otherwise be answered the instant the marker
     # paints, landing in the stdin-paused settle window and coalescing
     # into whole (harmless) replies in the kernel buffer.
-    while pending and armed and time.time() - max(pending[0][1], armed_at) >= adv['delay']:
+    while pending and armed and _now() - max(pending[0][1], armed_at) >= adv['delay']:
         rp = pending.pop(0)[0]
         replies_sent += 1
         try:
@@ -256,15 +319,19 @@ while time.time() - t0 < TIMEOUT:
             break
         out += chunk
         seen += chunk
-        last_byte_at = time.time()
+        last_byte_at = _now()
         scr.feed(chunk)
         for q, rp in [(b'\x1b[c', b'\x1b[?64;1;2;4;6;17;18;21;22;52c'),
                       (b'\x1b[?u', b'\x1b[?7u')]:
             j = seen.find(q)
             if j != -1:
                 seen = seen[:j] + seen[j + len(q):]
-                pending.append((rp, time.time()))
-    if out.count(b'bi[0]>') >= 1 and time.time() - t0 > 18 and time.time() - last_byte_at > 2.5:
+                pending.append((rp, _now()))
+    for _s in _snaps_at:
+        if not _s['done'] and _due(_s, _now()):
+            _s['done'] = True
+            snaps.append((_s['tag'], [list(row) for row in scr.g]))
+    if out.count(b'bi[0]>') >= 1 and _now() - t0 > 18 and _now() - last_byte_at > 2.5:
         # Snapshot a QUIET screen only, then demand stability: internal
         # timer-driven renders (async autocomplete open/close) emit no
         # pty bytes, so silence alone cannot prove settledness. Take up
@@ -272,31 +339,72 @@ while time.time() - t0 < TIMEOUT:
         # popup shell, a stable non-empty interior means real residue.
         cur = [list(row) for row in scr.g]
         shots.append(cur)
-        last_byte_at = time.time()  # force 2.5s spacing between shots
+        last_byte_at = _now()  # force 2.5s spacing between shots
         if shot is None:
             # Verdict comes from the FIRST quiet shot (idle editor). Later
             # shots may catch /quit teardown repaints; they stay in seq=
             # for diagnostics only.
             shot = cur
             shot_at_bytes = len(out)
-    if bi >= len(beats) and out.count(b'session kept') >= 1:
-        break
-try:
-    _, status = os.waitpid(pid, os.WNOHANG)
-    if _ == 0:
-        time.sleep(2)
+    # bi#192: teardown needs the transport AFTER `session kept` — the
+    # app's shutdown handshake (kitty pop/negotiation teardown) awaits
+    # query replies, so breaking out instantly starves it and the exit
+    # hangs intermittently (load widens the race). Linger servicing up
+    # to 15s past kept, and reap promptly whenever the child is gone
+    # (crash or clean) so `code` is the true status, not a stale kill.
+    if _final_status is None:
         try:
-            _, status = os.waitpid(pid, os.WNOHANG)
+            _wp, _wst = os.waitpid(pid, os.WNOHANG)
         except ChildProcessError:
-            status = 0
+            _wp, _wst = pid, 0
+        if _wp != 0:
+            _final_status = _wst
+            break
+    if all(_b['fired'] for _b in beats) and out.count(b'session kept') >= 1:
+        if _kept_at is None:
+            _kept_at = _now()
+        if _now() - _kept_at >= 15:
+            break
+import os as _os
+import subprocess as _sp
+try:
+    if _final_status is not None:
+        # The loop already reaped the child (clean exit or crash) —
+        # its true status stands, no grace poll, no kill.
+        code = _os.waitstatus_to_exitcode(_final_status)
+    else:
+        # bi#192: loaded machines need more than a breath to tear down
+        # node after `session kept` — poll up to 20s and report the lag
+        # instead of racing a kill (a false code=-9 says nothing;
+        # EXITLAG/EXITCPU name it).
+        _lag_t0 = _now()
+        _, status = os.waitpid(pid, os.WNOHANG)
+        _cpu = []
+        while _ == 0 and _now() - _lag_t0 < 20:
+            time.sleep(0.5)
+            try:
+                _ps = _sp.run(['ps', '-o', '%cpu=', '-p', str(pid)], capture_output=True, text=True, timeout=5)
+                _cpu.append(float((_ps.stdout or '0').strip() or 0))
+            except Exception:
+                pass
+            try:
+                _, status = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                status = 0
+                _ = 1
+        if _cpu:
+            print(f'EXITCPU max={max(_cpu):.1f}% samples={len(_cpu)}')
+        _lag = round(_now() - _lag_t0, 1)
         if _ == 0:
             try:
                 os.kill(pid, 9)
             except OSError:
                 pass
             _, status = os.waitpid(pid, 0)
-    import os as _os
-    code = _os.waitstatus_to_exitcode(status)
+            print(f'EXITLAG killed-after-{_lag}s')
+        elif _lag >= 2.0:
+            print(f'EXITLAG clean-after-{_lag}s')
+        code = _os.waitstatus_to_exitcode(status)
 except ChildProcessError:
     code = 0
 try:
@@ -337,6 +445,13 @@ if ebox:
         if t:
             inner = t[:40]
             break
+# bi#192: undelivered beats / missed snapshots fail loudly with names,
+# not a bare timeout kill (a gated marker that never paints is a dead
+# script, and code=-9 alone says nothing about which step stuck).
+_unfired = [i for i, _b in enumerate(beats) if not _b['fired']]
+_unsnapped = [_s['tag'] for _s in _snaps_at if not _s['done']]
+if _unfired or _unsnapped:
+    print(f'UNFIRED beats={_unfired} snaps={_unsnapped}')
 print(f'GEOM prompt={prompt} boxtop={ebox} gap={gap} '
       f'foot1={grid[ROWS - 2][:60]!r} foot2={grid[ROWS - 1][:60]!r} code={code} '
       f'input={inner[:40]!r} row1={row1!r} shots={len(shots)} seq={interiors!r} replies={replies_sent}')
@@ -347,3 +462,10 @@ if os.environ.get('PC_DUMP_GRID'):
     # screen).
     for r in range(ROWS):
         print(f'GRID|{grid[r]}')
+for _tag, _g in snaps:
+    # bi#192: timed snapshots for scripted scenarios — the grid as it
+    # stood mid-modal (headers, highlight, filtered state), which the
+    # post-quit GEOM grid no longer shows.
+    print(f'SNAP|{_tag}')
+    for _r in range(ROWS):
+        print(f'SNAPROW|{_tag}|{_r + 1}|{"".join(_g[_r]).rstrip()}')

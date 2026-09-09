@@ -967,3 +967,304 @@ function tips_slot_text(tick: int, width: int) -> string {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// bi#192: session-picker grouping — BAML owns the derivation AND the
+// header text, the host owns the widget (headers render as
+// non-selectable rows the cursor skips). The grouping is a pure
+// function over the session records: group by cwd, newest-first
+// members (ISO-8601 timestamps sort lexicographically ==
+// chronologically; ties break by session id ascending so the order is
+// total), groups with the current-cwd group first then latest-first
+// (ties by latest id, then cwd — also total). The host flattens the
+// groups (header row + format_resume_list-shaped member rows) and
+// renders today's flat list byte-identical when there is a single
+// group (the degenerate case never reaches the header path).
+class ResumeGroup {
+    cwd: string,
+    display: string,
+    order: int[],
+    latest_time: string,
+    latest_id: string,
+}
+
+// ~-collapse for header display. The host passes its own home (BAML
+// has no env); a bare prefix collision (/home2 vs home /home) is not
+// under home and stays absolute, and an empty home disables.
+function collapse_resume_cwd(cwd: string, home: string) -> string {
+    if (home != "" && cwd.starts_with(home)) {
+        let rest = cwd.slice(home.length(), cwd.length());
+        if (rest == "") {
+            "~"
+        } else if (rest.starts_with("/")) {
+            `~${rest}`
+        } else {
+            cwd
+        }
+    } else {
+        cwd
+    }
+}
+
+// Newest-first predicate over (timestamp, id) pairs.
+function resume_newer(a_time: string, a_id: string, b_time: string, b_id: string) -> bool {
+    if (a_time != b_time) {
+        a_time > b_time
+    } else {
+        a_id < b_id
+    }
+}
+
+// Index-safe element access for the sorts below: indices are valid by
+// construction, so the dead null arm degrades to "not newer" instead
+// of bricking the order.
+function resume_idx_newer(sessions: ResumeEntry[], a: int, b: int) -> bool {
+    match (sessions.at(a)) {
+        null => false,
+        let ra: ResumeEntry => match (sessions.at(b)) {
+            null => false,
+            let rb: ResumeEntry => resume_newer(ra.timestamp, ra.id, rb.timestamp, rb.id),
+        },
+    }
+}
+
+// Selection sort, newest-first (n is picker-small; explicit beats
+// sort_by_key for desc + tiebreak, and matches rank_selector_rows').
+function sort_resume_newest(sessions: ResumeEntry[], idx: int[]) -> int[] {
+    let pending: int[] = [];
+    for (let v in idx) {
+        pending.push(v)
+    }
+    let done: int[] = [];
+    while (pending.length() > 0) {
+        let best = 0;
+        let j = 1;
+        while (j < pending.length()) {
+            if (resume_idx_newer(sessions, pending.at(j) ?? -1, pending.at(best) ?? -1)) {
+                best = j
+            }
+            j = j + 1
+        }
+        done.push(pending.at(best) ?? -1);
+        let next: int[] = [];
+        let t = 0;
+        while (t < pending.length()) {
+            if (t != best) {
+                next.push(pending.at(t) ?? -1)
+            }
+            t = t + 1
+        }
+        pending = next
+    }
+    done
+}
+
+// Group predicate: the current-cwd group leads; otherwise latest-first
+// (timestamp desc, latest id asc, cwd asc — total).
+function group_comes_first(a: ResumeGroup, b: ResumeGroup, current_cwd: string) -> bool {
+    let ac = a.cwd == current_cwd;
+    let bc = b.cwd == current_cwd;
+    if (ac != bc) {
+        ac
+    } else if (a.latest_time != b.latest_time) {
+        a.latest_time > b.latest_time
+    } else if (a.latest_id != b.latest_id) {
+        a.latest_id < b.latest_id
+    } else {
+        a.cwd < b.cwd
+    }
+}
+
+function group_resume_sessions(sessions: ResumeEntry[], current_cwd: string, home: string) -> ResumeGroup[] {
+    let cwds: string[] = [];
+    for (let s in sessions) {
+        if (!cwds.includes(s.cwd)) {
+            cwds.push(s.cwd)
+        }
+    }
+    let groups: ResumeGroup[] = [];
+    for (let c in cwds) {
+        let idx: int[] = [];
+        let i = 0;
+        for (let s in sessions) {
+            if (s.cwd == c) {
+                idx.push(i)
+            }
+            i = i + 1
+        }
+        let ordered = sort_resume_newest(sessions, idx);
+        let head = ordered.at(0) ?? -1;
+        let lt = "";
+        let li = "";
+        match (sessions.at(head)) {
+            null => {
+                lt = "";
+                li = ""
+            },
+            let h: ResumeEntry => {
+                lt = h.timestamp;
+                li = h.id
+            },
+        }
+        let n = ordered.length();
+        let count = if (n == 1) {
+            "1 session"
+        } else {
+            `${n} sessions`
+        };
+        groups.push(ResumeGroup {
+            cwd: c,
+            display: `${collapse_resume_cwd(c, home)} — ${count}`,
+            order: ordered,
+            latest_time: lt,
+            latest_id: li,
+        })
+    }
+    let pending = groups;
+    let done: ResumeGroup[] = [];
+    while (pending.length() > 0) {
+        let best = 0;
+        let j = 1;
+        while (j < pending.length()) {
+            match (pending.at(j)) {
+                null => {
+                    j = j + 1
+                },
+                let cand: ResumeGroup => match (pending.at(best)) {
+                    null => {
+                        best = j;
+                        j = j + 1
+                    },
+                    let cur: ResumeGroup => {
+                        if (group_comes_first(cand, cur, current_cwd)) {
+                            best = j
+                        }
+                        j = j + 1
+                    },
+                },
+            }
+        }
+        match (pending.at(best)) {
+            null => {
+                pending = []
+            },
+            let win: ResumeGroup => {
+                done.push(win);
+                let next: ResumeGroup[] = [];
+                let t = 0;
+                while (t < pending.length()) {
+                    if (t != best) {
+                        match (pending.at(t)) {
+                            null => {
+                                t = t + 1
+                            },
+                            let g: ResumeGroup => {
+                                next.push(g);
+                                t = t + 1
+                            },
+                        }
+                    } else {
+                        t = t + 1
+                    }
+                }
+                pending = next
+            },
+        }
+    }
+    done
+}
+
+test "collapse shortens home, never a prefix collision" {
+    assert.equal(collapse_resume_cwd("/Users/a/code", "/Users/a"), "~/code");
+    assert.equal(collapse_resume_cwd("/Users/a", "/Users/a"), "~");
+    assert.equal(collapse_resume_cwd("/tmp/x", "/Users/a"), "/tmp/x");
+    assert.equal(collapse_resume_cwd("/Users/a2/x", "/Users/a"), "/Users/a2/x");
+    assert.equal(collapse_resume_cwd("/Users/a/code", ""), "/Users/a/code")
+}
+
+test "grouping pins current-first, latest-first, newest-first members" {
+    let sessions = [
+        ResumeEntry { id: "a1", timestamp: "2026-09-01T00:00:00.000Z", cwd: "/h/projA", turns: 2, label: null },
+        ResumeEntry { id: "b2", timestamp: "2026-09-05T00:00:00.000Z", cwd: "/h/projB", turns: 1, label: null },
+        ResumeEntry { id: "c3", timestamp: "2026-09-03T00:00:00.000Z", cwd: "/h/projA", turns: 0, label: null },
+        ResumeEntry { id: "d4", timestamp: "2026-09-04T00:00:00.000Z", cwd: "/h/projB", turns: 4, label: null },
+    ];
+    let groups = group_resume_sessions(sessions, "/h/projA", "/h");
+    assert.equal(groups.length(), 2);
+    // Current-cwd group first even though projB holds the latest row.
+    assert.equal(groups.at(0)?.cwd, "/h/projA");
+    assert.equal(groups.at(0)?.order, [2, 0]);
+    assert.equal(groups.at(0)?.display, "~/projA — 2 sessions");
+    assert.equal(groups.at(1)?.cwd, "/h/projB");
+    assert.equal(groups.at(1)?.order, [1, 3]);
+    assert.equal(groups.at(1)?.display, "~/projB — 2 sessions")
+}
+
+test "group order falls back to latest when current cwd is absent" {
+    let sessions = [
+        ResumeEntry { id: "a1", timestamp: "2026-09-01T00:00:00.000Z", cwd: "/h/projA", turns: 0, label: null },
+        ResumeEntry { id: "b2", timestamp: "2026-09-05T00:00:00.000Z", cwd: "/h/projB", turns: 0, label: null },
+    ];
+    let groups = group_resume_sessions(sessions, "/elsewhere", "/h");
+    assert.equal(groups.length(), 2);
+    assert.equal(groups.at(0)?.cwd, "/h/projB");
+    assert.equal(groups.at(1)?.cwd, "/h/projA")
+}
+
+test "ties break by session id, group ties by latest id then cwd" {
+    let sessions = [
+        ResumeEntry { id: "zz", timestamp: "2026-09-01T00:00:00.000Z", cwd: "/h/A", turns: 0, label: null },
+        ResumeEntry { id: "aa", timestamp: "2026-09-01T00:00:00.000Z", cwd: "/h/A", turns: 0, label: null },
+        ResumeEntry { id: "mm", timestamp: "2026-09-01T00:00:00.000Z", cwd: "/h/B", turns: 0, label: null },
+    ];
+    let groups = group_resume_sessions(sessions, "/elsewhere", "/h");
+    // Same latest timestamp everywhere: latest id asc (aa < mm), so A first.
+    assert.equal(groups.at(0)?.cwd, "/h/A");
+    assert.equal(groups.at(0)?.order, [1, 0])
+}
+
+// bi#193: mechanism pin — BAML emits bare shaped text, never TOKEN
+// MARKERS and never ANSI. All transcript color enters at host paint
+// time through chromeAnsi (theme-files.ts chromeWrap/chromeToolLine +
+// the pi-tui theme objects). The five named sites' shapers stay
+// marker-free and ESC-free on literals (theme null = plain); no LLM
+// calls. If BAML ever spliced a marker or an escape, every assert
+// below names the site.
+function chrome_free(s: string) -> bool {
+    s.index_of("[chrome:") is null && s.index_of("\x1b") is null
+}
+
+test "chrome_free detects markers and escapes" {
+    // The detector itself is pinned: a passing suite that cannot see a
+    // marker is camouflage (bi#57).
+    assert.is_true(!chrome_free("[chrome:primary]hi"));
+    assert.is_true(!chrome_free("a\x1bb"))
+}
+
+test "shaped transcript text carries no markers and no escapes" {
+    assert.is_true(chrome_free(format_tool_start("read", "{\"path\":\"a.txt\"}")));
+    assert.is_true(chrome_free(format_tool_done("read", "ok", false)));
+    assert.is_true(chrome_free(format_status_label("working", "thinking", 0, 0, 0, "")));
+    assert.is_true(chrome_free(render_markdown_text("# Title")));
+    assert.is_true(chrome_free(render_welcome_frame(
+        WelcomeInfo { directory: "/h", session: "abc", model: "m", version: "v" },
+        60,
+    ).join("\n")));
+    assert.is_true(chrome_free(format_resume_list(
+        [ResumeEntry { id: "a1", timestamp: "t", cwd: "/h", turns: 1, label: null }],
+        null,
+    )))
+}
+
+test "single cwd collapses to one group, empty to none" {
+    let one = [
+        ResumeEntry { id: "a1", timestamp: "2026-09-02T00:00:00.000Z", cwd: "/h/only", turns: 0, label: null },
+        ResumeEntry { id: "b2", timestamp: "2026-09-01T00:00:00.000Z", cwd: "/h/only", turns: 0, label: null },
+    ];
+    let groups = group_resume_sessions(one, "/h/only", "/h");
+    assert.equal(groups.length(), 1);
+    assert.equal(groups.at(0)?.display, "~/only — 2 sessions");
+    assert.equal(groups.at(0)?.order, [0, 1]);
+    let none: ResumeEntry[] = [];
+    assert.equal(group_resume_sessions(none, "/h/only", "/h"), [])
+}

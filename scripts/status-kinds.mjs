@@ -239,8 +239,8 @@ const fns = { formatStatus: format_status, formatSummary: format_turn_summary };
 	const PRIMARY = tf.chromeAnsi("primary", {});
 	const DIM = tf.chromeAnsi("text_dim", {});
 	const RESET = tf.CHROME_RESET;
-	check("primary byte-pin #4FA8FF", PRIMARY === "\x1b[38;2;79;168;255m");
-	check("text_dim byte-pin #888888", DIM === "\x1b[38;2;136;136;136m");
+	check("primary byte-pin #D60270", PRIMARY === "\x1b[38;2;214;2;112m");
+	check("text_dim byte-pin #9B4F96", DIM === "\x1b[38;2;155;79;150m");
 
 	const { paintStatusLine } = await import(join(ROOT, "..", "dist", "src", "status.js"));
 	const painted = paintStatusLine("⠋", "thinking", 4200, "", format_status);

@@ -172,7 +172,7 @@ try {
 	const PRIMARY = tf.chromeAnsi("primary", {});
 	const DIM = tf.chromeAnsi("text_dim", {});
 	const RESET = tf.CHROME_RESET;
-	check(PRIMARY === "\x1b[38;2;79;168;255m" && DIM === "\x1b[38;2;136;136;136m", "tool chrome byte-pins #4FA8FF / #888888");
+	check(PRIMARY === "\x1b[38;2;214;2;112m" && DIM === "\x1b[38;2;155;79;150m", "tool chrome byte-pins #D60270 / #9B4F96");
 
 	const start = await format_tool_start_async("read", JSON.stringify({ path: "sub/a.txt" }), { theme: null });
 	const startColored = tf.chromeToolLine(start, "read", true, {});

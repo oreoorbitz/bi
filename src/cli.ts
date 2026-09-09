@@ -16,7 +16,7 @@ import { showStagedImage, teardownInlineImages } from "./image-display.js";
 import { runAuthStatus, runLogin, runLogout, runOAuthLogin } from "./auth_cli.js";
 import { getOAuthFlow } from "./oauth.js";
 import { listCredentials } from "./auth.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, abort_hint_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, render_footer_frame_async, render_model_line_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, trust_options_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, format_skill_history_entry_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, setup_theme_options_async, setup_analytics_options_async, format_first_run_theme_step_async, format_first_run_analytics_step_async, format_first_run_done_async, format_setup_skipped_async, format_setup_status_async, branch_row_prefix_async, format_branch_row_async, format_branches_list_async, format_branch_summary_async, format_fork_list_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, format_issue_row_async, format_issue_context_async, render_ready_frame_async, render_welcome_frame_async, format_prompt_label, format_image_placeholder_async, staged_image_label_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, abort_hint_text_async, format_model_list_async, format_thinking_list_async, format_repl_footer_async, render_footer_frame_async, render_model_line_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, group_resume_sessions_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, trust_options_async, ModelSupportsImage_async, ListProviders_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, format_skill_history_entry_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, setup_theme_options_async, setup_analytics_options_async, format_first_run_theme_step_async, format_first_run_analytics_step_async, format_first_run_done_async, format_setup_skipped_async, format_setup_status_async, branch_row_prefix_async, format_branch_row_async, format_branches_list_async, format_branch_summary_async, format_fork_list_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, format_issue_row_async, format_issue_context_async, render_ready_frame_async, render_welcome_frame_async, format_prompt_label, format_image_placeholder_async, staged_image_label_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
 import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
 import { readClipboardImage, writeClipboardText, clipboardSupportsImage, extensionForImageMime, sniffImageMime } from "./clipboard.js";
@@ -547,10 +547,94 @@ function sessionPickerRows(
 	return disp.map((line, i) => {
 		const r = rows[i - skipLeading];
 		if (i < skipLeading || !r) return { label: line };
-		const suffix = ` — ${r.timestamp}`;
-		const label = line.endsWith(suffix) ? line.slice(0, line.length - suffix.length) : line;
-		return { label, description: `${r.timestamp} · ${r.id}` };
+		return sessionPickerRow(line, r);
 	});
+}
+
+// bi#192: single resume line → picker row. The BAML-shaped line stays
+// the label; timestamp + id ride the description channel (dimmed per
+// row by the select-list theme). The trailing ` — <timestamp>` is cut
+// from the label so the meta shows once: a known paint-time segment
+// (format_resume_list ends every row with it), never a re-shape.
+function sessionPickerRow(
+	line: string,
+	r: { id: string; timestamp: string },
+): { label: string; description?: string } {
+	const suffix = ` — ${r.timestamp}`;
+	const label = line.endsWith(suffix) ? line.slice(0, line.length - suffix.length) : line;
+	return { label, description: `${r.timestamp} · ${r.id}` };
+}
+
+type ResumeRec = { id: string; timestamp: string; cwd: string; turns: number; label: string | null };
+
+// bi#192: BAML group derivation over the resume rows. Returns the rows
+// in display order (flattened groups) plus the groups themselves; a
+// single group (or none) returns the input untouched so the flat list
+// renders byte-identical to today — headers only exist for 2+ groups.
+// Numeric /resume N, pipes, and the TTY picker all share the returned
+// order, so displayed numbers always agree with resolution.
+async function groupResumeSessions(rows: ResumeRec[]): Promise<{ ordered: ResumeRec[]; groups: { cwd: string; display: string; order: number[] }[] }> {
+	if (rows.length === 0) return { ordered: rows, groups: [] };
+	let groups: { cwd: string; display: string; order: number[] }[];
+	try {
+		groups = await group_resume_sessions_async(rows, process.cwd(), homedir());
+	} catch {
+		// Grouping is cosmetic — a VM failure must never brick /resume.
+		return { ordered: rows, groups: [] };
+	}
+	if (groups.length <= 1) return { ordered: rows, groups: [] };
+	const ordered: ResumeRec[] = [];
+	for (const g of groups) {
+		for (const o of g.order) {
+			const r = rows[o];
+			if (r !== undefined) ordered.push(r);
+		}
+	}
+	// A short group (BAML dropped an index it should not have) falls
+	// back to flat — a partial list would be a silent loss (bi#55).
+	if (ordered.length !== rows.length) return { ordered: rows, groups: [] };
+	return { ordered, groups };
+}
+
+// bi#192: grouped picker rows over BAML display order. `disp` is the
+// format_resume_list text over `ordered` (numbers follow display
+// order); `at` maps every ROW index to its session (headers map to
+// null — the cursor skips them and Enter never resolves one).
+// `headCount` covers the startup picker's "New session" head rows.
+function groupedSessionPickerRows(
+	disp: string[],
+	ordered: ResumeRec[],
+	groups: { cwd: string; display: string; order: number[] }[],
+	headCount = 0,
+): { rows: { label: string; description?: string; header?: boolean; group?: string }[]; at: (row: number) => ResumeRec | null; rowFor: (session: number) => number } {
+	if (groups.length === 0) {
+		return {
+			rows: sessionPickerRows(disp, ordered, headCount),
+			at: (row) => ordered[row - headCount] ?? null,
+			rowFor: (session) => session + headCount,
+		};
+	}
+	const rows: { label: string; description?: string; header?: boolean; group?: string }[] = [];
+	const at: (ResumeRec | null)[] = [];
+	const rowFor: number[] = [];
+	for (let h = 0; h < headCount; h += 1) {
+		rows.push({ label: disp[h] ?? "" });
+		at.push(null);
+	}
+	let line = headCount;
+	for (const g of groups) {
+		rows.push({ label: g.display, header: true, group: g.cwd });
+		at.push(null);
+		for (let k = 0; k < g.order.length; k += 1) {
+			const r = ordered[line - headCount];
+			if (r === undefined) continue;
+			rows.push({ ...sessionPickerRow(disp[line] ?? "", r), group: g.cwd });
+			at.push(r);
+			rowFor[line - headCount] = rows.length - 1;
+			line += 1;
+		}
+	}
+	return { rows, at: (row) => at[row] ?? null, rowFor: (session) => rowFor[session] ?? headCount };
 }
 
 // raw carries the REPL's line-input suspend/resume for pi-tui modals;
@@ -1506,25 +1590,29 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				// bi#68: resume lists through the shared select frame; the
 				// cursor highlights the live session (same array the
 				// numeric pick resolves against, so `/resume <n>` agrees).
+				// bi#192: the array is BAML display order (grouped) — one
+				// order for the text, the picker, and numeric resolution.
+				const { ordered, groups } = await groupResumeSessions(list);
 				const cur = sess ? sessionIdFromFile(sess.file) : null;
-				const at = cur ? list.findIndex((r) => r.id === cur) : -1;
+				const at = cur ? ordered.findIndex((r) => r.id === cur) : -1;
 				const theme = await activeTheme();
-				const text = await format_resume_list_async(list, cur);
+				const text = await format_resume_list_async(ordered, cur);
 				// TTY picks by arrows (Enter resumes, Esc keeps the list with
 				// numbers still working); pipes keep today's path
 				// byte-identical.
-				if (raw && promptAvailable() && list.length > 0) {
+				if (raw && promptAvailable() && ordered.length > 0) {
 					// Same split as renderSelectList, so the picked index
 					// addresses the displayed rows 1:1.
 					const disp = text.split("\n").filter((l) => l.length > 0);
+					const built = groupedSessionPickerRows(disp, ordered, groups);
 					raw.suspend();
 					let pick: number | null;
 					try {
-						pick = await pickList("Resume session (Enter resumes, Esc keeps)", sessionPickerRows(disp, list), at < 0 ? 0 : at);
+						pick = await pickList("Resume session (Enter resumes, Esc keeps)", built.rows, at < 0 ? 0 : built.rowFor(at));
 					} finally {
 						raw.resume();
 					}
-					const row = pick === null ? undefined : list[pick];
+					const row = pick === null ? undefined : built.at(pick);
 					if (!row) {
 						await renderSelectList(text, at < 0 ? 0 : at, undefined, theme);
 						return history;
@@ -1538,8 +1626,10 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 				// numeric/verb dispatch below (t.args is "" there, so the
 				// verb filter matched everything and Enter never resumed).
 			} else if (/^\d+$/.test(t.args)) {
-				const rows = await sessionResumeList();
-				const row = rows[Number(t.args) - 1];
+				// bi#192: numbers address BAML display order (the same
+				// order the list prints), so grouped numbers agree.
+				const { ordered } = await groupResumeSessions(await sessionResumeList());
+				const row = ordered[Number(t.args) - 1];
 				if (!row) {
 					console.error(`no session #${t.args} — bare /resume lists numbers`);
 					return history;
@@ -1570,22 +1660,26 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 					if (filtered.length === 1) {
 						resumeId = filtered[0].id;
 					} else {
+						// bi#192: the filtered subset groups like the full
+						// list (current-cwd group first), same row map.
+						const { ordered, groups } = await groupResumeSessions(filtered);
 						const cur = sess ? sessionIdFromFile(sess.file) : null;
 						const theme = await activeTheme();
-						const text = await format_resume_list_async(filtered, cur);
+						const text = await format_resume_list_async(ordered, cur);
 						// bi#100: TTY picks from the filtered rows directly
 						// (Enter resumes, Esc keeps the printed list); pipes
 						// keep the print+hint path byte-identical.
-						if (raw && promptAvailable() && filtered.length > 0) {
+						if (raw && promptAvailable() && ordered.length > 0) {
 							const disp = text.split("\n").filter((l) => l.length > 0);
+							const built = groupedSessionPickerRows(disp, ordered, groups);
 							raw.suspend();
 							let pick: number | null;
 							try {
-								pick = await pickList(`Resume — ${filtered.length} match "${t.args}" (Enter resumes, Esc lists)`, sessionPickerRows(disp, filtered), 0);
+								pick = await pickList(`Resume — ${ordered.length} match "${t.args}" (Enter resumes, Esc lists)`, built.rows, 0);
 							} finally {
 								raw.resume();
 							}
-							const row = pick === null ? undefined : filtered[pick];
+							const row = pick === null ? undefined : built.at(pick);
 							if (row) {
 								resumeId = row.id;
 							} else {
@@ -2790,10 +2884,14 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 	// the alt screen for stdin, so fullscreen mints fresh (documented).
 	const rows = !opts.skipPicker && !fullscreen && promptAvailable() ? await sessionResumeList() : [];
 	if (rows.length > 0) {
-		const text = await format_resume_list_async(rows, null);
+		// bi#192: startup rows group by project (current first); "New
+		// session" stays the ungrouped head row, pinned top.
+		const { ordered, groups } = await groupResumeSessions(rows);
+		const text = await format_resume_list_async(ordered, null);
 		const disp = ["New session", ...text.split("\n").filter((l) => l.length > 0)];
-		const pick = await pickList("Start (Enter opens, Esc starts new)", sessionPickerRows(disp, rows, 1), 0);
-		const row = pick === null ? undefined : rows[pick - 1];
+		const built = groupedSessionPickerRows(disp, ordered, groups, 1);
+		const pick = await pickList("Start (Enter opens, Esc starts new)", built.rows, 0);
+		const row = pick === null ? undefined : built.at(pick);
 		const loaded = row ? await loadSessionTranscript(row.id) : null;
 		if (loaded) {
 			adopted = { file: loaded.file, history: loaded.history };

@@ -45,8 +45,9 @@
 // bi#193 color arms: the main pty run strips NO_COLOR/BI_THEME from the
 // child env (production default = colored) and records raw bytes via
 // PROBE_RAW; wf-color-* arms byte-pin the chrome SGR at the named
-// segments (title/hint/border → primary #4FA8FF, label values →
-// text_dim #888888), and a second NO_COLOR pty run proves the frame is
+// segments (title/hint/border → primary #D60270, label values →
+// text_dim #9B4F96 — flag-theme palette, codes derived not hardcoded),
+// and a second NO_COLOR pty run proves the frame is
 // truecolor-escape-free. Red-check (bi#57), executed 2026-09-08:
 // reverted colorWelcomeRow's label-value branch to return the line
 // unwrapped => FAIL wf-color-label-value (no dim SGR before the cwd),

@@ -172,8 +172,8 @@ delete process.env.BI_THEME;
 const PRIMARY = tf.chromeAnsi("primary", {});
 const DIM = tf.chromeAnsi("text_dim", {});
 const RESET = tf.CHROME_RESET;
-check(PRIMARY === "\x1b[38;2;79;168;255m", "primary byte-pin #4FA8FF");
-check(DIM === "\x1b[38;2;136;136;136m", "text_dim byte-pin #888888");
+check(PRIMARY === "\x1b[38;2;214;2;112m", "primary byte-pin #D60270");
+check(DIM === "\x1b[38;2;155;79;150m", "text_dim byte-pin #9B4F96");
 const colored = renderMarkdownTui(SRC, 80, null);
 check(
 	colored.some((l) => l.includes(`${PRIMARY}Title${RESET}`)),

@@ -58,6 +58,12 @@ export interface ScreenRow {
 	// /model). Absent: cleaned "label description", so /resume display
 	// lines narrow on their id/label/cwd text with no caller change.
 	searchText?: string;
+	// bi#192: group header rows (session picker). Headers render as plain
+	// rows but are non-selectable: the cursor skips them and Enter on one
+	// never resolves. `group` keys the members that follow; ungrouped
+	// rows (no group) pin above the groups in ranked order.
+	header?: boolean;
+	group?: string;
 }
 
 // Pure haystack builder (headless-testable): the override wins,
@@ -940,6 +946,44 @@ export interface FilterRow {
 	item: SelectItem;
 	orig: number;
 	haystack: string;
+	// bi#192: group header rows. Headers are layout-only: rank callers
+	// return ranked MEMBERS and layoutGrouped re-inserts each header
+	// above its surviving members (header orig is -1, never resolved).
+	header?: boolean;
+	group?: string;
+}
+
+// bi#192: regroup ranked members under their headers. No headers
+// anywhere in `all` → the ranked list passes through untouched (every
+// pre-grouping caller keeps today's behavior byte-identical). With
+// headers: ungrouped ranked rows pin top in ranked order, then each
+// header in `all` order above its surviving members (ranked order).
+// A header with no surviving member is dropped, so type-to-filter
+// narrows across groups. Header-flagged rows in `ranked` are ignored
+// — headers come only from `all`, never the rank core.
+export function layoutGrouped(all: FilterRow[], ranked: FilterRow[]): FilterRow[] {
+	if (!all.some((r) => r.header)) return ranked;
+	const members = ranked.filter((r) => !r.header);
+	const visible: FilterRow[] = [];
+	const push = (r: FilterRow): void => {
+		if (!visible.includes(r)) visible.push(r);
+	};
+	for (const r of members) {
+		if (r.group === undefined) push(r);
+	}
+	const emitted = new Set<string>();
+	for (const h of all) {
+		if (!h.header || h.group === undefined || emitted.has(h.group)) continue;
+		emitted.add(h.group);
+		const surviving = members.filter((r) => r.group === h.group);
+		if (surviving.length === 0) continue;
+		push(h);
+		for (const r of surviving) push(r);
+	}
+	// Ranked members of an unknown group (no header in `all`) still
+	// show — dropping a matched row would be a silent rejection (bi#55).
+	for (const r of members) push(r);
+	return visible;
 }
 
 export class FilterList extends Container implements Focusable {
@@ -977,14 +1021,26 @@ export class FilterList extends Container implements Focusable {
 	visibleOriginals(): number[] {
 		return this.visible.map((r) => r.orig);
 	}
+	// bi#192: headers are visible rows the cursor must never rest on.
+	visibleHeaders(): number[] {
+		return this.visible.map((r, i) => (r.header ? i : -1)).filter((i) => i >= 0);
+	}
+	selectedVisibleIndex(): number {
+		const cur = this.list?.getSelectedItem() ?? null;
+		return cur ? this.visible.findIndex((r) => r.item === cur) : -1;
+	}
 
 	handleInput(data: string): void {
 		const kb = getKeybindings();
-		if (
-			kb.matches(data, "tui.select.up") ||
-			kb.matches(data, "tui.select.down") ||
-			kb.matches(data, "tui.select.confirm")
-		) {
+		if (kb.matches(data, "tui.select.up") || kb.matches(data, "tui.select.down")) {
+			// bi#192: delegate the step, then walk off any header in the
+			// key's direction (SelectList wraps, the walk is still
+			// bounded — at most visible.length steps).
+			this.list?.handleInput(data);
+			this.skipHeaders(kb.matches(data, "tui.select.up") ? -1 : 1);
+			return;
+		}
+		if (kb.matches(data, "tui.select.confirm")) {
 			this.list?.handleInput(data);
 			return;
 		}
@@ -996,14 +1052,30 @@ export class FilterList extends Container implements Focusable {
 		this.refilter(false);
 	}
 
+	// bi#192: move the highlight off headers in `dir`. Bounded, and a
+	// no-op when nothing is selectable (headers-only can never happen —
+	// layoutGrouped only emits headers with surviving members).
+	private skipHeaders(dir: 1 | -1): void {
+		for (let step = 0; step <= this.visible.length; step += 1) {
+			const cur = this.list?.getSelectedItem() ?? null;
+			const at = cur ? this.visible.findIndex((r) => r.item === cur) : -1;
+			if (at < 0 || !this.visible[at]?.header) return;
+			const next = Math.min(Math.max(at + dir, 0), Math.max(0, this.visible.length - 1));
+			if (next === at) return;
+			this.list?.setSelectedIndex(next);
+		}
+	}
+
 	private refilter(first: boolean): void {
 		const q = this.filter.getValue();
 		const cur = this.list?.getSelectedItem() ?? null;
 		if (cur) {
 			const kept = this.visible.find((r) => r.item === cur);
-			if (kept) this.keptOrig = kept.orig;
+			// bi#192: headers are never kept — restoring onto one would
+			// park the cursor on a non-selectable row.
+			if (kept && !kept.header) this.keptOrig = kept.orig;
 		}
-		this.visible = this.rank(q);
+		this.visible = layoutGrouped(this.all, this.rank(q));
 		const next = new SelectList(
 			this.visible.map((r) => r.item),
 			10,
@@ -1011,11 +1083,13 @@ export class FilterList extends Container implements Focusable {
 		);
 		next.onSelect = (item) => {
 			const hit = this.visible.find((r) => r.item === item);
-			this.onResolve(hit ? hit.orig : null);
+			// bi#192: headers never resolve (unreachable — the cursor
+			// skips them — but Enter must not adopt a group).
+			if (hit && !hit.header) this.onResolve(hit.orig);
 		};
 		next.onSelectionChange = (item) => {
 			const hit = this.visible.find((r) => r.item === item);
-			if (hit) this.keptOrig = hit.orig;
+			if (hit && !hit.header) this.keptOrig = hit.orig;
 		};
 		this.holder.clear();
 		this.holder.addChild(next);
@@ -1025,9 +1099,13 @@ export class FilterList extends Container implements Focusable {
 		} else if (q.length > 0) {
 			next.setSelectedIndex(0);
 		} else {
-			const at = this.visible.findIndex((r) => r.orig === this.keptOrig);
+			const at = this.visible.findIndex((r) => r.orig === this.keptOrig && !r.header);
 			next.setSelectedIndex(at < 0 ? 0 : at);
 		}
+		// bi#192: the settled row is always a member — index 0 is a
+		// header in grouped pickers without a New-session head row.
+		this.skipHeaders(1);
+		this.skipHeaders(-1);
 	}
 }
 
@@ -1050,16 +1128,23 @@ export async function pickList(title: string, rows: ScreenRow[], initial = 0): P
 		// bi#85 rank core: BAML fuzzy over per-row search texts
 		// (rowSearchTexts above). BAML returns ranked ORIGINAL indices —
 		// the empty query lists all, pipes never reach here.
+		// bi#192: the rank core covers MEMBERS only — headers re-enter
+		// in layoutGrouped (FilterList), so group chrome never competes
+		// with row text and never resolves (header orig is -1).
 		const texts = rowSearchTexts(rows);
 		const all: FilterRow[] = items.map((item, i) => ({
 			item,
-			orig: i,
-			haystack: texts[i],
+			orig: rows[i]?.header ? -1 : i,
+			haystack: texts[i] ?? "",
+			header: rows[i]?.header,
+			group: rows[i]?.group,
 		}));
+		const members = all.filter((r) => !r.header);
+		const memberTexts = members.map((r) => r.haystack);
 		const rank = (query: string): FilterRow[] => {
 			const out: FilterRow[] = [];
-			for (const o of rank_selector_rows(query, texts) as number[]) {
-				const r = all[o];
+			for (const o of rank_selector_rows(query, memberTexts) as number[]) {
+				const r = members[o];
 				if (r !== undefined) out.push(r);
 			}
 			return out;

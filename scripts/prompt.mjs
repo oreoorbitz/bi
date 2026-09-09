@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
-const { makeSlashProvider, promptAvailable, PromptEditor, inlineSlashTokenAt, FilterList, rowSearchTexts, DynamicBorder, visualWidth, truncateVisual, makeBorderedLoader } = await import(
+const { makeSlashProvider, promptAvailable, PromptEditor, inlineSlashTokenAt, FilterList, layoutGrouped, rowSearchTexts, DynamicBorder, visualWidth, truncateVisual, makeBorderedLoader } = await import(
 	join(ROOT, "..", "dist", "src", "prompt.js")
 );
 const { rank_selector_rows } = await import(join(ROOT, "..", "dist", "baml_sdk", "index.js"));
@@ -398,6 +398,96 @@ check(truncateVisual("\x1b[31mhello world\x1b[0m", 8) === "hello w…", "ansi cl
 		} finally {
 			Editor.prototype.handleInput = orig;
 		}
+	}
+}
+
+// 10 — bi#192 group headers: non-selectable rows the cursor skips.
+// Header rows (orig -1) re-enter above their surviving members; arrows
+// walk off them, Enter on one never resolves, filtering drops headers
+// whose group has no match, and ungrouped rows pin top. Headless: the
+// same FilterList the modal mounts, no TTY needed.
+// Red-check (bi#57): drop the skipHeaders call after nav delegation and
+// `down skips the header` fails with selected=1 (the header); make
+// layoutGrouped return ranked untouched and `filter drops the empty
+// group` fails with the stale header still visible. Restore for green.
+{
+	const mkItem = (label) => ({ value: label, label });
+	const mkGrouped = (resolved) => {
+		const defs = [
+			{ label: "New session" },
+			{ label: "~/projA — 2 sessions", header: true, group: "/h/projA" },
+			{ label: "c3 line", group: "/h/projA" },
+			{ label: "a1 line", group: "/h/projA" },
+			{ label: "~/projB — 1 session", header: true, group: "/h/projB" },
+			{ label: "b2 line", group: "/h/projB" },
+		];
+		const all = defs.map((d, i) => ({
+			item: mkItem(d.label),
+			orig: d.header ? -1 : i,
+			haystack: d.label.toLowerCase(),
+			header: d.header,
+			group: d.group,
+		}));
+		const members = all.filter((r) => !r.header);
+		return new FilterList(all, 0, (q) => (q.length === 0 ? members : members.filter((r) => r.haystack.includes(q.toLowerCase()))), (o) => resolved.push(o));
+	};
+	// Layout: ungrouped head row pins top, headers precede members.
+	{
+		const resolved = [];
+		const fl = mkGrouped(resolved);
+		check(JSON.stringify(fl.visibleOriginals()) === "[0,-1,2,3,-1,5]", "grouped layout pins head row, headers above members");
+		check(JSON.stringify(fl.visibleHeaders()) === "[1,4]", "headers flagged at their visible rows");
+		check(fl.selectedVisibleIndex() === 0, "initial selection rests on the head row, never a header");
+	}
+	// Arrows skip headers in both directions.
+	{
+		const resolved = [];
+		const fl = mkGrouped(resolved);
+		fl.handleInput("\x1b[B"); // down from "New session" → first member, not the header
+		check(fl.selectedVisibleIndex() === 2, "down skips the header");
+		fl.handleInput("\x1b[B");
+		fl.handleInput("\x1b[B"); // member → member → over the second header
+		check(fl.selectedVisibleIndex() === 5, "down skips the second header");
+		fl.handleInput("\x1b[A");
+		fl.handleInput("\x1b[A"); // back over the header to the previous member
+		check(fl.selectedVisibleIndex() === 2, "up skips the header");
+	}
+	// Enter resolves members, never headers; filter drops empty groups.
+	{
+		const resolved = [];
+		const fl = mkGrouped(resolved);
+		fl.handleInput("\x1b[B");
+		fl.handleInput("\r");
+		check(JSON.stringify(resolved) === "[2]", "enter resolves the member's original index");
+	}
+	{
+		const resolved = [];
+		const fl = mkGrouped(resolved);
+		fl.handleInput("b2");
+		check(JSON.stringify(fl.visibleOriginals()) === "[-1,5]", "filter drops the empty group, keeps header + match");
+		fl.handleInput("\r");
+		check(JSON.stringify(resolved) === "[5]", "enter on the filtered member resolves");
+	}
+	// Unfiltered regroup after clearing; unknown-group members survive.
+	{
+		const resolved = [];
+		const fl = mkGrouped(resolved);
+		fl.handleInput("zzz");
+		check(JSON.stringify(fl.visibleOriginals()) === "[]", "no match lists none, headers included");
+		for (let i = 0; i < 3; i++) fl.handleInput("\x7f");
+		check(fl.visibleOriginals().length === 6, "clearing restores the full grouped layout");
+		const ranked = [{ item: mkItem("stray"), orig: 9, haystack: "stray", group: "nogroup" }];
+		const laid = layoutGrouped(
+			[{ item: mkItem("h"), orig: -1, haystack: "h", header: true, group: "g" }],
+			ranked,
+		);
+		check(laid.length === 1 && laid[0].orig === 9, "unknown-group members are never dropped");
+	}
+	// No headers anywhere → ranked passthrough (pre-grouping callers).
+	{
+		const plain = [0, 1].map((i) => ({ item: mkItem(`r${i}`), orig: i, haystack: `r${i}` }));
+		const passthrough = layoutGrouped(plain, [plain[1]]);
+		check(passthrough.length === 1 && passthrough[0] === plain[1], "headerless layout passes ranked through untouched");
 	}
 }
 
