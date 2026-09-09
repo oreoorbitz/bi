@@ -507,13 +507,6 @@ export class HostFooter {
 	// suspend), cached hug rows (null = pinned legacy).
 	private inputGate: { suspend(): void } | null = null;
 	private hug: FooterHug | null = null;
-	// hub#237: hug rows are only valid synchronously after a DSR — any
-	// scroll (welcome/BAIS prints, turn output) silently recycles
-	// absolute rows, so reusing them later scribbles mid-screen (the
-	// bi.jpg slab) and misplaces the prompt modal (missing input).
-	// showAsync/homeInput arm this around their settle→render pair;
-	// every other paint (tips/live timers, hints) pins.
-	private hugArmed = false;
 	// Last shown frame args for differential repaint.
 	private lastArgs: { frame: string; model: string; fallback: string } | null = null;
 	// bi#186 tips slot state.
@@ -591,18 +584,7 @@ export class HostFooter {
 	reserveBottom(): number {
 		const { rows } = this.dims();
 		if (this.installedRows === 0) return 2;
-		// hub#237: the margin follows the freshly settled hug rows (the
-		// prompt homes there in the same tick — askEdit runs with no
-		// print between), never the installed paint: a scroll between
-		// install and prompt recycles those numbers and the old formula
-		// (rows - installedFrame + 1 ≈ rows) pushed the modal above the
-		// viewport (bi.jpg: prompt input missing completely). Clamped
-		// on-screen — a stale hug degrades to a squished-but-visible
-		// box, never an invisible one.
-		const h = this.hug;
-		if (!h || h.pinned) return 2;
-		const frame = Math.min(h.frameRow, rows - 1);
-		return Math.max(2, Math.min(rows - 2, rows - frame + 1));
+		return Math.max(2, rows - this.installedFrame + 1);
 	}
 	// Resolve hug rows for this paint: query iff the gate is set and
 	// (never pinned or the geometry changed since install). Sticky pin
@@ -623,12 +605,10 @@ export class HostFooter {
 	}
 	// Paint-time rows under the current geometry: hug rows clamped to
 	// the fold (a taller resize keeps the cached cursor row; a shorter
-	// one pins). hub#237: the hug rows apply only while armed (the
-	// settle→render pair just ran) — every other paint pins, because a
-	// scroll since the settle recycled those absolute rows.
+	// one pins).
 	private paintRows(rows: number): { frame: number; model: number } {
 		const h = this.hug;
-		if (!h || h.pinned || !this.hugArmed) return { frame: rows - 1, model: rows };
+		if (!h || h.pinned) return { frame: rows - 1, model: rows };
 		const frame = Math.min(h.frameRow, rows - 1);
 		return { frame, model: frame + 1 };
 	}
@@ -639,18 +619,11 @@ export class HostFooter {
 	// bi#208: production paints settle the hug rows first (DSR while
 	// unpinned, sticky pin after). Drills keep the synchronous show()
 	// contract above — same bytes as before when the gate is unset.
-	// hub#237: the settle→render pair runs armed (those rows are valid
-	// right now); the arm drops before returning so timer paints pin.
 	async showAsync(frame: string, model: string, fallback: string): Promise<void> {
 		this.lastArgs = { frame, model, fallback };
 		const { rows } = this.dims();
 		if (this.tty() && rows >= 3) await this.settleRows(rows);
-		this.hugArmed = true;
-		try {
-			this.render();
-		} finally {
-			this.hugArmed = false;
-		}
+		this.render();
 	}
 	// Transient hint (bi#169 channel): preempts the tips slot while set,
 	// styled primary (actionable); clearing releases back to the rotating
@@ -684,15 +657,9 @@ export class HostFooter {
 		const cModel = cModelRaw === null ? null : this.withTipsSlot(cModelRaw, cols);
 		// bi#208: hug rows (clamped to this geometry); a moved footer
 		// erases its old rows first — two CUP+EL writes, never a clear.
-		// hub#237: erase only when the old rows ARE the target rows. A
-		// scroll recycles absolute numbers — the installed numbers now
-		// hold transcript, and blanking them punches holes in it (the
-		// overflow drill enshrined exactly that). A moved footer leaves
-		// its buried paint as scrollback (same fossil class as the
-		// pinned path) and installs at the target without erasing.
 		const pr = this.paintRows(rows);
 		if (this.installedRows !== rows || this.installedFrame !== pr.frame) {
-			if (this.installedFrame === pr.frame) this.eraseRows();
+			this.eraseRows();
 			this.install(rows, cFrame, cModel, pr.frame);
 		} else {
 			if (this.lastFrame !== cFrame || this.lastModel !== cModel) this.paint(pr, cFrame, cModel);
@@ -792,17 +759,6 @@ export class HostFooter {
 		const { rows } = this.dims();
 		if (!this.tty() || rows < 3) return;
 		const h = await this.settleRows(rows);
-		// hub#237: repaint at the fresh rows synchronously (the only
-		// moment they are valid) so the footer sits below the prompt;
-		// the move skips the erase when a scroll recycled the old
-		// numbers (render's same-frame rule). Disarm before returning
-		// — later timer paints pin.
-		this.hugArmed = true;
-		try {
-			this.render();
-		} finally {
-			this.hugArmed = false;
-		}
 		this.write(`\x1b[${h.promptRow};1H`);
 	}
 	private install(rows: number, frame: string, model: string | null, frameRow: number): void {
