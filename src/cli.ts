@@ -303,7 +303,7 @@ import { runBiLoop } from "./agent_loop.js";
 import { streamTextIncremental } from "./incremental.js";
 import { editInExternalEditor, editorCommand } from "./editor.js";
 import { footerCwd, gitBranch } from "./footer_info.js";
-import { markdownTuiAvailable, printMarkdownText, renderMarkdownTui } from "./markdown.js";
+import { markdownTuiAvailable, printAssistantMessage, printMarkdownText, renderMarkdownTui } from "./markdown.js";
 import { replayCompactionBlocks, estimateHistoryTokens } from "./compaction.js";
 import { printCompactionSummary, printSkillBlock } from "./summary-blocks.js";
 import { GoTuiSeam, goTuiRequested, fixtureLlmFn } from "./tui_seam.js";
@@ -2652,7 +2652,8 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	const theme = await activeTheme();
 	for (const m of result.messages) {
 		if ((m as any).role !== "assistant") continue;
-		await printMarkdownText((m as any).text ?? JSON.stringify((m as any).content), theme);
+		// bi#209: content-block turns render instead of JSON-stringifying.
+		await printAssistantMessage(m, theme);
 	}
 	alog?.record("turn.end", "ok");
 	await stderrRule(turnTheme);
@@ -3912,16 +3913,10 @@ async function main(): Promise<void> {
 			if (t) await printMarkdownText(t, runTheme);
 			return;
 		}
-		// bi#27: history display shapes text blocks and tool calls alike.
+		// bi#27: history display shapes text blocks and tool calls alike
+		// (bi#209: one renderer for both transcript sites).
 		for (const msg of result.messages) {
-			if (msg.role === "assistant" && "text" in msg) {
-				await printMarkdownText(msg.text, runTheme);
-			} else if (msg.role === "assistant" && "content" in msg) {
-				for (const b of (msg as any).content) {
-					if (b.type === "text") await printMarkdownText(b.text, runTheme);
-					else if (b.type === "toolUse") console.log(chromeToolLine(await format_tool_start_async(b.name, JSON.stringify(b.args), { theme: runTheme }), b.name, !!process.stdout.isTTY));
-				}
-			}
+			if (msg.role === "assistant") await printAssistantMessage(msg, runTheme);
 		}
 		return;
 	}
