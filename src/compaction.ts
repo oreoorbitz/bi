@@ -119,6 +119,57 @@ export interface Compacted {
 	tokensReclaimed: number;
 }
 
+// bi#205: pair-safe cut. find_cut_index counts tokens with no pair awareness,
+// so a raw cut can start the tail mid-pair — an orphan toolResult /
+// toolCompleted / toolFailed whose request was folded into the head. The
+// OpenAI API fails the next turn closed with 400 (role: tool message with no
+// matching assistant tool_calls); Anthropic tolerates it. Snap host-side
+// before splicing: absorb leading result turns into the folded head (cut++),
+// then pull back over trailing request turns whose pair sits at/after the cut
+// (cut--) so pairs cross together or not at all. Both loops are bounded by
+// the array ends. A dangling request (no result anywhere after it) does NOT
+// pull back — it folds with the head, which is equally orphan-free.
+
+// Request side: assistant toolCalls / content toolUse blocks (pi-shaped and
+// content-array shapes), plus the legacy toolRequested turn.
+function requestIdsOf(turn: ConversationTurn): string[] {
+	const t = turn as any;
+	if (turn.role === "assistant") {
+		const ids: string[] = [];
+		for (const tc of t.toolCalls ?? []) if (tc?.id != null) ids.push(tc.id);
+		for (const b of t.content ?? []) if (b?.type === "toolUse" && b.id != null) ids.push(b.id);
+		return ids;
+	}
+	if (turn.role === "toolRequested") return t.id != null ? [t.id] : [];
+	return [];
+}
+
+// Result side: toolResult / toolCompleted / toolFailed turns.
+function resultIdsOf(turn: ConversationTurn): string[] {
+	const t = turn as any;
+	if (turn.role === "toolResult") return t.toolCallId != null ? [t.toolCallId] : [];
+	if (turn.role === "toolCompleted" || turn.role === "toolFailed") return t.id != null ? [t.id] : [];
+	return [];
+}
+
+// True when the request turn at reqIdx has a matching result at/after c.
+// Matches before c only (or no match anywhere — dangling) mean the pair is
+// already together in the head, so no pull-back is owed.
+function pairAtOrAfterCut(messages: readonly ConversationTurn[], reqIdx: number, c: number): boolean {
+	const ids = requestIdsOf(messages[reqIdx]);
+	for (let i = reqIdx + 1; i < messages.length; i++) {
+		if (i >= c && resultIdsOf(messages[i]).some((r) => ids.includes(r))) return true;
+	}
+	return false;
+}
+
+export function snapCutToPairBoundary(messages: readonly ConversationTurn[], cut: number): number {
+	let c = cut;
+	while (c < messages.length && resultIdsOf(messages[c]).length > 0) c++;
+	while (c > 0 && c <= messages.length && requestIdsOf(messages[c - 1]).length > 0 && pairAtOrAfterCut(messages, c - 1, c)) c--;
+	return c;
+}
+
 // Splice history: summarize messages[0..cut], keep the rest. The summary goes
 // back in as a user turn — bi has no system-entry channel, and pi likewise
 // replays its summary as context content, not as a turn to answer. Returns
@@ -134,12 +185,18 @@ export async function compactHistory(
 	const sizes = messages.map(estimateTurnTokens);
 	const cut = await find_cut_index_async(sizes, keep);
 	if (cut <= 0 || cut >= messages.length) return null;
+	// bi#205: snap to a pair-safe boundary before splicing. A snapped cut of
+	// 0 folds nothing (same null as a raw 0); a snap to messages.length folds
+	// the whole history — the tail was all orphan results, so folding it is
+	// the only orphan-free move and the summary still carries the content.
+	const safeCut = snapCutToPairBoundary(messages, cut);
+	if (safeCut <= 0) return null;
 	// bi#97: measure before the cut so the transcript block can name folded
 	// turns and reclaimed tokens. The marker text is BAML-shaped
 	// (format_compaction_marker) so the session file carries a parseable
 	// record and /resume can replay the block.
 	const tokensBefore = estimateHistoryTokens(messages);
-	const head = messages.slice(0, cut).map(serializeTurn).join("\n");
+	const head = messages.slice(0, safeCut).map(serializeTurn).join("\n");
 	// bi#96: the summarization wait surfaces on the turn status (compaction
 	// kind) where a display is active. This is the automatic threshold path
 	// (maybeCompactHistory fired on token pressure). Working state restores
@@ -153,17 +210,17 @@ export async function compactHistory(
 	}
 	const spliced: ConversationTurn[] = [
 		{ role: "user", text: "" },
-		...messages.slice(cut),
+		...messages.slice(safeCut),
 	];
-	(spliced[0] as { role: string; text: string }).text = await format_compaction_marker_async(cut, tokensBefore, 0, summary);
+	(spliced[0] as { role: string; text: string }).text = await format_compaction_marker_async(safeCut, tokensBefore, 0, summary);
 	const tokensAfter = estimateHistoryTokens(spliced);
 	// Second pass stamps the true post-cut total — the marker names the
 	// range the resumed session actually continues with.
-	(spliced[0] as { role: string; text: string }).text = await format_compaction_marker_async(cut, tokensBefore, tokensAfter, summary);
+	(spliced[0] as { role: string; text: string }).text = await format_compaction_marker_async(safeCut, tokensBefore, tokensAfter, summary);
 	return {
 		messages: spliced,
 		summary,
-		cut,
+		cut: safeCut,
 		tokensBefore,
 		tokensAfter,
 		tokensReclaimed: Math.max(0, tokensBefore - tokensAfter),
