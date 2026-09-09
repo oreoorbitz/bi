@@ -9,4 +9,10 @@ output_dir = "."
 # BAML port of pi/packages/ai — see the plan this was scaffolded from for
 # the full provider mapping (Bucket A/B/C/D breakdown).
 [dependencies]
+# RESERVED (standalone audit 2026-09-08): forward declaration for the
+# Phase-B single-workspace invariant. NOTHING imports across it today
+# (ns_* no-imports rule holds) and bi builds/checks/tests standalone —
+# interop with bais stays TS-host file:// only. Do not read this dep as
+# permission to add cross-package BAML imports: that converts bi into a
+# monorepo member and must be a reviewed decision, not a drive-by.
 bais = { path = "../bais" }
