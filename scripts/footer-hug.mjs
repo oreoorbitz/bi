@@ -15,15 +15,45 @@
 //
 // Headless arms (always run): hug table, gate-null sync bytes,
 // mute-stdin timeout pins, reserve, pinned resize reinstall.
+// Pipe arms (always run): hug/overflow/line plus scroll (tall
+// paint → long scroll → home: reserve follows the fresh settle,
+// footer migrates, recycled rows not blanked).
 // Pty arms (SKIP unless a pty device opens): short-screen hug,
-// overflow pin, move erases without clear, junk (library live +
-// modal + raw line all clean).
+// overflow pin, scrolled-rows-not-blanked, junk (library live +
+// modal + raw line all clean), tall scroll (bi.jpg shape).
+//
+// Change table (hub#237 — bi.jpg: prompt input missing after any
+// scroll on a tall screen):
+//   bi/src/tui.ts    hugArmed (hug rows valid only inside the
+//                    settle→render pair); paintRows pins otherwise;
+//                    reserveBottom follows the fresh hug, never the
+//                    stale install, clamped on-screen; render erases
+//                    only on same-frame moves (scroll-recycled rows
+//                    are transcript now — blanking them punches
+//                    holes); homeInput repaints at the fresh rows.
+//   bi/scripts/footer-hug-child.mjs  scroll mode (tall paint, long
+//                    scroll, home, print RESERVE).
+//   bi/scripts/footer-hug.mjs  scroll arms (pipe always runs, pty
+//                    when a device opens); overflow move-erase arm
+//                    becomes scrolled-rows-not-blanked (the old erase
+//                    blanked transcript — the contract change).
 //
 // Red-check (bi#57), 2026-09-09 (muse, bi#208): hug branch of
 // footerHugRows forced to pinned — 9 FAILs, all naming the hug:
 // hug.table one-above/short/small/12-row, pipe-hug frame/model/
 // prompt/never-pins, pipe-overflow move-erase. Pin asserts stayed
 // green (the neuter IS pinned). Restored → all green.
+//
+// Red-check (bi#57), 2026-09-09 (muse, hub#237): hub#237 tui.ts
+// hunks stashed (bi#208 code restored), rebuilt, drill run:
+//   FAIL hug.pipe-overflow scrolled rows not blanked — erase hit
+//        recycled rows (mid-run erase of rows 5/6 after the scroll)
+//   FAIL hug.pipe-scroll reserve follows fresh settle — RESERVE:56
+//        (stale-install margin; the modal mounts above the viewport)
+//   FAIL hug.pipe-scroll footer migrates below prompt (no install at
+//        the fresh rows — paint stayed buried with the scroll)
+// Restored (stash pop) → all green. Pty scroll arm SKIPped here (no
+// pty device on this host) — the merger runs it on a pty host.
 let failures = 0;
 const check = (name, cond, extra = "") => {
 	console.log(`${cond ? "ok" : "FAIL"}  ${name}${extra ? ` — ${extra}` : ""}`);
@@ -156,13 +186,13 @@ const { HostFooter, footerHugRows } = await import(join(HERE, "..", "dist", "src
 			}
 		},
 	});
-	const runPipe = (mode, { stdinAfter = null, timeoutMs = 15000 } = {}) =>
+	const runPipe = (mode, { stdinAfter = null, timeoutMs = 15000, rows = 12, cols = 80 } = {}) =>
 		new Promise((resolve) => {
 			const child = spawn("node", [join(HERE, "footer-hug-child.mjs"), mode], {
-				env: { ...process.env, BI_HUG_ROWS: "12", BI_HUG_COLS: "80", NO_COLOR: "1" },
+				env: { ...process.env, BI_HUG_ROWS: String(rows), BI_HUG_COLS: String(cols), NO_COLOR: "1" },
 				stdio: ["pipe", "pipe", "pipe"],
 			});
-			const tracker = makeTracker(12, 80);
+			const tracker = makeTracker(rows, cols);
 			let out = "";
 			let answered = 0;
 			let done = false;
@@ -229,13 +259,39 @@ const { HostFooter, footerHugRows } = await import(join(HERE, "..", "dist", "src
 		check("hug.pipe-overflow exit 0", code === 0, `code=${code}`);
 		check("hug.pipe-overflow pins frame 11", out.includes("\x1b[11;1H\x1b[2KFRAME2"));
 		check("hug.pipe-overflow pins model 12", out.includes("\x1b[12;1H\x1b[2KMODEL2"));
-		check("hug.pipe-overflow move erases old rows", out.includes("\x1b[s\x1b[5;1H\x1b[2K\x1b[6;1H\x1b[2K\x1b[u"));
+		// hub#237: a move after a scroll must NOT blank the recycled
+		// rows — those numbers hold transcript now, and the old erase
+		// punched holes in it. The buried paint stays as scrollback
+		// (same fossil class as the pinned path); only a same-frame
+		// move erases.
+		check("hug.pipe-overflow scrolled rows not blanked", !out.includes("\x1b[5;1H\x1b[2K\x1b"), "erase hit recycled rows");
 		check("hug.pipe-overflow no clear", !out.includes("\x1b[2J"));
 	}
 	{
 		const { code, out } = await runPipe("line", { stdinAfter: { match: "READY", send: "hello\n" } });
 		check("hug.pipe-line exit 0", code === 0, `code=${code} tail=${JSON.stringify(out.slice(-160))}`);
 		check("hug.pipe-line stdin clean", out.includes("GOT:hello"), "reply bytes polluted the line");
+	}
+	// hub#237 (bi.jpg shape, always runs): tall screen, paint near the
+	// top (rows=60: w1-w3 → DSR row 4 → frame 5/model 6), then a 26-line
+	// scroll before the first prompt (DSR row 30 → prompt 30/frame
+	// 31/model 32). The prompt margin must follow the fresh settle
+	// (RESERVE 30: box bottom lands on the prompt row, RESERVE + PROMPT
+	// == ROWS), never the stale install (which gave 56 and pushed the
+	// modal above the viewport), and the move must not blank rows 5-6.
+	{
+		const { code, out } = await runPipe("scroll", { rows: 60, cols: 100 });
+		check("hug.pipe-scroll exit 0", code === 0, `code=${code} tail=${JSON.stringify(out.slice(-120))}`);
+		check("hug.pipe-scroll reserve follows fresh settle", out.includes("RESERVE:30"), "margin from stale install pushes modal off-screen");
+		check("hug.pipe-scroll prompt homed at content end", out.includes("\x1b[30;1H"), "prompt CUP missing");
+		check("hug.pipe-scroll footer migrates below prompt", out.includes("\x1b[31;1H\x1b[2KFRAME1"));
+		// Scoped pre-teardown: dispose() erases the installed rows at
+		// exit by contract — what must never happen mid-run is
+		// blanking the recycled install rows.
+		const scrollHead = out.split("SCROLL-DONE")[0] ?? "";
+		check("hug.pipe-scroll scrolled rows not blanked", !scrollHead.includes("\x1b[5;1H\x1b[2K\x1b"), "erase hit recycled rows");
+		check("hug.pipe-scroll never pins to fold", !out.includes("\x1b[59;1H") && !out.includes("\x1b[60;1H"));
+		check("hug.pipe-scroll no clear", !out.includes("\x1b[2J"));
 	}
 }
 
@@ -244,10 +300,10 @@ const hasPty = spawnSync("python3", ["-c", "import pty; pty.openpty()"], { stdio
 if (!hasPty) {
 	console.log("SKIP  pty half (no pty device on this host)");
 } else {
-	const runPty = (mode, { beats = [], timeoutS = 30 } = {}) =>
+	const runPty = (mode, { beats = [], timeoutS = 30, rows = 12, cols = 80 } = {}) =>
 		new Promise((resolve) => {
 			const child = spawn("python3", [join(HERE, "e2e-pty-spawn.py"), "--dsr", "0", String(timeoutS), "node", join(HERE, "footer-hug-child.mjs"), mode], {
-				env: { ...process.env, BI_PTY_ROWS: "12", BI_PTY_COLS: "80", BI_MODAL_SETTLE: "0", NO_COLOR: "1" },
+				env: { ...process.env, BI_PTY_ROWS: String(rows), BI_PTY_COLS: String(cols), BI_HUG_ROWS: String(rows), BI_HUG_COLS: String(cols), BI_MODAL_SETTLE: "0", NO_COLOR: "1" },
 				stdio: ["pipe", "pipe", "pipe"],
 			});
 			let out = "";
@@ -305,11 +361,9 @@ if (!hasPty) {
 		check("hug.pty-overflow exit 0", code === 0, `code=${code}`);
 		check("hug.pty-overflow pins frame 11", out.includes("\x1b[11;1H\x1b[2KFRAME2"));
 		check("hug.pty-overflow pins model 12", out.includes("\x1b[12;1H\x1b[2KMODEL2"));
-		check(
-			"hug.pty-overflow move erases old rows",
-			out.includes("\x1b[s\x1b[5;1H\x1b[2K\x1b[6;1H\x1b[2K\x1b[u"),
-			"old hug rows not erased",
-		);
+		// hub#237: a move after a scroll must NOT blank the recycled
+		// rows (see pipe-overflow note above).
+		check("hug.pty-overflow scrolled rows not blanked", !out.includes("\x1b[5;1H\x1b[2K\x1b"), "erase hit recycled rows");
 		check("hug.pty-overflow no clear", !out.includes("\x1b[2J"));
 	}
 	{
@@ -324,6 +378,19 @@ if (!hasPty) {
 		check("hug.pty-junk reserve follows float", out.includes("RESERVE:9"), "margin not above floating footer");
 		check("hug.pty-junk modal clean", out.includes("PICK:1"), "DSR bytes leaked into the modal");
 		check("hug.pty-junk stdin clean", out.includes("GOT:hello"), "reply bytes polluted the line");
+	}
+	// hub#237 tall-scroll (bi.jpg shape on a real pty): same asserts as
+	// pipe-scroll, with the terminal answering DSR itself.
+	{
+		const { code, out } = await runPty("scroll", { rows: 60, cols: 100, timeoutS: 30 });
+		check("hug.pty-scroll exit 0", code === 0, `code=${code}`);
+		check("hug.pty-scroll reserve follows fresh settle", out.includes("RESERVE:30"), "margin from stale install pushes modal off-screen");
+		check("hug.pty-scroll prompt homed at content end", out.includes("\x1b[30;1H"), "prompt CUP missing");
+		check("hug.pty-scroll footer migrates below prompt", out.includes("\x1b[31;1H\x1b[2KFRAME1"));
+		const ptyScrollHead = out.split("SCROLL-DONE")[0] ?? "";
+		check("hug.pty-scroll scrolled rows not blanked", !ptyScrollHead.includes("\x1b[5;1H\x1b[2K\x1b"), "erase hit recycled rows");
+		check("hug.pty-scroll never pins to fold", !out.includes("\x1b[59;1H") && !out.includes("\x1b[60;1H"));
+		check("hug.pty-scroll no clear", !out.includes("\x1b[2J"));
 	}
 }
 

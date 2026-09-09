@@ -67,6 +67,25 @@ try {
 		footer.dispose();
 		process.exit(0);
 	}
+	if (mode === "scroll") {
+		// hub#237 (bi.jpg shape): tall screen, paint near the top, then
+		// a welcome/BAIS-length scroll before the first prompt. The
+		// prompt margin must follow the fresh settle (small), never the
+		// stale install (which pushed the modal off-screen), and the
+		// move must not blank the recycled rows.
+		const footer = makeFooter();
+		console.log("w1");
+		console.log("w2");
+		console.log("w3");
+		await footer.showAsync("FRAME1", "MODEL1", "FB1");
+		for (let i = 1; i <= 26; i++) console.log(`s${i}`);
+		await footer.homeInput();
+		console.log(`RESERVE:${footer.reserveBottom()}`);
+		console.log("SCROLL-DONE");
+		await sleep(200);
+		footer.dispose();
+		process.exit(0);
+	}
 	if (mode === "junk") {
 		// Library host live (its stdin listener sees every DSR reply —
 		// the leak vector), then the hug flow, then a modal, then a
