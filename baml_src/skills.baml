@@ -171,7 +171,7 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
         },
         BuiltinSlashCommand {
             name: "export",
-            description: "Export transcript as markdown (pi exports HTML; bi has no HTML renderer)",
+            description: "Export transcript as markdown",
             argument_hint: "[path]",
             scope: null,
         },

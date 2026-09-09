@@ -532,9 +532,7 @@ function format_fork_list(texts: string[]) -> string {
     }
 }
 
-// /export body: whole transcript as one markdown doc. pi exports HTML;
-// bi's transcript is already markdown-shaped, so markdown is the
-// faithful port (no HTML renderer to own).
+// /export body: whole transcript as one markdown doc.
 function format_session_markdown(
     id: string,
     label: string?,
