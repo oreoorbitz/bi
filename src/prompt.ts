@@ -48,6 +48,7 @@ import { currentKeybindingsManager } from "./keybindings.js";
 import { PasteBurst } from "./paste-burst.js";
 import { splitSecondWord } from "./paths.js";
 import { getBiSessionsDir } from "./session.js";
+import { STATUS_WAITING_LINE, freezeActiveStatus, unfreezeActiveStatus } from "./status.js";
 import { chromeWrap } from "./theme-files.js";
 import { disposeReplTui, ensureReplTui, replTuiLeased, termWidth } from "./tui.js";
 
@@ -1176,6 +1177,13 @@ export class ApprovalList extends Container implements Focusable {
 	constructor(
 		private choices: string[],
 		private onResolve: (index: number | null) => void,
+		// bi#217: the repaint handle. Text.setText clears the Text's own
+		// cache, and key-driven repaints ride the TUI input path's
+		// immediate render — but a content mutation must still invalidate
+		// explicitly (pickListWithPreview.show() precedent) so repaints
+		// from non-input contexts are never stale. Optional so headless
+		// key-feed tests keep constructing without a TUI.
+		private ui?: { invalidate(): void },
 	) {
 		super();
 		this.addChild(this.body);
@@ -1183,6 +1191,7 @@ export class ApprovalList extends Container implements Focusable {
 	}
 	private paint(): void {
 		this.body.setText(this.choices.map((c, i) => `${i === this.at ? ">" : " "} ${i + 1}. ${c}`).join("\n"));
+		this.ui?.invalidate();
 	}
 	handleInput(data: string): void {
 		const kb = getKeybindings();
@@ -1218,19 +1227,34 @@ export class ApprovalList extends Container implements Focusable {
 // promptAvailable first, same as the other one-shot prompts.
 export async function askApproval(header: string, detail: string, choices: string[]): Promise<number | null> {
 	if (choices.length === 0) return null;
-	return runModal<number | null>((ui, root) => {
-		const border = new DynamicBorder();
-		root.addChild(border);
-		root.addChild(new Text(truncateVisual(header, termWidth())));
-		if (detail) root.addChild(new Text(truncateVisual(detail, termWidth())));
-		let list!: ApprovalList;
-		const wait = new Promise<number | null>((resolve) => {
-			list = new ApprovalList(choices, resolve);
+	// bi#218: freeze the turn's thinking/elapsed clock while the modal
+	// awaits input (unfreeze on resolve — finally covers Enter, digits,
+	// Esc/Ctrl-C/Ctrl-D, and throws). No cli.ts touch: the ambient sink
+	// is the only coupling, and a null sink is a safe no-op.
+	freezeActiveStatus();
+	try {
+		return await runModal<number | null>((ui, root) => {
+			const border = new DynamicBorder();
+			root.addChild(border);
+			root.addChild(new Text(truncateVisual(header, termWidth())));
+			if (detail) root.addChild(new Text(truncateVisual(detail, termWidth())));
+			// bi#218: the frozen-wait row, inside the frame where the
+			// differential renderer owns it (the status tick paints
+			// nothing while frozen). Plain text: theme-independent.
+			root.addChild(new Text(STATUS_WAITING_LINE));
+			let list!: ApprovalList;
+			const wait = new Promise<number | null>((resolve) => {
+				// bi#217: hand the list the live repaint handle so every
+				// highlight change invalidates (show() precedent).
+				list = new ApprovalList(choices, resolve, ui);
+			});
+			root.addChild(list);
+			root.addChild(border);
+			return { wait, focus: list };
 		});
-		root.addChild(list);
-		root.addChild(border);
-		return { wait, focus: list };
-	});
+	} finally {
+		unfreezeActiveStatus();
+	}
 }
 
 // Select-list prompt with a live preview pane (bi#105 theme selector —

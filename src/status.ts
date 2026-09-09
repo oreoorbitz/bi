@@ -81,6 +81,11 @@ export interface StatusSink {
 	showRetry(attempt: number, maxAttempts: number, delaySecs: number): void;
 	showCompaction(reason: CompactionReason): void;
 	showBranchSummary(): void;
+	// bi#218: modal freeze. While a modal awaits user input the tick
+	// must stop (no motion without work) and the wait must not bill
+	// as thinking; unfreeze resumes from the frozen elapsed.
+	freeze(): void;
+	unfreeze(): void;
 }
 
 let activeSink: StatusSink | null = null;
@@ -90,6 +95,24 @@ export function setActiveStatus(s: StatusSink | null): void {
 export function activeStatus(): StatusSink | null {
 	return activeSink;
 }
+
+// bi#218: modal-scoped freeze helpers. The prompt layer (askApproval)
+// freezes on open and unfreezes on resolve — no cli.ts touch. Null
+// sink (no turn active, pipes) is a safe no-op.
+export function freezeActiveStatus(): void {
+	activeStatus()?.freeze();
+}
+export function unfreezeActiveStatus(): void {
+	activeStatus()?.unfreeze();
+}
+
+// bi#218: the frozen-wait row. Painted INSIDE the modal frame (a plain
+// Text row, no chrome so BI_THEME=none/NO_COLOR are byte-identical)
+// because the status tick owns no screen rows while a modal is open —
+// an out-of-band stderr write would sit on a modal row the differential
+// renderer diffs equal and never repaints. Static text: the frozen
+// clock ticks nothing, so no live seconds.
+export const STATUS_WAITING_LINE = "· waiting on you — thinking timer paused";
 
 // Convenience reporters so retry.ts / compaction.ts don't touch the
 // registry shape. All no-op when no turn holds the display.
@@ -135,8 +158,14 @@ export function paintStatusLine(spinner: string, label: string, elapsedMs: numbe
 export class KindStatus implements StatusSink {
 	private timer: ReturnType<typeof setInterval> | null = null;
 	private startMs = 0;
+	private running = false;
 	private tick = 0;
 	private event = "";
+	// bi#218 freeze bookkeeping: depth nests (an outer modal still open
+	// keeps the clock stopped when an inner wait releases); only the
+	// outermost freeze/unfreeze pair stops/resumes the clock.
+	private frozenDepth = 0;
+	private frozenElapsed = 0;
 	private state: StatusState;
 	private label: string;
 	private cancelHint: string | null;
@@ -209,6 +238,10 @@ export class KindStatus implements StatusSink {
 		this.state = defaultStatusState(this.state.label);
 		this.refresh();
 		this.startMs = Date.now();
+		this.running = true;
+		// bi#218: a new turn owns its clock outright — no freeze leaks in.
+		this.frozenDepth = 0;
+		this.frozenElapsed = 0;
 		setActiveStatus(this);
 		if (!this.tty) return;
 		this.timer = setInterval(() => void this.paint(), 100);
@@ -225,7 +258,48 @@ export class KindStatus implements StatusSink {
 		this.event = e;
 	}
 	private elapsed(): number {
+		// bi#218: while frozen the clock stands still — time spent
+		// waiting on the user is never billed as thinking.
+		if (this.frozenDepth > 0) return this.frozenElapsed;
 		return Date.now() - this.startMs;
+	}
+	// bi#218: freeze stops the interval outright (no out-of-band stderr
+	// writes to fight the modal's differential renderer) and pins the
+	// billed elapsed. Paints nothing — the modal frame carries the
+	// waiting row (STATUS_WAITING_LINE).
+	freeze(): void {
+		// Pin the billed elapsed BEFORE arming the frozen branch —
+		// elapsed() reads frozenElapsed once depth > 0, so reading it
+		// after incrementing would bill zero (observed live: a 1s think
+		// billed 0.001s).
+		if (this.frozenDepth === 0) {
+			if (this.running) this.frozenElapsed = Date.now() - this.startMs;
+			if (this.timer) {
+				clearInterval(this.timer);
+				this.timer = null;
+			}
+		}
+		this.frozenDepth += 1;
+	}
+	// bi#218: outermost unfreeze shifts the start forward by the frozen
+	// span (the wait evaporates from the bill) and resumes the tick.
+	get frozen(): boolean {
+		return this.frozenDepth > 0;
+	}
+	unfreeze(): void {
+		// Stray unfreeze (no matching freeze) is a strict no-op — it
+		// must never shift the clock (observed live: an unmatched
+		// unfreeze reset startMs to now and billed ~0ms).
+		if (this.frozenDepth === 0) return;
+		this.frozenDepth -= 1;
+		if (this.frozenDepth > 0) return;
+		if (!this.running) return;
+		this.startMs = Date.now() - this.frozenElapsed;
+		this.frozenElapsed = 0;
+		if (this.tty && this.timer === null) {
+			this.timer = setInterval(() => void this.paint(), 100);
+			void this.paint();
+		}
 	}
 	private paint(): void {
 		const line = paintStatusLine(spinnerFor(this.state.kind, this.tick), this.label, this.elapsed(), this.event, this.formatStatus);
@@ -239,6 +313,10 @@ export class KindStatus implements StatusSink {
 		const ms = this.elapsed();
 		if (this.timer) clearInterval(this.timer);
 		this.timer = null;
+		this.running = false;
+		// bi#218: the bill closes here — no freeze leaks out either.
+		this.frozenDepth = 0;
+		this.frozenElapsed = 0;
 		const line = this.formatSummary(opts.failed, opts.detail, opts.turns, opts.messages, ms, { theme: opts.theme ?? null });
 		if (this.tty) process.stderr.write(`\r\x1b[2K${line}\n`);
 		else console.error(`[bi] ${line}`);
