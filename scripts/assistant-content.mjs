@@ -58,9 +58,10 @@ check("tool-only renders chrome", outTool.includes("bash"));
 check("tool-only never raw JSON", !outTool.includes('[{"type":'));
 
 // Anthropic path byte-identical: single-text output equals the direct
-// printMarkdownText bytes.
+// printMarkdownText bytes. Explicit paint:false pins the unwrapped
+// shape on any host (the TTY wrap is response-text.mjs territory).
 const ANTHROPIC = { role: "assistant", text: "Plain anthropic text." };
-const viaHelper = await capture(() => printAssistantMessage(ANTHROPIC, null));
+const viaHelper = await capture(() => printAssistantMessage(ANTHROPIC, null, false));
 const viaDirect = await capture(() => printMarkdownText(ANTHROPIC.text, null));
 check("anthropic byte-identical", viaHelper === viaDirect, `${JSON.stringify(viaHelper)} vs ${JSON.stringify(viaDirect)}`);
 
