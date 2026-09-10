@@ -2851,6 +2851,11 @@ class ReplReader {
 	ask(prompt: string): Promise<string> {
 		if (!this.forceLineMode && promptAvailable() && this.editPool) return this.askWithEditor(prompt);
 		this.lastAskViaReadline = true;
+		// The first homeInput's DSR settle may have closed the
+		// interface with no modal ever rebuilding it (line-mode first
+		// prompt) — ensure it before questioning, else a TypeError
+		// misreports as EOF and the session dies before prompt one.
+		this.resumeLineInput();
 		return new Promise<string>((resolve, reject) => {
 			this.pending = { resolve, reject };
 			this.r.question(prompt, (a: string) => {
