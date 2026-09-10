@@ -16,7 +16,7 @@ import { showStagedImage, teardownInlineImages } from "./image-display.js";
 import { runAuthStatus, runLogin, runLogout, runOAuthLogin } from "./auth_cli.js";
 import { getOAuthFlow } from "./oauth.js";
 import { getAuth, listCredentials } from "./auth.js";
-import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, abort_hint_text_async, format_model_list_async, format_thinking_list_async, thinking_levels_async, thinking_level_description_async, format_repl_footer_async, render_footer_frame_async, render_model_line_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, group_resume_sessions_async, format_tool_start_async, format_tool_done_async, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, trust_options_async, ModelSupportsImage_async, ListProviders_async, MissingKeyMessage_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, format_skill_history_entry_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, setup_theme_options_async, setup_analytics_options_async, format_first_run_theme_step_async, format_first_run_analytics_step_async, format_first_run_done_async, format_setup_skipped_async, format_setup_status_async, branch_row_prefix_async, format_branch_row_async, format_branches_list_async, format_branch_summary_async, format_fork_list_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, format_issue_row_async, format_issue_context_async, render_ready_frame_async, render_welcome_frame_async, format_prompt_label, format_image_placeholder_async, staged_image_label_async, GuidanceFor_async } from "../baml_sdk/index.js";
+import { parse_args, format_help, is_valid_thinking_level, builtin_slash_commands_async, hotkeys_text_async, abort_hint_text_async, format_model_list_async, format_thinking_list_async, thinking_levels_async, thinking_level_description_async, format_repl_footer_async, render_footer_frame_async, render_model_line_async, resolve_model_ref_async, pick_model_async, model_list_cursor_async, format_session_info_async, format_resume_list_async, group_resume_sessions_async, format_tool_start_async, format_tool_done_async, format_tui_debug_async, TuiDebugState, get_theme_async, format_theme_list_async, theme_preview_async, format_settings_list_async, validate_settings_async, is_setting_key_async, resolve_backend_async, format_tree_async, tree_skip_names_async, format_attachment_async, parse_trust_answer_async, format_trust_status_async, format_project_trust_prompt_async, trust_options_async, ModelSupportsImage_async, ListProviders_async, MissingKeyMessage_async, ProviderAuthEnv_async, OAuthRow, format_oauth_status_async, format_skills_list_async, format_skill_history_entry_async, is_model_enabled_async, format_scoped_models_async, all_model_ids_async, validate_session_label_async, format_session_markdown_async, gist_description_async, setup_theme_options_async, setup_analytics_options_async, format_first_run_theme_step_async, format_first_run_analytics_step_async, format_first_run_done_async, format_setup_skipped_async, format_setup_status_async, branch_row_prefix_async, format_branch_row_async, format_branches_list_async, format_branch_summary_async, format_fork_list_async, parse_changelog_async, format_changelog_async, complete_slash_async, complete_arg_async, render_divider_async, setting_keys_async, format_issue_row_async, format_issue_context_async, render_ready_frame_async, render_welcome_frame_async, format_prompt_label, format_image_placeholder_async, staged_image_label_async, GuidanceFor_async } from "../baml_sdk/index.js";
 import { loadSkills, formatSkills, skillBody, resolveSlash, skillDirs, type Skill } from "./skills.js";
 import { getStoredTrust, setStoredTrust, forgetStoredTrust, type TrustDecision } from "./trust.js";
 import { readClipboardImage, writeClipboardText, clipboardSupportsImage, extensionForImageMime, sniffImageMime } from "./clipboard.js";
@@ -289,7 +289,7 @@ function bamlErrorMessage(e: unknown): string {
 	const raw = e instanceof Error ? e.message : String(e);
 	return raw.replace(/^baml error: (baml\.errors\.\w+: )?/, "").split("\n")[0];
 }
-import { HostTui, HostFooter, renderSelectList, releaseReplTui, retainReplTui, runTranscriptSearch, termWidth, composeFrame, liveFooterNow } from "./tui.js";
+import { HostTui, HostFooter, renderSelectList, releaseReplTui, retainReplTui, runTranscriptSearch, termWidth, composeFrame, liveFooterNow, queryCursorRow } from "./tui.js";
 import { FullscreenSession, fullscreenRequested, teeOutputTo } from "./screen-fullscreen.js";
 import { KindStatus, statusEventTailUpdater } from "./status.js";
 import { ActionLog, safeJson } from "./actionlog.js";
@@ -795,6 +795,55 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 		}
 		if (t.name === "hotkeys") {
 			await printBlock(await hotkeys_text_async());
+			return history;
+		}
+		if (t.name === "tui-debug") {
+			// Live UI snapshot for UI debugging (hub#237 follow-up):
+			// terminal geometry, DSR cursor row, footer rows, prompt
+			// mode. Plain lines always — never styled, pipes included.
+			// The DSR runs inside the modal envelope (suspend/resume
+			// around the query) so a live readline never eats the reply
+			// (bi#195 discipline); failures degrade to a named note,
+			// never a throw.
+			const tty = process.stdout.isTTY === true;
+			let cursor: number | null = null;
+			let detail = "no live query (pipes or no raw envelope)";
+			if (raw && tty && process.stdin.isTTY === true) {
+				const t0 = Date.now();
+				raw.suspend();
+				try {
+					const row = await queryCursorRow();
+					if (row === null) detail = `DSR timeout (${Date.now() - t0}ms - terminal did not answer)`;
+					else {
+						cursor = row;
+						detail = `${Date.now() - t0}ms`;
+					}
+				} catch (e) {
+					detail = `DSR failed (${e instanceof Error ? e.message : e})`;
+				} finally {
+					raw.resume();
+				}
+			}
+			const fb = liveFooterNow()?.debugState() ?? null;
+			const hug = fb?.hug && !fb.hug.pinned ? fb.hug : null;
+			const st = new TuiDebugState({
+				rows: fb?.rows ?? process.stdout.rows ?? 0,
+				cols: fb?.cols ?? termWidth(),
+				tty,
+				cursor_row: cursor,
+				cursor_detail: detail,
+				footer_installed: fb?.installed ?? false,
+				footer_frame_row: fb?.installedFrame ?? 0,
+				footer_model_row: (fb?.installedFrame ?? 0) + 1,
+				hug_prompt_row: hug?.promptRow ?? null,
+				hug_frame_row: hug?.frameRow ?? null,
+				hug_pinned: fb?.hug?.pinned ?? true,
+				reserve: fb?.reserve ?? 2,
+				input_mode: promptAvailable() ? "modal" : "line",
+				theme: (await activeTheme()) ?? "none",
+				fullscreen: fullscreenRequested(),
+			});
+			for (const line of await format_tui_debug_async(st)) console.error(line);
 			return history;
 		}
 		if (t.name === "changelog") {

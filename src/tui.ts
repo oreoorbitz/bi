@@ -578,6 +578,20 @@ export class HostFooter {
 	setInputGate(gate: { suspend(): void } | null): void {
 		this.inputGate = gate;
 	}
+	// Live snapshot for /tui-debug: plain data, no paints, no DSR —
+	// the command handler adds the live cursor row itself.
+	debugState(): { rows: number; cols: number; tty: boolean; installed: boolean; installedFrame: number; hug: FooterHug | null; reserve: number } {
+		const { rows, cols } = this.dims();
+		return {
+			rows,
+			cols,
+			tty: this.tty() && rows >= 3,
+			installed: this.installedRows !== 0,
+			installedFrame: this.installedFrame,
+			hug: this.hug,
+			reserve: this.reserveBottom(),
+		};
+	}
 	// Rows the modal editor must keep clear below its box (prompt.ts
 	// bottom margin): pinned reserves 2 (today), hugged reserves up to
 	// the floating frame row.

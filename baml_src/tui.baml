@@ -413,3 +413,67 @@ class FocusableTextComponent {
         }
     }
 }
+
+// Live UI snapshot for /tui-debug (hub#237 follow-up): plain-data
+// state in, plain unstyled lines out. Debug output must never carry
+// SGR - no style_segment anywhere here - so pipes stay byte-clean by
+// construction. The host gathers (terminal dims, DSR row, footer
+// rows); BAML owns every rendered label.
+class TuiDebugState {
+    rows: int,
+    cols: int,
+    tty: bool,
+    cursor_row: int?,
+    cursor_detail: string,
+    footer_installed: bool,
+    footer_frame_row: int,
+    footer_model_row: int,
+    hug_prompt_row: int?,
+    hug_frame_row: int?,
+    hug_pinned: bool,
+    reserve: int,
+    input_mode: string,
+    theme: string,
+    fullscreen: bool,
+}
+
+function format_tui_debug(s: TuiDebugState) -> string[] {
+    let cursor = match (s.cursor_row) {
+        null => s.cursor_detail,
+        let r: int => `DSR row ${r} (${s.cursor_detail})`,
+    };
+    let term = if (s.tty) {
+        `terminal: ${s.rows} rows x ${s.cols} cols (tty)`
+    } else {
+        `terminal: ${s.rows} rows x ${s.cols} cols (pipes - no live query, footer prints fallback)`
+    };
+    let hug = if (s.hug_pinned) {
+        "hug=pinned"
+    } else {
+        match (s.hug_prompt_row) {
+            null => "hug=unset",
+            let p: int => match (s.hug_frame_row) {
+                null => "hug=unset",
+                let f: int => `hug prompt=${p} frame=${f}`,
+            },
+        }
+    };
+    let footer = if (s.footer_installed) {
+        `footer: installed frame=${s.footer_frame_row} model=${s.footer_model_row} ${hug} reserve=${s.reserve}`
+    } else {
+        "footer: not installed (pipes or pre-REPL)"
+    };
+    let fs = if (s.fullscreen) {
+        "on"
+    } else {
+        "off"
+    };
+    [
+        "[tui-debug]",
+        term,
+        `cursor: ${cursor}`,
+        footer,
+        `input: ${s.input_mode} editor - theme ${s.theme} - fullscreen ${fs}`,
+        "hint: BI_TUI_DEBUG=/path.log records the full event tap",
+    ]
+}

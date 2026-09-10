@@ -337,6 +337,12 @@ function builtin_slash_commands() -> BuiltinSlashCommand[] {
             argument_hint: null,
             scope: null,
         },
+        BuiltinSlashCommand {
+            name: "tui-debug",
+            description: "Dump live terminal/footer/prompt state for UI debugging",
+            argument_hint: null,
+            scope: null,
+        },
     ]
 }
 
@@ -600,7 +606,8 @@ test "slash dispatch finds builtins then skills" {
     assert.equal(lookup_slash("/oauth", skills), "oauth");
     assert.equal(lookup_slash("/config", skills), "config");
     assert.equal(lookup_slash("/skills", skills), "skills");
-    assert.equal(builtin_slash_commands().length(), 34)
+    assert.equal(lookup_slash("/tui-debug", skills), "tui-debug");
+    assert.equal(builtin_slash_commands().length(), 35)
 }
 
 test "registry is pi's 23 plus bi extras" {
@@ -640,6 +647,7 @@ test "registry is pi's 23 plus bi extras" {
             "bais",
             "reload",
             "quit",
+            "tui-debug",
         ]
     ) {
         let found = false;
@@ -689,6 +697,7 @@ test "scope marks live vs owning issue" {
             "config" => assert.is_true(b.scope is null),
             "skills" => assert.is_true(b.scope is null),
             "changelog" => assert.is_true(b.scope is null),
+            "tui-debug" => assert.is_true(b.scope is null),
             _ => assert.is_true(false),
         }
     }

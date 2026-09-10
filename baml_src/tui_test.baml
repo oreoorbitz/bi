@@ -242,3 +242,77 @@ testset "tui" {
         assert.is_true((themed.at(0) ?? "").length() > 60);
     }
 }
+
+test "tui-debug snapshot: healthy TTY, hug content, pipe fallback" {
+    let healthy = TuiDebugState {
+        rows: 50,
+        cols: 100,
+        tty: true,
+        cursor_row: 50,
+        cursor_detail: "9ms",
+        footer_installed: true,
+        footer_frame_row: 49,
+        footer_model_row: 50,
+        hug_prompt_row: null,
+        hug_frame_row: null,
+        hug_pinned: true,
+        reserve: 2,
+        input_mode: "modal",
+        theme: "dark",
+        fullscreen: false,
+    };
+    let lines = format_tui_debug(healthy);
+    assert.equal(lines.length(), 6);
+    assert.equal(lines.at(0) ?? "", "[tui-debug]");
+    assert.is_true((lines.at(1) ?? "").includes("50 rows x 100 cols (tty)"));
+    assert.is_true((lines.at(2) ?? "").includes("DSR row 50 (9ms)"));
+    assert.is_true((lines.at(3) ?? "").includes("frame=49 model=50 hug=pinned reserve=2"));
+    assert.is_true((lines.at(4) ?? "").includes("modal editor - theme dark - fullscreen off"));
+    // Hug-content shape (short transcript, footer follows content).
+    let hugging = TuiDebugState {
+        rows: 60,
+        cols: 100,
+        tty: true,
+        cursor_row: 30,
+        cursor_detail: "4ms",
+        footer_installed: true,
+        footer_frame_row: 31,
+        footer_model_row: 32,
+        hug_prompt_row: 30,
+        hug_frame_row: 31,
+        hug_pinned: false,
+        reserve: 30,
+        input_mode: "modal",
+        theme: "dark",
+        fullscreen: false,
+    };
+    let hlines = format_tui_debug(hugging);
+    assert.is_true((hlines.at(2) ?? "").includes("DSR row 30 (4ms)"));
+    assert.is_true((hlines.at(3) ?? "").includes("hug prompt=30 frame=31 reserve=30"));
+    // Pipe fallback: exact lines (proves byte-clean - no SGR possible).
+    let piped = TuiDebugState {
+        rows: 0,
+        cols: 80,
+        tty: false,
+        cursor_row: null,
+        cursor_detail: "no live query (pipes)",
+        footer_installed: false,
+        footer_frame_row: 0,
+        footer_model_row: 0,
+        hug_prompt_row: null,
+        hug_frame_row: null,
+        hug_pinned: true,
+        reserve: 2,
+        input_mode: "line",
+        theme: "none",
+        fullscreen: false,
+    };
+    let plines = format_tui_debug(piped);
+    assert.equal(plines.length(), 6);
+    assert.equal(plines.at(0) ?? "", "[tui-debug]");
+    assert.equal(plines.at(1) ?? "", "terminal: 0 rows x 80 cols (pipes - no live query, footer prints fallback)");
+    assert.equal(plines.at(2) ?? "", "cursor: no live query (pipes)");
+    assert.equal(plines.at(3) ?? "", "footer: not installed (pipes or pre-REPL)");
+    assert.equal(plines.at(4) ?? "", "input: line editor - theme none - fullscreen off");
+    assert.equal(plines.at(5) ?? "", "hint: BI_TUI_DEBUG=/path.log records the full event tap");
+}
