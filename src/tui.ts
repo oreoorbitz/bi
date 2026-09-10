@@ -598,8 +598,18 @@ export class HostFooter {
 	reserveBottom(): number {
 		const { rows } = this.dims();
 		if (this.installedRows === 0) return 2;
-		const r = Math.max(2, rows - this.installedFrame + 1);
-		ftap(`reserve rows=${rows} installedFrame=${this.installedFrame} hug=${JSON.stringify(this.hug)} return=${r}`);
+		// hub#237 fail-safe: the margin follows the freshly settled hug
+		// rows (the prompt homes there in the same tick — askEdit runs
+		// with no print between), never the installed paint: a scroll
+		// between install and prompt recycles those numbers and the old
+		// formula (rows - installedFrame + 1 ≈ rows) pushed the modal
+		// above the viewport. Clamped on-screen — a stale hug degrades
+		// to a squished-but-visible box, never an invisible one.
+		const h = this.hug;
+		if (!h || h.pinned) return 2;
+		const frame = Math.min(h.frameRow, rows - 1);
+		const r = Math.max(2, Math.min(rows - 2, rows - frame + 1));
+		ftap(`reserve rows=${rows} hug=${JSON.stringify(h)} return=${r}`);
 		return r;
 	}
 	// Resolve hug rows for this paint: query iff the gate is set and
@@ -677,8 +687,14 @@ export class HostFooter {
 		// erases its old rows first — two CUP+EL writes, never a clear.
 		const pr = this.paintRows(rows);
 		ftap(`render rows=${rows} pr=${pr.frame},${pr.model} installed=${this.installedRows},${this.installedFrame} textChanged=${this.lastFrame !== cFrame || this.lastModel !== cModel}`);
+		// hub#237: erase only when the old rows ARE the target rows. A
+		// scroll recycles absolute numbers — the installed numbers now
+		// hold transcript, and blanking them punches holes in it. A
+		// moved footer leaves its buried paint as scrollback (same
+		// fossil class as the pinned path) and installs at the target
+		// without erasing.
 		if (this.installedRows !== rows || this.installedFrame !== pr.frame) {
-			this.eraseRows();
+			if (this.installedFrame === pr.frame) this.eraseRows();
 			this.install(rows, cFrame, cModel, pr.frame);
 		} else {
 			if (this.lastFrame !== cFrame || this.lastModel !== cModel) this.paint(pr, cFrame, cModel);
@@ -779,6 +795,11 @@ export class HostFooter {
 		if (!this.tty() || rows < 3) return;
 		const h = await this.settleRows(rows);
 		ftap(`home promptRow=${h.promptRow}`);
+		// hub#237: repaint at the fresh rows synchronously (the only
+		// moment they are valid) so the footer sits below the prompt;
+		// the move skips the erase when a scroll recycled the old
+		// numbers (render's same-frame rule above).
+		this.render();
 		this.write(`\x1b[${h.promptRow};1H`);
 	}
 	private install(rows: number, frame: string, model: string | null, frameRow: number): void {

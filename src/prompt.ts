@@ -716,6 +716,22 @@ async function runModal<T>(
 		// one-shot users hold no lease, so dispose here or the live
 		// stdin listener outlives their modal and hangs the exit.
 		if (!replTuiLeased()) await disposeReplTui();
+		// hub#237: leave the cursor on a known row. pi-tui teardown
+		// leaves it wherever the overlay was (row 1 after a full-height
+		// picker — traced live) — the footer's next DSR settles there
+		// truthfully and the whole prompt block migrates to the top
+		// (bi.jpg: footer superimposed at the top, prompt off-screen).
+		// Homing to the bottom makes every post-modal DSR truthful
+		// (bottom → pinned, content end → hug). Only when a live footer
+		// exists (its DSR is the sole consumer of cursor position), so
+		// one-shot modal bytes stay identical; pipes never reach here.
+		if (liveFooterNow() !== null) {
+			const rows = process.stdout.rows ?? 0;
+			if (process.stdout.isTTY && rows >= 3) {
+				process.stdout.write(`\x1b[${rows};1H`);
+				tapEvent(`cursor-home rows=${rows}`);
+			}
+		}
 	}
 }
 

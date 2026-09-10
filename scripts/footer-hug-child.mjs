@@ -67,6 +67,46 @@ try {
 		footer.dispose();
 		process.exit(0);
 	}
+	if (mode === "scroll") {
+		// hub#237 (bi.jpg shape): tall screen, paint near the top, then
+		// a welcome/BAIS-length scroll before the first prompt. The
+		// prompt margin must follow the fresh settle (small), never the
+		// stale install (which pushed the modal off-screen), and the
+		// move must not blank the recycled rows.
+		const footer = makeFooter();
+		console.log("w1");
+		console.log("w2");
+		console.log("w3");
+		await footer.showAsync("FRAME1", "MODEL1", "FB1");
+		for (let i = 1; i <= 26; i++) console.log(`s${i}`);
+		await footer.homeInput();
+		console.log(`RESERVE:${footer.reserveBottom()}`);
+		console.log("SCROLL-DONE");
+		await sleep(200);
+		footer.dispose();
+		process.exit(0);
+	}
+	if (mode === "modal") {
+		// hub#237 modal-first: a full-height picker runs BEFORE the
+		// first footer paint (the session picker with 200 sessions).
+		// Teardown must home the cursor to the bottom — the next DSR
+		// settles pinned (never row 1), the reserve stays 2, the
+		// footer installs at the fold.
+		retainReplTui();
+		ensureReplTui(mkdtempSync(join(tmpdir(), "bi-hug-")));
+		const { pickList } = await import(join(HERE, "..", "dist", "src", "prompt.js"));
+		console.log("PICK-OPEN");
+		const idx = await pickList("pick one", Array.from({ length: 30 }, (_, i) => ({ label: `item-${i}` })), 0);
+		console.log(`PICK:${idx}`);
+		const footer = makeFooter();
+		await footer.showAsync("FRAME1", "MODEL1", "FB1");
+		await footer.homeInput();
+		console.log(`RESERVE:${footer.reserveBottom()}`);
+		console.log("MODAL-DONE");
+		await sleep(200);
+		footer.dispose();
+		process.exit(0);
+	}
 	if (mode === "junk") {
 		// Library host live (its stdin listener sees every DSR reply —
 		// the leak vector), then the hug flow, then a modal, then a
