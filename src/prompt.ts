@@ -712,6 +712,14 @@ async function runModal<T>(
 	} finally {
 		handle.hide();
 		tapEvent("overlay-hide");
+		// hub#237: flush the base-frame repaint SYNCHRONOUSLY. hide()
+		// only schedules it (requestRender → nextTick), so the cursor
+		// homing below raced it and lost (traced: the deferred repaint
+		// yanked the cursor back to row 1 eleven ms after homing, and
+		// the next DSR settled the prompt block at the top). renderNow
+		// runs the scheduled paint now and disarms it — nothing after
+		// this point moves the cursor before the homing write.
+		ui.renderNow();
 		// Leased flows (REPL, login) share the host across modals;
 		// one-shot users hold no lease, so dispose here or the live
 		// stdin listener outlives their modal and hangs the exit.
