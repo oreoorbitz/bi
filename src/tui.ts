@@ -151,6 +151,23 @@ export function termWidth(fallback = 80): number {
 	return typeof c === "number" && Number.isFinite(c) && c > 0 ? Math.floor(c) : fallback;
 }
 
+// bi#221: pi-style user-echo bytes — the submitted prompt as plain
+// padded transcript text (blank line, ` line`, blank line), no `bi>`
+// prefix, no box. Pure (TTY gating + leftover reclaim live in cli's
+// printUserEcho); the harness asserts these shapes piped.
+export function userEchoBody(text: string): string {
+	return `\n${text.split("\n").map((l) => ` ${l}`).join("\n")}\n`;
+}
+
+// Reclaim is exact only when every leftover row is one terminal row:
+// ASCII (no tabs/wide chars) with the 4-wide `bi> `/`... ` label
+// inside the width. Anything else risks fossils — the caller keeps
+// the legacy leftover instead of printing.
+export function userEchoFits(text: string, cols: number): boolean {
+	const lines = text.split("\n");
+	return cols > 0 && lines.length > 0 && lines.every((l) => /^[ -~]*$/.test(l) && 4 + l.length <= cols);
+}
+
 // bi#163: one ordered VStack-style entry per frame region. Fields are the
 // StackEntryOptions contract (basis/grow/shrink/minSize/maxSize/visible);
 // `lines` is the BAML-shaped content. Chrome declares "never below 1 row"

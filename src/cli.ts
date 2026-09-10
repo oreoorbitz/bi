@@ -169,6 +169,27 @@ async function printBlock(text: string): Promise<void> {
 	await stdoutRule(await activeTheme());
 }
 
+// bi#221: pi-style user echo — the submitted prompt joins the stdout
+// transcript as plain padded text (blank line, ` line`, blank line),
+// no `bi>` prefix, no box. TTY-only so pipes keep today's bytes. When
+// reclaim is set (a true readline leftover sits on screen) the rows
+// are reclaimed first so the echo replaces them instead of doubling
+// them — but only when every row provably fits without wrapping
+// (ASCII + 4-wide label inside termWidth); anything uncertain keeps
+// the legacy leftover and skips the print, never a fossil. Box-editor
+// and skill-composed turns have no leftover: print only.
+async function printUserEcho(text: string, reclaim: boolean): Promise<void> {
+	if (process.stdout.isTTY !== true) return;
+	const lines = text.split("\n");
+	if (reclaim) {
+		if (!userEchoFits(text, termWidth(0))) return;
+		// Cursor sits on the fresh line below the leftover input: move
+		// up over exactly the leftover rows and erase down.
+		process.stdout.write(`\x1b[${lines.length}A\x1b[J`);
+	}
+	process.stdout.write(userEchoBody(text));
+}
+
 // bi#204: levels/budgets are global tables; only reasoning:true models
 // consume them. Name the inert state (null when the live model reasons
 // or is unknown — an unresolvable ref warns nowhere, never blocks).
@@ -289,7 +310,7 @@ function bamlErrorMessage(e: unknown): string {
 	const raw = e instanceof Error ? e.message : String(e);
 	return raw.replace(/^baml error: (baml\.errors\.\w+: )?/, "").split("\n")[0];
 }
-import { HostTui, HostFooter, renderSelectList, releaseReplTui, retainReplTui, runTranscriptSearch, termWidth, composeFrame, liveFooterNow, queryCursorRow } from "./tui.js";
+import { HostTui, HostFooter, renderSelectList, releaseReplTui, retainReplTui, runTranscriptSearch, termWidth, composeFrame, liveFooterNow, queryCursorRow, userEchoBody, userEchoFits } from "./tui.js";
 import { FullscreenSession, fullscreenRequested, teeOutputTo } from "./screen-fullscreen.js";
 import { KindStatus, statusEventTailUpdater } from "./status.js";
 import { ActionLog, safeJson } from "./actionlog.js";
@@ -2446,10 +2467,16 @@ async function runToolWithStatus(name: string, args: Record<string, unknown>, se
 // opts.aborted resolves when the user hits Ctrl-C mid-turn: the turn is
 // abandoned (flagged via opts.signal), the spinner stops now, and the late
 // VM result is discarded on arrival — transcript and prompt survive.
-async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = [], opts: { signal?: TurnSignal; aborted?: Promise<void>; raw?: { suspend(): void; resume(): void } | null; historyText?: string } = {}, backend: ReplBackend = { provider: "anthropic", model: "claude-haiku-4-5", thinking: null }, sess?: ReplSessionState): Promise<any[] | "quit"> {
+async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = [], opts: { signal?: TurnSignal; aborted?: Promise<void>; raw?: { suspend(): void; resume(): void } | null; historyText?: string; echoReclaim?: boolean } = {}, backend: ReplBackend = { provider: "anthropic", model: "claude-haiku-4-5", thinking: null }, sess?: ReplSessionState): Promise<any[] | "quit"> {
 	const slash = await handleSlash(q, skills, history, opts.signal, backend, sess, opts.raw ?? null);
 	if (slash === "quit") return "quit";
 	if (slash !== "none") return slash;
+	// bi#221: pi-style user echo before the turn runs (the turn closes
+	// with the existing stderrRule divider). Skill turns already print
+	// their named block (bi#98), so they skip the echo. Reclaim fires
+	// only for a true readline leftover (opts.echoReclaim) — the box
+	// editor tears down clean and the cursor sits on footer chrome.
+	if (opts.historyText == null) await printUserEcho(q, opts.echoReclaim === true);
 	// bi#75: the turn's own log lines (tool.* / edit.write / bais.*
 	// arrive via loggingHandler on the loop below).
 	const alog = sess ? new ActionLog(sessionIdFromFile(sess.file)) : null;
@@ -2782,6 +2809,10 @@ class ReplReader {
 	// follow-up). Set once at REPL start, read by ask/askMultiline.
 	forceLineMode = false;
 	editPool: SlashPool | null = null;
+	// bi#221: which input path the last ask() took — true when the
+	// readline leftover sits on screen (needs echo reclaim), false
+	// for the box editor / external editor (they tear down clean).
+	lastAskViaReadline = false;
 	// bi#181: active theme name for the modal editor's border colors
 	// (null = plain; resolved by the REPL loop where activeTheme() is
 	// already computed for the footer, so pipes/NO_COLOR stay plain).
@@ -2795,6 +2826,7 @@ class ReplReader {
 	// this session's submissions.
 	async askWithEditor(promptText: string): Promise<string> {
 		if (!this.editPool) throw new Error("askWithEditor: no pool");
+		this.lastAskViaReadline = false;
 		this.suspendLineInput();
 		this.pending = null;
 		try {
@@ -2812,6 +2844,7 @@ class ReplReader {
 	}
 	ask(prompt: string): Promise<string> {
 		if (!this.forceLineMode && promptAvailable() && this.editPool) return this.askWithEditor(prompt);
+		this.lastAskViaReadline = true;
 		return new Promise<string>((resolve, reject) => {
 			this.pending = { resolve, reject };
 			this.r.question(prompt, (a: string) => {
@@ -3320,7 +3353,7 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 			const aborted = new Promise<void>((res) => { fireAbort = res; });
 			reader.onMidTurnInterrupt = () => fireAbort();
 			let out: any[] | "quit";
-			out = await runOnePrompt(line.trim(), skills, history, { signal, aborted, raw: { suspend: () => reader.suspendLineInput(), resume: () => reader.resumeLineInput() } }, backend, sess);
+			out = await runOnePrompt(line.trim(), skills, history, { signal, aborted, raw: { suspend: () => reader.suspendLineInput(), resume: () => reader.resumeLineInput() }, echoReclaim: reader.lastAskViaReadline === true }, backend, sess);
 			reader.onMidTurnInterrupt = null;
 			if (out === "quit") {
 				console.error(`[bi] session kept at ${sess.file} (${history.length} messages)`);
