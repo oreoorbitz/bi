@@ -7,8 +7,8 @@
 // trimmed for scrollback. Pipes and BI_SCREEN=0 keep the BAML shaper
 // byte-identical to the old print path.
 import { Markdown, type MarkdownTheme, getCapabilities } from "@earendil-works/pi-tui";
-import { format_tool_start_async, highlight_code_line, is_mermaid_fence, render_markdown_text_async, style_segment, text_attr } from "../baml_sdk/index.js";
-import { chromeToolLine, chromeWrap, type ChromeTokenName } from "./theme-files.js";
+import { highlight_code_line, is_mermaid_fence, render_markdown_text_async, style_segment, text_attr } from "../baml_sdk/index.js";
+import { chromeWrap, type ChromeTokenName } from "./theme-files.js";
 import { termWidth } from "./tui.js";
 
 const id = (s: string): string => s;
@@ -127,30 +127,4 @@ export async function printMarkdownText(text: string, theme?: string | null): Pr
 		return;
 	}
 	console.log(await render_markdown_text_async(text, { theme: t }));
-}
-
-// bi#209: one assistant-message renderer for every transcript site.
-//
-// Single-text messages print exactly as before (the Anthropic path is
-// byte-identical); content-block messages (openai-chat and every tool
-// turn) render text parts through the bi#27 markdown path and toolUse
-// parts as the same tool-start chrome the live turn prints — never
-// raw JSON. Unknown block types are skipped; the turn itself is never
-// dropped from history, only unrenderable bytes from the transcript.
-export async function printAssistantMessage(msg: unknown, theme?: string | null): Promise<void> {
-	const m = msg as { text?: unknown; content?: unknown } | null;
-	if (typeof m?.text === "string") {
-		await printMarkdownText(m.text, theme);
-		return;
-	}
-	if (Array.isArray(m?.content)) {
-		for (const b of m.content) {
-			const block = b as { type?: unknown; text?: unknown; name?: unknown; args?: unknown } | null;
-			if (block?.type === "text" && typeof block.text === "string") await printMarkdownText(block.text, theme);
-			else if (block?.type === "toolUse" && typeof block.name === "string")
-				console.log(
-					chromeToolLine(await format_tool_start_async(block.name, JSON.stringify(block.args), { theme: theme ?? null }), block.name, !!process.stdout.isTTY),
-				);
-		}
-	}
 }
