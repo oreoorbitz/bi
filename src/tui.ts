@@ -404,6 +404,75 @@ export async function renderSelectList(text: string, cursor: number, width?: num
 // never clip chrome to fit. Mirrors the composeFrame narrow-width drill.
 export const MODEL_LINE_MIN_WIDTH = 40;
 
+// bi#208: footer follows content — hug rows (pure, headless-testable).
+//
+// The pinned footer (rows N-1/N) leaves a dead gap on short
+// transcripts. With the input gate set (production REPL), the footer
+// learns the cursor row via DSR and hugs: the frame lands directly
+// below the last transcript line, the model row below it. Once
+// content reaches the fold the footer pins (sticky) and all later
+// paints take the legacy bottom path with zero further queries. A
+// null cursor row (timeout, mute terminal, no gate) degrades to
+// pinned — today's behavior. Rows are 1-based terminal rows.
+export interface FooterHug {
+	promptRow: number;
+	frameRow: number;
+	modelRow: number;
+	pinned: boolean;
+}
+export function footerHugRows(rows: number, cursorRow: number | null): FooterHug {
+	if (cursorRow == null || cursorRow >= rows - 2)
+		return { promptRow: rows - 2, frameRow: rows - 1, modelRow: rows, pinned: true };
+	return { promptRow: cursorRow, frameRow: cursorRow + 1, modelRow: cursorRow + 2, pinned: false };
+}
+
+// One-shot DSR cursor-row query (bi#208). The caller suspends line
+// input first: an attached readline would eat the reply as keypresses
+// (bi#119 junk class). Raw mode is required — cooked stdin
+// line-buffers the reply forever. Restores the prior raw/paused state
+// after; runModal re-asserts both anyway (prompt.ts reset step).
+// Resolves null on timeout/mute/refusal — the caller pins.
+export const FOOTER_DSR_TIMEOUT_MS = 150;
+export function queryCursorRow(timeoutMs = FOOTER_DSR_TIMEOUT_MS): Promise<number | null> {
+	const stdin = process.stdin as NodeJS.ReadStream & { setRawMode?: (m: boolean) => void };
+	return new Promise((resolve) => {
+		let buf = "";
+		let done = false;
+		const wasRaw = stdin.isRaw ?? false;
+		const wasPaused = stdin.isPaused();
+		const finish = (v: number | null) => {
+			if (done) return;
+			done = true;
+			clearTimeout(timer);
+			try {
+				stdin.removeListener("data", onData);
+			} catch {}
+			try {
+				if (typeof stdin.setRawMode === "function" && stdin.isTTY) stdin.setRawMode(wasRaw);
+			} catch {}
+			try {
+				if (wasPaused) stdin.pause();
+			} catch {}
+			resolve(v);
+		};
+		const onData = (d: unknown) => {
+			buf += String(d);
+			const m = /\x1b\[(\d+);(\d+)R/.exec(buf);
+			if (m) finish(Number(m[1]));
+			else if (buf.length > 128) finish(null);
+		};
+		const timer = setTimeout(() => finish(null), timeoutMs);
+		try {
+			if (typeof stdin.setRawMode === "function" && stdin.isTTY) stdin.setRawMode(true);
+			stdin.resume();
+			stdin.on("data", onData);
+			process.stdout.write("\x1b[6n");
+		} catch {
+			finish(null);
+		}
+	});
+}
+
 // Synchronous mirror of selectors.baml tips_slot_text (bi#186) — the
 // differential render path cannot await the BAML call per repaint.
 // scripts/footer-tips.mjs pins this mirror equal to tips_slot_text_async
@@ -431,8 +500,13 @@ export interface HostFooterTips {
 
 export class HostFooter {
 	private installedRows = 0;
+	private installedFrame = 0;
 	private lastFrame: string | null = null;
 	private lastModel: string | null = null;
+	// bi#208 hug state: input gate (production REPL wires the reader's
+	// suspend), cached hug rows (null = pinned legacy).
+	private inputGate: { suspend(): void } | null = null;
+	private hug: FooterHug | null = null;
 	// Last shown frame args for differential repaint.
 	private lastArgs: { frame: string; model: string; fallback: string } | null = null;
 	// bi#186 tips slot state.
@@ -469,7 +543,7 @@ export class HostFooter {
 		const { rows } = this.dims();
 		if (!this.tty() || rows < 3 || rows !== this.installedRows) return;
 		this.write("\x1b[s");
-		this.paintBody(rows, this.lastFrame, this.lastModel);
+		this.paintBody(this.installedFrame, this.lastFrame, this.lastModel);
 		this.write("\x1b[u");
 	}
 	// Loads the BAML corpus + cadence and the chrome palette override,
@@ -499,8 +573,56 @@ export class HostFooter {
 	// to the old readout plus one line). Differential per row: unchanged
 	// rows on an unchanged screen write zero bytes. A resize repaints at
 	// the new geometry even when the text matches.
+	// bi#208: wire the reader's suspend (cli.ts) — the DSR query runs
+	// with readline detached. Unset (drills, pipes) means pinned legacy.
+	setInputGate(gate: { suspend(): void } | null): void {
+		this.inputGate = gate;
+	}
+	// Rows the modal editor must keep clear below its box (prompt.ts
+	// bottom margin): pinned reserves 2 (today), hugged reserves up to
+	// the floating frame row.
+	reserveBottom(): number {
+		const { rows } = this.dims();
+		if (this.installedRows === 0) return 2;
+		return Math.max(2, rows - this.installedFrame + 1);
+	}
+	// Resolve hug rows for this paint: query iff the gate is set and
+	// (never pinned or the geometry changed since install). Sticky pin
+	// otherwise — zero queries on the steady path. Timeout/mute pins.
+	private async settleRows(rows: number): Promise<FooterHug> {
+		if (this.inputGate && (!this.hug?.pinned || this.installedRows !== rows)) {
+			let row: number | null = null;
+			try {
+				this.inputGate.suspend();
+				row = await queryCursorRow();
+			} catch {
+				row = null;
+			}
+			this.hug = footerHugRows(rows, row);
+		}
+		this.hug ??= footerHugRows(rows, null);
+		return this.hug;
+	}
+	// Paint-time rows under the current geometry: hug rows clamped to
+	// the fold (a taller resize keeps the cached cursor row; a shorter
+	// one pins).
+	private paintRows(rows: number): { frame: number; model: number } {
+		const h = this.hug;
+		if (!h || h.pinned) return { frame: rows - 1, model: rows };
+		const frame = Math.min(h.frameRow, rows - 1);
+		return { frame, model: frame + 1 };
+	}
 	show(frame: string, model: string, fallback: string): void {
 		this.lastArgs = { frame, model, fallback };
+		this.render();
+	}
+	// bi#208: production paints settle the hug rows first (DSR while
+	// unpinned, sticky pin after). Drills keep the synchronous show()
+	// contract above — same bytes as before when the gate is unset.
+	async showAsync(frame: string, model: string, fallback: string): Promise<void> {
+		this.lastArgs = { frame, model, fallback };
+		const { rows } = this.dims();
+		if (this.tty() && rows >= 3) await this.settleRows(rows);
 		this.render();
 	}
 	// Transient hint (bi#169 channel): preempts the tips slot while set,
@@ -533,9 +655,14 @@ export class HostFooter {
 		const cFrame = composed[composed.length - (modelOn ? 2 : 1)] ?? frame;
 		const cModelRaw = modelOn ? (composed[composed.length - 1] ?? model) : null;
 		const cModel = cModelRaw === null ? null : this.withTipsSlot(cModelRaw, cols);
-		if (this.installedRows !== rows) this.install(rows, cFrame, cModel);
-		else {
-			if (this.lastFrame !== cFrame || this.lastModel !== cModel) this.paint(rows, cFrame, cModel);
+		// bi#208: hug rows (clamped to this geometry); a moved footer
+		// erases its old rows first — two CUP+EL writes, never a clear.
+		const pr = this.paintRows(rows);
+		if (this.installedRows !== rows || this.installedFrame !== pr.frame) {
+			this.eraseRows();
+			this.install(rows, cFrame, cModel, pr.frame);
+		} else {
+			if (this.lastFrame !== cFrame || this.lastModel !== cModel) this.paint(pr, cFrame, cModel);
 		}
 		this.ensureTipsTimer();
 	}
@@ -610,7 +737,7 @@ export class HostFooter {
 		try {
 			const next = await src();
 			if (next === null) this.setLiveSource(null);
-			else this.show(next.frame, next.model, next.fallback);
+			else await this.showAsync(next.frame, next.model, next.fallback);
 		} finally {
 			this.liveBusy = false;
 		}
@@ -621,57 +748,66 @@ export class HostFooter {
 		if (liveFooter === this) liveFooter = null;
 		this.reset();
 	}
-	// Homes the cursor to the row directly above the two pinned footer
-	// rows so the next readline prompt draws as part of the footer block
-	// instead of floating mid-screen. No-op unless the footer is
-	// installed — pipes and short screens keep today's inline prompt
-	// byte-identical.
-	homeInput(): void {
+	// Homes the cursor above the footer rows so the next prompt draws
+	// as part of the footer block. bi#208: with the gate set the row
+	// is settled by DSR — the prompt stays at the content end (hug)
+	// until the fold pins it; without the gate this is the legacy
+	// jump to rows-2. No-op unless installed — pipes and short
+	// screens keep today's inline prompt byte-identical.
+	async homeInput(): Promise<void> {
 		if (this.installedRows === 0) return;
 		const { rows } = this.dims();
 		if (!this.tty() || rows < 3) return;
-		this.write(`\x1b[${rows - 2};1H`);
+		const h = await this.settleRows(rows);
+		this.write(`\x1b[${h.promptRow};1H`);
 	}
-	private install(rows: number, frame: string, model: string | null): void {
+	private install(rows: number, frame: string, model: string | null, frameRow: number): void {
 		// Paint both rows behind save/restore — the transcript cursor
 		// never moves. Absolute CUP is the only transport (bi#194: no
 		// scroll region anywhere in the stack).
 		this.write("\x1b[s");
-		this.paintBody(rows, frame, model);
+		this.paintBody(frameRow, frame, model);
 		this.write("\x1b[u");
 		this.installedRows = rows;
+		this.installedFrame = frameRow;
 		this.lastFrame = frame;
 		this.lastModel = model;
 	}
-	private paint(rows: number, frame: string, model: string | null): void {
+	private paint(pr: { frame: number; model: number }, frame: string, model: string | null): void {
 		this.write("\x1b[s");
 		// Repaint changed rows (no clear, absolute CUP per row). A hidden
-		// model (narrow viewport) erases row N instead of writing text.
-		// bi#194: a frame-row change means a turn just ran, and the turn's
-		// bypass output may have scrolled row N away — with no region
-		// protecting it, the post-turn repaint re-pins BOTH rows even when
-		// the model text matches. Model-only changes (tips rotation,
-		// hints) still leave the frame row alone.
+		// model (narrow viewport) erases the model row instead of writing
+		// text. bi#194: a frame-row change means a turn just ran, and the
+		// turn's bypass output may have scrolled the model row away —
+		// with no region protecting it, the post-turn repaint re-pins
+		// BOTH rows even when the model text matches. Model-only changes
+		// (tips rotation, hints) still leave the frame row alone.
 		const frameChanged = this.lastFrame !== frame;
-		if (frameChanged) this.write(`\x1b[${rows - 1};1H\x1b[2K${frame}`);
-		if (frameChanged || this.lastModel !== model) this.write(`\x1b[${rows};1H\x1b[2K${model ?? ""}`);
+		if (frameChanged) this.write(`\x1b[${pr.frame};1H\x1b[2K${frame}`);
+		if (frameChanged || this.lastModel !== model) this.write(`\x1b[${pr.model};1H\x1b[2K${model ?? ""}`);
 		this.write("\x1b[u");
 		this.lastFrame = frame;
 		this.lastModel = model;
 	}
-	private paintBody(rows: number, frame: string, model: string | null): void {
-		this.write(`\x1b[${rows - 1};1H\x1b[2K${frame}`);
-		this.write(`\x1b[${rows};1H\x1b[2K${model ?? ""}`);
+	private paintBody(frameRow: number, frame: string, model: string | null): void {
+		this.write(`\x1b[${frameRow};1H\x1b[2K${frame}`);
+		this.write(`\x1b[${frameRow + 1};1H\x1b[2K${model ?? ""}`);
+	}
+	// Erase the installed rows (a footer move's first half). Writes
+	// only — timers and caches survive; reset() clears those too.
+	private eraseRows(): void {
+		if (this.installedRows === 0) return;
+		this.write("\x1b[s");
+		this.write(`\x1b[${this.installedFrame};1H\x1b[2K`);
+		this.write(`\x1b[${this.installedFrame + 1};1H\x1b[2K`);
+		this.write("\x1b[u");
 	}
 	private reset(): void {
 		this.clearTipsTimer();
 		this.clearLiveTimer();
-		if (this.installedRows === 0) return;
-		this.write("\x1b[s");
-		this.write(`\x1b[${this.installedRows - 1};1H\x1b[2K`);
-		this.write(`\x1b[${this.installedRows};1H\x1b[2K`);
-		this.write("\x1b[u");
+		this.eraseRows();
 		this.installedRows = 0;
+		this.installedFrame = 0;
 		this.lastFrame = null;
 		this.lastModel = null;
 	}
