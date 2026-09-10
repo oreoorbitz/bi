@@ -2468,15 +2468,21 @@ async function runToolWithStatus(name: string, args: Record<string, unknown>, se
 // abandoned (flagged via opts.signal), the spinner stops now, and the late
 // VM result is discarded on arrival — transcript and prompt survive.
 async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = [], opts: { signal?: TurnSignal; aborted?: Promise<void>; raw?: { suspend(): void; resume(): void } | null; historyText?: string; echoReclaim?: boolean } = {}, backend: ReplBackend = { provider: "anthropic", model: "claude-haiku-4-5", thinking: null }, sess?: ReplSessionState): Promise<any[] | "quit"> {
+	// hub#239: park the footer while slash output owns the screen —
+	// output scrolls erased rows instead of stranding hint fossils.
+	// Real turns ("none") keep the park: the turn path repaints (which
+	// releases it). Anything else re-pins here.
+	liveFooterNow()?.suspendForOutput();
 	const slash = await handleSlash(q, skills, history, opts.signal, backend, sess, opts.raw ?? null);
 	if (slash === "quit") return "quit";
-	if (slash !== "none") return slash;
-	// bi#221: pi-style user echo before the turn runs (the turn closes
-	// with the existing stderrRule divider). Skill turns already print
-	// their named block (bi#98), so they skip the echo. Reclaim fires
-	// only for a true readline leftover (opts.echoReclaim) — the box
-	// editor tears down clean and the cursor sits on footer chrome.
-	if (opts.historyText == null) await printUserEcho(q, opts.echoReclaim === true);
+	if (slash === "none") {
+		// bi#221: pi-style user echo before the turn runs (skill turns
+		// skip it — bi#98 block already named them).
+		if (opts.historyText == null) await printUserEcho(q, opts.echoReclaim === true);
+	} else {
+		liveFooterNow()?.resumeAfterOutput();
+		return slash;
+	}
 	// bi#75: the turn's own log lines (tool.* / edit.write / bais.*
 	// arrive via loggingHandler on the loop below).
 	const alog = sess ? new ActionLog(sessionIdFromFile(sess.file)) : null;

@@ -533,6 +533,11 @@ export class HostFooter {
 	// with no per-path branches — only this row is new paint.
 	private statusRow: number | null = null;
 	private lastStatus: string | null = null;
+	// hub#239: set while command output owns the screen (footer rows
+	// erased pre-scroll). Any repaint clears it — resume then no-ops,
+	// so a nested turn/modal that re-showed the footer is never
+	// double-parked.
+	private suspendedOutput = false;
 	// bi#186 tips slot state.
 	private tipsCorpus: string[] | null;
 	private tipsIntervalMs: number;
@@ -949,6 +954,7 @@ export class HostFooter {
 		this.installedFrame = frameRow;
 		this.lastFrame = frame;
 		this.lastModel = model;
+		this.suspendedOutput = false;
 	}
 	private paint(pr: { frame: number; model: number }, frame: string, model: string | null): void {
 		this.write("\x1b[s");
@@ -965,10 +971,41 @@ export class HostFooter {
 		this.write("\x1b[u");
 		this.lastFrame = frame;
 		this.lastModel = model;
+		this.suspendedOutput = false;
 	}
 	private paintBody(frameRow: number, frame: string, model: string | null): void {
 		this.write(`\x1b[${frameRow};1H\x1b[2K${frame}`);
 		this.write(`\x1b[${frameRow + 1};1H\x1b[2K${model ?? ""}`);
+	}
+	// hub#239: park the footer for command output. Erases the
+	// installed rows IN PLACE (valid targets — the scroll hasn't
+	// happened yet) so output scrolls blanks instead of hint text;
+	// caches drop so the resume repaints. Silent unless installed on
+	// a roomy TTY — pipes/short screens keep today's bytes. A leaked
+	// status row closes first (homeInput discipline).
+	suspendForOutput(): void {
+		if (this.installedRows === 0) return;
+		const { rows } = this.dims();
+		if (!this.tty() || rows < 3) return;
+		if (this.statusRow !== null) this.closeStatusRow();
+		this.eraseRows();
+		this.lastFrame = null;
+		this.lastModel = null;
+		this.suspendedOutput = true;
+	}
+	// hub#239: re-pin after command output. No-op unless a suspend is
+	// still outstanding (any repaint clears it). Scrolls two fresh
+	// rows first so the re-pin never paints over the output, then
+	// re-shows through the normal path (settle + differential).
+	resumeAfterOutput(): void {
+		if (!this.suspendedOutput) return;
+		this.suspendedOutput = false;
+		const a = this.lastArgs;
+		if (this.installedRows === 0 || !a) return;
+		const { rows } = this.dims();
+		if (!this.tty() || rows < 3) return;
+		this.write("\n\n");
+		void this.showAsync(a.frame, a.model, a.fallback);
 	}
 	// Erase the installed rows (a footer move's first half). Writes
 	// only — timers and caches survive; reset() clears those too.
@@ -990,6 +1027,7 @@ export class HostFooter {
 		this.installedFrame = 0;
 		this.lastFrame = null;
 		this.lastModel = null;
+		this.suspendedOutput = false;
 	}
 }
 
