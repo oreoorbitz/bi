@@ -3,7 +3,7 @@
 // This is minimal: renders BAIS ready + prompt, diffs lines (pi does ANSI differential).
 import { footer_tips_async, render_divider_async, render_select_frame_async, tip_rotate_interval_ms_async } from "../baml_sdk/index.js";
 import { chromeAnsi, loadChromePalette } from "./theme-files.js";
-import { Container, ProcessTerminal, ScrollView, Text, TuiAltScreen, TuiMainScreen, getKeybindings, setKeybindings, sliceByColumn, visibleWidth as piVisibleWidth, type TUI } from "@earendil-works/pi-tui";
+import { Container, ProcessTerminal, ScrollView, Text, TuiAltScreen, TuiMainScreen, getKeybindings, setKeybindings, sliceByColumn, truncateToWidth, visibleWidth as piVisibleWidth, type TUI } from "@earendil-works/pi-tui";
 // bi#163: declared frame composition over pi-tui's VStack sizing contract.
 // allocateStackSizes/visibleStackEntries are the exact fns VStack lays out
 // with (components/stack.ts) — the host reuses them directly on line-array
@@ -509,6 +509,13 @@ export class HostFooter {
 	private hug: FooterHug | null = null;
 	// Last shown frame args for differential repaint.
 	private lastArgs: { frame: string; model: string; fallback: string } | null = null;
+	// bi#206 status row: absolute 1-based row directly above the frame
+	// row while a turn runs (null = closed). Open rebases the hug so
+	// the frame/model slide to their shifted rows and every existing
+	// paint path (render, repin, tips, hints, erase) stays correct
+	// with no per-path branches — only this row is new paint.
+	private statusRow: number | null = null;
+	private lastStatus: string | null = null;
 	// bi#186 tips slot state.
 	private tipsCorpus: string[] | null;
 	private tipsIntervalMs: number;
@@ -606,15 +613,22 @@ export class HostFooter {
 		// above the viewport. Clamped on-screen — a stale hug degrades
 		// to a squished-but-visible box, never an invisible one.
 		const h = this.hug;
-		if (!h || h.pinned) return 2;
+		if (!h || h.pinned) return this.statusRow !== null ? Math.min(rows - 1, 3) : 2;
 		const frame = Math.min(h.frameRow, rows - 1);
 		const r = Math.max(2, Math.min(rows - 2, rows - frame + 1));
-		return r;
+		// bi#206: an open status row holds one more footer row. The
+		// approval freeze clears it before margins are computed, so
+		// this arm is only a fail-safe for a path that forgot to.
+		return this.statusRow !== null ? Math.min(rows - 1, r + 1) : r;
 	}
 	// Resolve hug rows for this paint: query iff the gate is set and
 	// (never pinned or the geometry changed since install). Sticky pin
 	// otherwise — zero queries on the steady path. Timeout/mute pins.
 	private async settleRows(rows: number): Promise<FooterHug> {
+		// bi#206: hold the open rebase while the status row lives — a
+		// mid-turn DSR (liveTick) would overwrite the shifted rows and
+		// the frame would repaint over the status row.
+		if (this.statusRow !== null && this.hug) return this.hug;
 		if (this.inputGate && (!this.hug?.pinned || this.installedRows !== rows)) {
 			let row: number | null = null;
 			try {
@@ -656,6 +670,112 @@ export class HostFooter {
 	setHint(hint: string | null): void {
 		this.hint = hint !== null && hint.length > 0 ? hint : null;
 		if (this.tty()) this.render();
+	}
+	// bi#206 status row above the frame row (pi's statusContainer slot,
+	// adapted to the hug: pi reserves layout rows; here the footer
+	// block grows by one row for the turn). KindStatus drives these
+	// through the StatusRowSink interface; all refuse silently unless
+	// installed on a roomy TTY, so pipes/fullscreen keep today's bytes.
+	get statusOpen(): boolean {
+		return this.statusRow !== null;
+	}
+	statusRowActive(): boolean {
+		if (this.statusRow === null || this.installedRows === 0) return false;
+		const { rows } = this.dims();
+		return this.tty() && rows >= 3;
+	}
+	// Opens the row below the submitted echo (prompt home + echo span)
+	// so the open never paints over transcript. Hug (fresh rows below
+	// the cursor) needs no scroll; pinned (every row live) scrolls
+	// first so the echo survives above the row — the scroll count is
+	// exactly the echo span, so the row always lands on a fossil or a
+	// blank, never on the echo. Idempotent while open.
+	openStatusRow(echoRows: number): void {
+		if (this.statusRow !== null) return;
+		const { rows, cols } = this.dims();
+		if (!this.tty() || rows < 3 || cols < 1 || this.installedRows === 0) return;
+		const echo = Math.max(1, Math.floor(echoRows) || 1);
+		const h = this.hug ?? footerHugRows(rows, null);
+		const frame = Math.min(h.frameRow + echo, rows - 1);
+		const status = frame - 1;
+		const prompt = h.pinned ? rows - 2 : h.promptRow;
+		// Scroll strictly to preserve the echo: the status row must
+		// land below it. (Scrolling first for a bottom-touching block
+		// is useless — the render below repaints the model row right
+		// back onto the bottom row where output starts. That case is
+		// handled after the park instead.)
+		const scrolls = Math.max(0, prompt + echo - status);
+		if (scrolls > 0) this.write(`\x1b[${rows};1H` + "\n".repeat(scrolls));
+		// Rebase under the footer: frame/model slide down, prompt home
+		// stays (pinned homes there next; hug re-settles by DSR
+		// post-turn). settleRows holds this rebase while open.
+		this.hug = { promptRow: h.promptRow, frameRow: frame, modelRow: frame + 1, pinned: h.pinned };
+		this.statusRow = status;
+		this.lastStatus = null;
+		// Paint the shifted frame/model now so no fossil shows between
+		// the open and the first tick. The text is usually unchanged,
+		// which the differential would skip — drop the last-shown pair
+		// so the move repaints unconditionally; the hub#237 same-frame
+		// rule still governs whether old rows are erased.
+		this.lastFrame = null;
+		this.lastModel = null;
+		this.render();
+		// No cursor park here: KindStatus.start() paints synchronously
+		// right after the open, so the first tick already moved the
+		// cursor to end-of-status before any bypass output can start —
+		// mid-turn output begins there exactly as on the legacy path
+		// (pre-existing discipline, unchanged). Only the commit parks,
+		// because the timer is stopped then and the cursor stays put
+		// for the settled output.
+	}
+	// Tick paint: absolute CUP re-anchors every tick (bypass output
+	// moves the cursor; the legacy relative paint is what scattered
+	// status rows through scrollback). Unchanged lines write zero
+	// bytes. Defensive clamp to the footer width — idempotent over
+	// KindStatus's stderr-width clamp on a real pty (same winsize).
+	paintStatusRow(line: string): boolean {
+		const row = this.statusRow;
+		if (row === null) return false;
+		const { rows, cols } = this.dims();
+		if (!this.tty() || rows < 3 || cols < 1 || this.installedRows === 0) return false;
+		if (line === this.lastStatus) return true;
+		const cut = truncateToWidth(line, cols);
+		this.write(`\x1b[${row};1H\x1b[2K${cut}`);
+		this.lastStatus = line;
+		return true;
+	}
+	// Completion replaces the row in place, then parks below the
+	// block: summary + exactly 3 newlines. Hug lands on the first
+	// empty row with zero scroll; a bottom-touching block (pinned, or
+	// clamped hug) scrolls once, moving intact fossils up so output
+	// never fuses with the model row. The summary is transcript now;
+	// the frame/model re-pin on the post-turn showAsync, so no render
+	// here.
+	commitStatusRow(summary: string): boolean {
+		const row = this.statusRow;
+		if (row === null) return false;
+		const { rows, cols } = this.dims();
+		if (!this.tty() || rows < 3 || cols < 1 || this.installedRows === 0) {
+			this.closeStatusRow();
+			return false;
+		}
+		this.write(`\x1b[${row};1H\x1b[2K${truncateToWidth(summary, cols)}` + "\n".repeat(3));
+		this.closeStatusRow();
+		return true;
+	}
+	// Freeze path (bi#218 modal): erase the row and close it. Ticks
+	// after unfreeze fall back to the relative paint — no stale-row
+	// risk post-modal.
+	clearStatusRow(): void {
+		const row = this.statusRow;
+		if (row === null) return;
+		const { rows } = this.dims();
+		if (this.tty() && rows >= 3 && this.installedRows !== 0) this.write(`\x1b[s\x1b[${row};1H\x1b[2K\x1b[u`);
+		this.closeStatusRow();
+	}
+	private closeStatusRow(): void {
+		this.statusRow = null;
+		this.lastStatus = null;
 	}
 	private render(): void {
 		const a = this.lastArgs;
@@ -789,6 +909,10 @@ export class HostFooter {
 		if (this.installedRows === 0) return;
 		const { rows } = this.dims();
 		if (!this.tty() || rows < 3) return;
+		// bi#206: defensive — callers commit (stop) before the prompt
+		// returns, so an open row here is a leak; close it silently and
+		// let the row stand as transcript rather than repainting it.
+		if (this.statusRow !== null) this.closeStatusRow();
 		const h = await this.settleRows(rows);
 		// hub#237: repaint at the fresh rows synchronously (the only
 		// moment they are valid) so the footer sits below the prompt;
@@ -831,9 +955,11 @@ export class HostFooter {
 	}
 	// Erase the installed rows (a footer move's first half). Writes
 	// only — timers and caches survive; reset() clears those too.
+	// bi#206: a move while the status row is open erases it too.
 	private eraseRows(): void {
 		if (this.installedRows === 0) return;
 		this.write("\x1b[s");
+		if (this.statusRow !== null) this.write(`\x1b[${this.statusRow};1H\x1b[2K`);
 		this.write(`\x1b[${this.installedFrame};1H\x1b[2K`);
 		this.write(`\x1b[${this.installedFrame + 1};1H\x1b[2K`);
 		this.write("\x1b[u");
@@ -842,6 +968,7 @@ export class HostFooter {
 		this.clearTipsTimer();
 		this.clearLiveTimer();
 		this.eraseRows();
+		this.closeStatusRow();
 		this.installedRows = 0;
 		this.installedFrame = 0;
 		this.lastFrame = null;

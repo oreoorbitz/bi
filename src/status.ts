@@ -74,6 +74,27 @@ export function resolveStatusLabel(state: StatusState, cancelHint: string | null
 	});
 }
 
+// bi#206: footer status-row sink. When a footer has an open status row
+// (TTY, installed), KindStatus ticks + the completion summary paint
+// into the footer region instead of stderr. Every other path (pipes,
+// uninstalled/fullscreen footer, frozen-then-resumed ticks) keeps
+// today's stderr bytes. Structural on purpose: drills fake it, and
+// neither direction imports the other (no tui <-> status cycle).
+export interface StatusRowSink {
+	openStatusRow(echoRows: number): void;
+	// True when the line reached the status row (differential: an
+	// unchanged line writes zero bytes). False when no row is open —
+	// the caller falls back to the legacy relative paint.
+	paintStatusRow(line: string): boolean;
+	// True when the summary replaced the row in place, then parked
+	// below the block (summary + 3 newlines: hug lands on empty rows,
+	// a bottom-touching block scrolls once with fossils intact).
+	// False → legacy.
+	commitStatusRow(summary: string): boolean;
+	clearStatusRow(): void;
+	statusRowActive(): boolean;
+}
+
 // Minimal display contract for deep-loop reporters (retry/compaction).
 // They only signal state; KindStatus owns the label + repaint.
 export interface StatusSink {
@@ -169,6 +190,9 @@ export class KindStatus implements StatusSink {
 	private state: StatusState;
 	private label: string;
 	private cancelHint: string | null;
+	// bi#206: footer status-row sink (cli attaches the live footer per
+	// turn). Null = legacy stderr path everywhere.
+	private rowSink: StatusRowSink | null = null;
 	private formatStatus: (spinner: string, label: string, elapsedMs: number, event: string) => string;
 	private formatSummary: (
 		failed: boolean,
@@ -207,6 +231,12 @@ export class KindStatus implements StatusSink {
 	get statusLabel(): string {
 		return this.label;
 	}
+	// bi#206: route ticks + summary through the footer status row.
+	// Attached per turn by cli; stop() releases (no cross-turn leak
+	// when an instance is reused).
+	attachFooter(sink: StatusRowSink | null): void {
+		this.rowSink = sink;
+	}
 	private refresh(): void {
 		// Pi parity: the working message carries no cancel hint (the caller
 		// owns that label verbatim); retry/compaction/branchSummary do.
@@ -232,7 +262,11 @@ export class KindStatus implements StatusSink {
 	private get tty(): boolean {
 		return !!process.stderr.isTTY;
 	}
-	start(): void {
+	// bi#206: echoRows anchors the status row below the submitted
+	// input echo (prompt home row + echo span) so the open never
+	// paints over transcript. Default 1 keeps every existing caller
+	// (drills, probes) on the single-line contract.
+	start(echoRows = 1): void {
 		// Every turn starts working + owns the sink; a stale kind from a
 		// previous turn can never survive into this one.
 		this.state = defaultStatusState(this.state.label);
@@ -245,6 +279,10 @@ export class KindStatus implements StatusSink {
 		setActiveStatus(this);
 		if (!this.tty) return;
 		this.timer = setInterval(() => void this.paint(), 100);
+		// bi#206: open the footer row before the first tick; a footer
+		// that refuses (pipes-guarded above, uninstalled/fullscreen
+		// inside) leaves every paint on the legacy path.
+		this.rowSink?.openStatusRow(Math.max(1, Math.floor(echoRows) || 1));
 		void this.paint();
 	}
 	onEvent(e: string): void {
@@ -278,6 +316,10 @@ export class KindStatus implements StatusSink {
 				clearInterval(this.timer);
 				this.timer = null;
 			}
+			// bi#206: the frozen text must not linger under the modal —
+			// erase the row and close it. Ticks after unfreeze fall back
+			// to the relative paint (no stale-row risk post-modal).
+			this.rowSink?.clearStatusRow();
 		}
 		this.frozenDepth += 1;
 	}
@@ -304,6 +346,12 @@ export class KindStatus implements StatusSink {
 	private paint(): void {
 		const line = paintStatusLine(spinnerFor(this.state.kind, this.tick), this.label, this.elapsed(), this.event, this.formatStatus);
 		this.tick += 1;
+		// bi#206: the sink paints into the footer row when one is open;
+		// a refused paint (closed, uninstalled, post-freeze) falls
+		// through to the legacy relative row. One clamp serves both:
+		// stderr/stdout share the pty winsize, so the footer row and
+		// the legacy row are the same width.
+		if (this.tty && this.rowSink?.paintStatusRow(clampStatusLine(line))) return;
 		process.stderr.write(`\r\x1b[2K${clampStatusLine(line)}`);
 	}
 	// Replaces the status line with the final summary (same shape as
@@ -318,9 +366,15 @@ export class KindStatus implements StatusSink {
 		this.frozenDepth = 0;
 		this.frozenElapsed = 0;
 		const line = this.formatSummary(opts.failed, opts.detail, opts.turns, opts.messages, ms, { theme: opts.theme ?? null });
-		if (this.tty) process.stderr.write(`\r\x1b[2K${line}\n`);
-		else console.error(`[bi] ${line}`);
+		// bi#206: the summary replaces the footer row in place (row +
+		// newline, zero scroll — the row is never the bottom one).
+		// Every refused commit keeps today's bytes exactly.
+		if (!(this.tty && (this.rowSink?.commitStatusRow(line) ?? false))) {
+			if (this.tty) process.stderr.write(`\r\x1b[2K${line}\n`);
+			else console.error(`[bi] ${line}`);
+		}
 		if (activeStatus() === this) setActiveStatus(null);
+		this.rowSink = null;
 		this.state = defaultStatusState(this.state.label);
 		this.refresh();
 	}

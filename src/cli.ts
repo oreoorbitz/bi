@@ -2528,7 +2528,13 @@ async function runOnePrompt(q: string, skills: Skill[] = [], history: any[] = []
 	// compaction waits report through the ambient sink; stop() resets so
 	// no kind leaks into the next turn.
 	const status = new KindStatus("thinking", { formatStatus: format_status, formatSummary: format_turn_summary });
-	status.start();
+	// bi#206: ticks + summary paint into the footer status row above
+	// the frame on TTY; pipes keep the legacy stderr path
+	// byte-identical (the footer refuses when uninstalled, e.g.
+	// fullscreen dock). The echo span anchors the row below the
+	// submitted input so the open never paints over transcript.
+	status.attachFooter(liveFooterNow() ?? null);
+	status.start(q.split("\n").length);
 	// bi#169: a new turn releases any transient abort hint.
 	liveFooterNow()?.setHint(null);
 	// Turn chrome theme, hoisted: every stop/result path below closes
