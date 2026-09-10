@@ -12,6 +12,19 @@ import { Container, ProcessTerminal, ScrollView, Text, TuiAltScreen, TuiMainScre
 import { allocateStackSizes, visibleStackEntries } from "@earendil-works/pi-tui/dist/components/stack.js";
 import { currentKeybindingsManager } from "./keybindings.js";
 import type { LayoutViewport, StackLayoutEntry } from "@earendil-works/pi-tui/dist/layout-node.js";
+import { appendFileSync } from "node:fs";
+
+// hub#237 diagnostic: BI_TUI_DEBUG=/path.log records footer decisions
+// (DSR rows, hug rows, reserve, paint/erase rows) alongside prompt.ts's
+// stdin tap. Values only, never input bytes. Unset by default, zero
+// cost. Temporary — remove once the exact cause is identified.
+function ftap(marker: string): void {
+	const path = process.env.BI_TUI_DEBUG;
+	if (!path) return;
+	try {
+		appendFileSync(path, `${Date.now()} footer ${marker}\n`);
+	} catch {}
+}
 
 const CURSOR_MARKER = "\x1b_pi:c\x07";
 
@@ -443,6 +456,7 @@ export function queryCursorRow(timeoutMs = FOOTER_DSR_TIMEOUT_MS): Promise<numbe
 		const finish = (v: number | null) => {
 			if (done) return;
 			done = true;
+			ftap(`dsr finish row=${v} buf=${JSON.stringify(buf.slice(0, 40))}`);
 			clearTimeout(timer);
 			try {
 				stdin.removeListener("data", onData);
@@ -584,7 +598,9 @@ export class HostFooter {
 	reserveBottom(): number {
 		const { rows } = this.dims();
 		if (this.installedRows === 0) return 2;
-		return Math.max(2, rows - this.installedFrame + 1);
+		const r = Math.max(2, rows - this.installedFrame + 1);
+		ftap(`reserve rows=${rows} installedFrame=${this.installedFrame} hug=${JSON.stringify(this.hug)} return=${r}`);
+		return r;
 	}
 	// Resolve hug rows for this paint: query iff the gate is set and
 	// (never pinned or the geometry changed since install). Sticky pin
@@ -601,6 +617,7 @@ export class HostFooter {
 			this.hug = footerHugRows(rows, row);
 		}
 		this.hug ??= footerHugRows(rows, null);
+		ftap(`settle rows=${rows} hug=${JSON.stringify(this.hug)}`);
 		return this.hug;
 	}
 	// Paint-time rows under the current geometry: hug rows clamped to
@@ -622,6 +639,7 @@ export class HostFooter {
 	async showAsync(frame: string, model: string, fallback: string): Promise<void> {
 		this.lastArgs = { frame, model, fallback };
 		const { rows } = this.dims();
+		ftap(`showAsync rows=${rows}`);
 		if (this.tty() && rows >= 3) await this.settleRows(rows);
 		this.render();
 	}
@@ -658,6 +676,7 @@ export class HostFooter {
 		// bi#208: hug rows (clamped to this geometry); a moved footer
 		// erases its old rows first — two CUP+EL writes, never a clear.
 		const pr = this.paintRows(rows);
+		ftap(`render rows=${rows} pr=${pr.frame},${pr.model} installed=${this.installedRows},${this.installedFrame} textChanged=${this.lastFrame !== cFrame || this.lastModel !== cModel}`);
 		if (this.installedRows !== rows || this.installedFrame !== pr.frame) {
 			this.eraseRows();
 			this.install(rows, cFrame, cModel, pr.frame);
@@ -759,6 +778,7 @@ export class HostFooter {
 		const { rows } = this.dims();
 		if (!this.tty() || rows < 3) return;
 		const h = await this.settleRows(rows);
+		ftap(`home promptRow=${h.promptRow}`);
 		this.write(`\x1b[${h.promptRow};1H`);
 	}
 	private install(rows: number, frame: string, model: string | null, frameRow: number): void {
@@ -768,6 +788,7 @@ export class HostFooter {
 		this.write("\x1b[s");
 		this.paintBody(frameRow, frame, model);
 		this.write("\x1b[u");
+		ftap(`install rows=${rows} frame=${frameRow}`);
 		this.installedRows = rows;
 		this.installedFrame = frameRow;
 		this.lastFrame = frame;
@@ -797,6 +818,7 @@ export class HostFooter {
 	// only — timers and caches survive; reset() clears those too.
 	private eraseRows(): void {
 		if (this.installedRows === 0) return;
+		ftap(`erase ${this.installedFrame},${this.installedFrame + 1}`);
 		this.write("\x1b[s");
 		this.write(`\x1b[${this.installedFrame};1H\x1b[2K`);
 		this.write(`\x1b[${this.installedFrame + 1};1H\x1b[2K`);
