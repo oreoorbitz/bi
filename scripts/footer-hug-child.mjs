@@ -94,11 +94,13 @@ try {
 		// footer installs at the fold.
 		retainReplTui();
 		ensureReplTui(mkdtempSync(join(tmpdir(), "bi-hug-")));
+		// Production order (hub#237): the footer exists BEFORE the
+		// picker, so the picker teardown homes the cursor.
+		const footer = makeFooter();
 		const { pickList } = await import(join(HERE, "..", "dist", "src", "prompt.js"));
 		console.log("PICK-OPEN");
 		const idx = await pickList("pick one", Array.from({ length: 30 }, (_, i) => ({ label: `item-${i}` })), 0);
 		console.log(`PICK:${idx}`);
-		const footer = makeFooter();
 		await footer.showAsync("FRAME1", "MODEL1", "FB1");
 		await footer.homeInput();
 		console.log(`RESERVE:${footer.reserveBottom()}`);

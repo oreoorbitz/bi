@@ -3026,7 +3026,13 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 	// negotiation per session, not per modal). Released in the finally
 	// below, which stops the host exactly once.
 	if (!fullscreen) retainReplTui();
-	if (!fullscreen) await maybeRunFirstTimeSetup();
+	// hub#237: the footer must exist before the first startup modal
+	// (first-run setup, session picker) — their teardowns home the
+	// cursor only with a live footer, and without homing the cursor
+	// sits at row 1, so the first DSR settles the whole prompt block
+	// at the top (traced live). No paints happen before showAsync
+	// below; the gate wiring stays with the reader further down.
+	const footer = new HostFooter();
 	// bi#100: startup resume-vs-new offer. TTY with saved sessions gets a
 	// New-first picker (no bi#69 raw layer needed — pickList is modal);
 	// Esc/New mints fresh exactly like before (no litter otherwise:
@@ -3081,10 +3087,10 @@ async function repl(skills: Skill[], opts: { skipPicker?: boolean } = {}): Promi
 		reader.resumeLineInput();
 	}
 	// bi#67: pinned bottom-row footer (scroll region + differential
-	// repaint on TTY; plain printed line on pipes). Installed lazily on
-	// the first turn-end paint, torn down when the REPL leaves.
+	// repaint on TTY; plain printed line on pipes). Painted from the
+	// first showAsync below, torn down when the REPL leaves.
 	// Fullscreen never installs it — the dock owns the footer frame.
-	const footer = new HostFooter();
+	// (Constructed above, before the startup modals — hub#237.)
 	// bi#208: the footer settles the prompt row by DSR while readline
 	// is detached — wire the reader's suspend as the query gate.
 	footer.setInputGate({ suspend: () => reader.suspendLineInput() });
