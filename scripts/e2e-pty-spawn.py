@@ -19,134 +19,6 @@ REPLY_FLAGS = b"\x1b[?7u"
 REPLY_DA = b"\x1b[?64;1;2;4;6;17;18;21;22;52c"
 
 
-class CursorTracker:
-    """Minimal VT cursor tracker for --dsr (bi#208): answers ESC[6n.
-
-    Tracks row/col over the child output stream: LF/VT/FF/IND/NEL,
-    CR, BS, printables, CUP/H/f, CUU/CUD/CUF/CUB/CNL/CPL/CHA/VPA,
-    CPR-style save/restore (s/u, 7/8), RI, RIS. Everything else
-    (SGR, EL/ED, modes, kitty pushes, synchronized output, OSC)
-    is skipped without moving. Unknown/partial sequences carry
-    across chunks. Scroll clamps at the fold (no scroll region
-    exists in the bi stack, bi#194).
-    """
-
-    def __init__(self, rows, cols):
-        self.rows = rows
-        self.cols = cols
-        self.y = 0
-        self.x = 0
-        self.saved = []
-        self.carry = b""
-
-    def feed(self, chunk):
-        data = self.carry + chunk
-        self.carry = b""
-        i, n = 0, len(data)
-        while i < n:
-            b = data[i]
-            if b == 0x1B:
-                ni = self._esc(data, i)
-                if ni is None:
-                    self.carry = data[i:]
-                    return
-                i = ni
-            elif b == 0x0A or b == 0x0B or b == 0x0C:  # LF VT FF
-                self.y = min(self.y + 1, self.rows - 1)
-                i += 1
-            elif b == 0x0D:  # CR
-                self.x = 0
-                i += 1
-            elif b == 0x08:  # BS
-                self.x = max(self.x - 1, 0)
-                i += 1
-            elif b == 0x07 or b == 0x00:  # BEL NUL
-                i += 1
-            elif b < 0x20:
-                i += 1  # other C0: no move
-            else:
-                self.x += 1  # printable (wrap ignored: next LF/CR resets)
-                i += 1
-
-    def _esc(self, data, i):
-        n = len(data)
-        if i + 1 >= n:
-            return None
-        c = data[i + 1]
-        if c == ord("["):
-            j = i + 2
-            while j < n and not (0x40 <= data[j] <= 0x7E):
-                j += 1
-            if j >= n:
-                return None  # partial CSI carries
-            params = data[i + 2 : j].decode("ascii", "replace")
-            final = chr(data[j])
-            self._csi(params, final)
-            return j + 1
-        if c == ord("]"):  # OSC .. BEL|ESC\
-            j = i + 2
-            while j < n:
-                if data[j] == 0x07:
-                    return j + 1
-                if data[j] == 0x1B and j + 1 < n and data[j + 1] == ord("\\"):
-                    return j + 2
-                j += 1
-            return None
-        if c in (ord("("), ord(")"), ord("#")):  # charset/designate
-            return None if i + 2 >= n else i + 3
-        if c == ord("7"):
-            self.saved.append((self.y, self.x))
-            return i + 2
-        if c == ord("8"):
-            if self.saved:
-                self.y, self.x = self.saved.pop()
-            return i + 2
-        if c == ord("M"):  # RI
-            self.y = max(self.y - 1, 0)
-            return i + 2
-        if c == ord("D"):  # IND
-            self.y = min(self.y + 1, self.rows - 1)
-            return i + 2
-        if c == ord("E"):  # NEL
-            self.y = min(self.y + 1, self.rows - 1)
-            self.x = 0
-            return i + 2
-        if c == ord("c"):  # RIS
-            self.y, self.x, self.saved = 0, 0, []
-            return i + 2
-        if c == ord("O"):  # SS3 + 1
-            return None if i + 2 >= n else i + 3
-        return i + 2  # lone ESC + char: no move
-
-    def _csi(self, params, final):
-        nums = [int(p) if p.isdigit() else None for p in params.lstrip("?>!\"$ ").split(";")]
-        n1 = nums[0] if nums and nums[0] is not None else 1
-        n2 = nums[1] if len(nums) > 1 and nums[1] is not None else 1
-        if final in ("H", "f"):
-            self.y = min(max((nums[0] or 1) - 1, 0), self.rows - 1)
-            self.x = min(max((nums[1] or 1) - 1, 0), self.cols - 1)
-        elif final == "A":
-            self.y = max(self.y - n1, 0)
-        elif final in ("B", "E"):
-            self.y = min(self.y + n1, self.rows - 1)
-        elif final == "e":
-            self.y = min(self.y + n1, self.rows - 1)
-        elif final in ("C", "F"):
-            self.x = min(self.x + n1, self.cols - 1)
-        elif final == "D":
-            self.x = max(self.x - n1, 0)
-        elif final == "G":
-            self.x = min(max(n1 - 1, 0), self.cols - 1)
-        elif final == "d":
-            self.y = min(max(n1 - 1, 0), self.rows - 1)
-        elif final == "s":
-            self.saved.append((self.y, self.x))
-        elif final == "u":
-            if self.saved:
-                self.y, self.x = self.saved.pop()
-        # EL K / ED J / modes h,l / SGR m / regions r / R reply: no move.
-
-
 def reap(pid):
     """Poll up to ~2s for the child exit; return exit code or 3."""
     import time as _t
@@ -163,30 +35,17 @@ def reap(pid):
 
 
 def main() -> int:
-    args = sys.argv[1:]
-    # bi#208: opt-in DSR answering (cursor tracker) + pty geometry.
-    # Positional shape unchanged when both are absent.
-    dsr = False
-    if "--dsr" in args:
-        dsr = True
-        args = [a for a in args if a != "--dsr"]
-    import os as _os
-
-    pty_rows = int(_os.environ.get("BI_PTY_ROWS", "40"))
-    pty_cols = int(_os.environ.get("BI_PTY_COLS", "160"))
-    reply_delay = float(args[0]) / 1000.0
-    timeout = float(args[1])
-    argv = args[2:]
+    reply_delay = float(sys.argv[1]) / 1000.0
+    timeout = float(sys.argv[2])
+    argv = sys.argv[3:]
     pid, fd = pty.fork()
     if pid == 0:
-        fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack("HHHH", pty_rows, pty_cols, 0, 0))
+        fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 160, 0, 0))
         os.execvp(argv[0], argv)
         return 1
 
     out = bytearray()
     answered = 0
-    dsr_answered = 0
-    tracker = CursorTracker(pty_rows, pty_cols) if dsr else None
     pending = []  # (at, bytes)
     stdin_open = True
     os.set_blocking(0, False)
@@ -229,13 +88,6 @@ def main() -> int:
                     answered = bursts
                     pending.append((now + reply_delay, REPLY_FLAGS))
                     pending.append((now + reply_delay + 0.03, REPLY_DA))
-                if tracker is not None:
-                    tracker.feed(chunk)
-                    queries = bytes(out).count(b"[6n")
-                    while dsr_answered < queries:
-                        dsr_answered += 1
-                        reply = "\x1b[%d;%dR" % (tracker.y + 1, tracker.x + 1)
-                        pending.append((now + reply_delay, reply.encode()))
             due, pending = [p for p in pending if p[0] <= now], [p for p in pending if p[0] > now]
             for _, b in due:
                 try:

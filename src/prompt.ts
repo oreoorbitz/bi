@@ -50,7 +50,7 @@ import { splitSecondWord } from "./paths.js";
 import { getBiSessionsDir } from "./session.js";
 import { STATUS_WAITING_LINE, freezeActiveStatus, unfreezeActiveStatus } from "./status.js";
 import { chromeWrap } from "./theme-files.js";
-import { disposeReplTui, ensureReplTui, liveFooterNow, replTuiLeased, termWidth } from "./tui.js";
+import { disposeReplTui, ensureReplTui, replTuiLeased, termWidth } from "./tui.js";
 
 export interface ScreenRow {
 	label: string;
@@ -743,14 +743,11 @@ export async function askEdit(
 	pool: SlashPool,
 	opts: { onCycleForward?: () => void; theme?: string | null } = {},
 ): Promise<string> {
-	// Bottom-anchored above the footer rows (bi#67): the box
-	// shrink-wraps prompt + editor and the overlay clamp keeps it
+	// Bottom-anchored above the two pinned footer rows (bi#67): the
+	// box shrink-wraps prompt + editor and the overlay clamp keeps it
 	// inside the margins, so the input draws glued to the footer and
-	// grows upward as it wraps — never over the footer. bi#208: the
-	// margin follows the floating footer (reserveBottom) instead of
-	// assuming the pinned rows. All other modals keep the top-left
-	// geometry (runModal default).
-	const footerReserve = liveFooterNow()?.reserveBottom() ?? 2;
+	// grows upward as it wraps — never over the footer. All other
+	// modals keep the top-left geometry (runModal default).
 	return runModal<string>((ui, root) => {
 		// bi#180: mount staged base-layer content (welcome frame) into the
 		// host root first — it composites under this and every later
@@ -781,7 +778,7 @@ export async function askEdit(
 			ed.onCtrlD = () => reject(new Error("EOF"));
 		});
 		return { wait, focus: ed };
-	}, { anchor: "bottom-left", margin: { top: 0, left: 0, right: 0, bottom: footerReserve } });
+	}, { anchor: "bottom-left", margin: { top: 0, left: 0, right: 0, bottom: 2 } });
 }
 
 // Text prompt through the same modal host (login code/URL entry).
