@@ -71,17 +71,6 @@ export async function emitToolDiff(name: string, output: string, theme: string |
 // reusing the same cwd jail with text-only + capped output.
 export const TOOL_WRITE_CAP = 1_000_000;
 
-// bi#220: expected tool errors (refusals + arg validation) carry a
-// marker so the turn-failure site prints message-only; unexpected
-// throws keep their stacks. Marked here at construction — never by
-// string-matching at the print site.
-export class ToolRefusalError extends Error {
-	constructor(message?: string) {
-		super(message);
-		this.name = "ToolRefusalError";
-	}
-}
-
 // Effective trust lives in the loop (in-memory session answer + stored
 // file); the loop registers a live reader once, so a mid-session
 // `/trust deny` refuses the very next write — no stale latch.
@@ -115,7 +104,7 @@ async function jailResolve(p: string, refuse: (path: string) => Promise<string>)
 	const root = realpathSync(process.cwd());
 	const real = guardResolvePath(p);
 	if (real !== root && !real.startsWith(root + sep)) {
-		throw new ToolRefusalError(await refuse(p));
+		throw new Error(await refuse(p));
 	}
 	return real;
 }
@@ -169,10 +158,10 @@ async function gateWriteTrust(tool: string, detail: string): Promise<void> {
 	const t = trustReader();
 	if (t === "allow" || t === "session") return;
 	if (t === "deny" || !approvalInteractive || !promptAvailable()) {
-		throw new ToolRefusalError(await refuse_write_untrusted_async());
+		throw new Error(await refuse_write_untrusted_async());
 	}
 	const v = await approvalFor(tool, detail);
-	if (!v.proceed) throw new ToolRefusalError(v.refusal);
+	if (!v.proceed) throw new Error(v.refusal);
 }
 
 function diffEnvelope(path: string, before: string, after: string): string {
@@ -182,16 +171,16 @@ function diffEnvelope(path: string, before: string, after: string): string {
 async function execWrite(args: Record<string, unknown>): Promise<string> {
 	const p = args.path;
 	const content = args.content;
-	if (typeof p !== "string" || !p) throw new ToolRefusalError('write requires a "path" string');
-	if (typeof content !== "string") throw new ToolRefusalError('write requires a "content" string');
+	if (typeof p !== "string" || !p) throw new Error('write requires a "path" string');
+	if (typeof content !== "string") throw new Error('write requires a "content" string');
 	if (Buffer.byteLength(content) > TOOL_WRITE_CAP) {
-		throw new ToolRefusalError(await refuse_write_too_large_async(p, TOOL_WRITE_CAP));
+		throw new Error(await refuse_write_too_large_async(p, TOOL_WRITE_CAP));
 	}
 	await gateWriteTrust("write", `write ${p} (${Buffer.byteLength(content)} bytes)`);
 	const abs = await jailResolve(p, refuse_write_outside_root_async);
 	const before = existsSync(abs) ? readFileSync(abs, "utf8") : "";
 	if (Buffer.byteLength(before) > TOOL_WRITE_CAP) {
-		throw new ToolRefusalError(await refuse_write_too_large_async(p, TOOL_WRITE_CAP));
+		throw new Error(await refuse_write_too_large_async(p, TOOL_WRITE_CAP));
 	}
 	mkdirSync(dirname(abs), { recursive: true });
 	writeFileSync(abs, content);
@@ -201,30 +190,30 @@ async function execWrite(args: Record<string, unknown>): Promise<string> {
 async function execEdit(args: Record<string, unknown>): Promise<string> {
 	const p = args.path;
 	const edits = args.edits;
-	if (typeof p !== "string" || !p) throw new ToolRefusalError('edit requires a "path" string');
-	if (!Array.isArray(edits) || edits.length === 0) throw new ToolRefusalError('edit requires a non-empty "edits" array');
+	if (typeof p !== "string" || !p) throw new Error('edit requires a "path" string');
+	if (!Array.isArray(edits) || edits.length === 0) throw new Error('edit requires a non-empty "edits" array');
 	await gateWriteTrust("edit", `edit ${p} (${edits.length} edit${edits.length === 1 ? "" : "s"})`);
 	const abs = await jailResolve(p, refuse_write_outside_root_async);
 	let current: string;
 	try {
 		current = readFileSync(abs, "utf8");
 	} catch {
-		throw new ToolRefusalError(`edit target unreadable: "${p}" — write it first or check the path`);
+		throw new Error(`edit target unreadable: "${p}" — write it first or check the path`);
 	}
 	// Validate every oldText before touching disk: atomic or nothing.
 	const pairs: { oldText: string; newText: string }[] = [];
 	for (let i = 0; i < edits.length; i++) {
 		const e = edits[i] as Record<string, unknown>;
 		if (typeof e?.oldText !== "string" || typeof e?.newText !== "string") {
-			throw new ToolRefusalError(`edit ${i} needs string oldText/newText`);
+			throw new Error(`edit ${i} needs string oldText/newText`);
 		}
-		if (!current.includes(e.oldText)) throw new ToolRefusalError(await edit_missing_text_async(p, i));
+		if (!current.includes(e.oldText)) throw new Error(await edit_missing_text_async(p, i));
 		pairs.push({ oldText: e.oldText, newText: e.newText });
 	}
 	let next = current;
 	for (const pair of pairs) next = next.replace(pair.oldText, pair.newText);
 	if (Buffer.byteLength(next) > TOOL_WRITE_CAP) {
-		throw new ToolRefusalError(await refuse_write_too_large_async(p, TOOL_WRITE_CAP));
+		throw new Error(await refuse_write_too_large_async(p, TOOL_WRITE_CAP));
 	}
 	writeFileSync(abs, next);
 	return diffEnvelope(p, current, next);
@@ -305,18 +294,18 @@ const execFileAsync = promisify(execFile);
 
 async function execBash(args: Record<string, unknown>): Promise<string> {
 	const command = args.command;
-	if (typeof command !== "string" || !command.trim()) throw new ToolRefusalError('bash requires a "command" string');
+	if (typeof command !== "string" || !command.trim()) throw new Error('bash requires a "command" string');
 	const want = Math.floor(Number(args.timeout ?? BASH_DEFAULT_TIMEOUT_S));
 	const timeoutS = Number.isFinite(want) ? Math.min(Math.max(want, 1), BASH_MAX_TIMEOUT_S) : BASH_DEFAULT_TIMEOUT_S;
 	const prog = bashProgram(command);
 	if (!prog || !BASH_ALLOW.has(prog)) {
-		throw new ToolRefusalError(await refuse_bash_blocked_async(command, [...BASH_ALLOW].sort().join(", ")));
+		throw new Error(await refuse_bash_blocked_async(command, [...BASH_ALLOW].sort().join(", ")));
 	}
 	// bi#170: allowlisted commands approve per call on an interactive
 	// TTY (session latch skips repeats); headless runs proceed as today.
 	if (approvalInteractive && promptAvailable()) {
 		const v = await approvalFor("bash", `run: ${command}`);
-		if (!v.proceed) throw new ToolRefusalError(v.refusal);
+		if (!v.proceed) throw new Error(v.refusal);
 	}
 	let raw: string;
 	try {
@@ -330,7 +319,7 @@ async function execBash(args: Record<string, unknown>): Promise<string> {
 	} catch (e) {
 		const err = e as { killed?: boolean; stdout?: string; stderr?: string; code?: number; message?: string };
 		const partial = redactSecrets((err.stdout ?? "") + (err.stderr ? `\n[stderr]\n${err.stderr}` : ""));
-		if (err.killed) throw new ToolRefusalError(await refuse_bash_timeout_async(command, timeoutS));
+		if (err.killed) throw new Error(await refuse_bash_timeout_async(command, timeoutS));
 		throw new Error(`bash exited ${err.code ?? "?"}: ${command}\n${partial}`);
 	}
 	const redacted = redactSecrets(raw);
@@ -353,20 +342,20 @@ export const TOOL_FIND_CAP = 500;
 
 async function execRead(args: Record<string, unknown>): Promise<string> {
 	const p = args.path;
-	if (typeof p !== "string" || !p) throw new ToolRefusalError('read requires a "path" string');
+	if (typeof p !== "string" || !p) throw new Error('read requires a "path" string');
 	const offset = Math.max(1, Math.floor(Number(args.offset ?? 1)) || 1);
 	const limit = Math.min(Math.max(1, Math.floor(Number(args.limit ?? TOOL_READ_MAX_LINES)) || 1), TOOL_READ_MAX_LINES);
 	const abs = await jailResolve(p, (q) => refuse_read_outside_root_async("read", q));
 	let buf: Buffer;
 	try {
-		if (statSync(abs).isDirectory()) throw new ToolRefusalError(`read: "${p}" is a directory — use ls`);
+		if (statSync(abs).isDirectory()) throw new Error(`read: "${p}" is a directory — use ls`);
 		buf = readFileSync(abs);
 	} catch (e) {
 		if (e instanceof Error && e.message.startsWith("read:")) throw e;
-		throw new ToolRefusalError(`read: no such file "${p}" — check the path`);
+		throw new Error(`read: no such file "${p}" — check the path`);
 	}
-	if (buf.includes(0)) throw new ToolRefusalError(await refuse_read_binary_async("read", p));
-	if (buf.length > TOOL_READ_CAP) throw new ToolRefusalError(await refuse_read_too_large_async("read", p, TOOL_READ_CAP));
+	if (buf.includes(0)) throw new Error(await refuse_read_binary_async("read", p));
+	if (buf.length > TOOL_READ_CAP) throw new Error(await refuse_read_too_large_async("read", p, TOOL_READ_CAP));
 	const lines = buf.toString("utf8").split("\n");
 	// A trailing newline is not a line: full reads stay byte-identical and
 	// only genuinely unread lines earn the marker.
@@ -383,14 +372,14 @@ async function execLs(args: Record<string, unknown>): Promise<string> {
 	const abs = await jailResolve(p, (q) => refuse_read_outside_root_async("ls", q));
 	let entries: LsEntry[];
 	try {
-		if (!statSync(abs).isDirectory()) throw new ToolRefusalError(`ls: "${p}" is not a directory`);
+		if (!statSync(abs).isDirectory()) throw new Error(`ls: "${p}" is not a directory`);
 		entries = readdirSync(abs, { withFileTypes: true }).map((d) => ({
 			name: d.name,
 			kind: d.isDirectory() ? "dir" : d.isFile() ? "file" : d.isSymbolicLink() ? "symlink" : "other",
 		} as LsEntry)).sort((a, b) => (a.kind === b.kind ? (a.name < b.name ? -1 : 1) : a.kind === "dir" ? -1 : 1));
 	} catch (e) {
 		if (e instanceof Error && e.message.startsWith("ls:")) throw e;
-		throw new ToolRefusalError(`ls: cannot list "${p}" — check the path`);
+		throw new Error(`ls: cannot list "${p}" — check the path`);
 	}
 	const truncated = entries.length > TOOL_LS_CAP;
 	return JSON.stringify({ path: p, entries: truncated ? entries.slice(0, TOOL_LS_CAP) : entries, truncated });
@@ -432,12 +421,12 @@ function globToRegExp(glob: string): RegExp {
 
 async function execGrep(args: Record<string, unknown>): Promise<string> {
 	const pattern = args.pattern;
-	if (typeof pattern !== "string" || !pattern) throw new ToolRefusalError('grep requires a "pattern" string');
+	if (typeof pattern !== "string" || !pattern) throw new Error('grep requires a "pattern" string');
 	let re: RegExp;
 	try {
 		re = new RegExp(pattern);
 	} catch {
-		throw new ToolRefusalError(`grep: invalid regex "${pattern}"`);
+		throw new Error(`grep: invalid regex "${pattern}"`);
 	}
 	const base = typeof args.path === "string" && args.path ? args.path : ".";
 	const root = await jailResolve(base, (q) => refuse_read_outside_root_async("grep", q));
@@ -483,7 +472,7 @@ async function execGrep(args: Record<string, unknown>): Promise<string> {
 
 async function execFind(args: Record<string, unknown>): Promise<string> {
 	const pattern = args.pattern;
-	if (typeof pattern !== "string" || !pattern) throw new ToolRefusalError('find requires a "pattern" string');
+	if (typeof pattern !== "string" || !pattern) throw new Error('find requires a "pattern" string');
 	const base = typeof args.path === "string" && args.path ? args.path : ".";
 	const root = await jailResolve(base, (q) => refuse_read_outside_root_async("find", q));
 	const isDir = statSync(root).isDirectory();
@@ -583,7 +572,7 @@ export async function mineMetaTools(sessions: SessionTrace[], minSupport = 2): P
 export async function materializeMetaTool(proposal: MetaToolProposal): Promise<MetaToolSpec> {
 	const verdict = await gate_meta_tool_materialization_async(proposal);
 	if (verdict instanceof MaterializeRefuse) {
-		throw new ToolRefusalError(`meta-tool materialization refused: ${verdict.reason}`);
+		throw new Error(`meta-tool materialization refused: ${verdict.reason}`);
 	}
 	return verdict;
 }
@@ -617,7 +606,7 @@ export async function handleToolInSession(
 ): Promise<string> {
 	if (name === "write" || name === "edit") {
 		const p = args.path;
-		if (typeof p !== "string" || !p) throw new ToolRefusalError(`${name} requires a "path" string`);
+		if (typeof p !== "string" || !p) throw new Error(`${name} requires a "path" string`);
 		const abs = guardResolvePath(p);
 		const verdict = await write_guard_check_async({
 			tool: name,
@@ -626,7 +615,7 @@ export async function handleToolInSession(
 			read_this_session: session.readMarks.has(abs),
 		});
 		if (verdict instanceof WriteGuardRefuse) {
-			throw new ToolRefusalError(verdict.reason);
+			throw new Error(verdict.reason);
 		}
 	}
 	const out = await handleTool(name, args);
@@ -682,7 +671,7 @@ function baisListCompile(pattern: string, arg: string): RegExp {
 	try {
 		return new RegExp(pattern);
 	} catch {
-		throw new ToolRefusalError(`bais_list: invalid ${arg} ${JSON.stringify(pattern)} — fix the pattern, nothing was filtered`);
+		throw new Error(`bais_list: invalid ${arg} ${JSON.stringify(pattern)} — fix the pattern, nothing was filtered`);
 	}
 }
 
@@ -843,18 +832,18 @@ export async function handleTool(name: string, args: Record<string, unknown>): P
 		}
 		case "bais_new": {
 			const title = String(args.title ?? "");
-			if (!title) throw new ToolRefusalError("bais_new requires title");
+			if (!title) throw new Error("bais_new requires title");
 			// bi#215: edges at birth ride `edges: [{kind, to}]`, validated
 			// like the CLI inside createBaisIssue (known kind, existing
 			// ends, no self-links/dups — a refusal names the reason and
 			// nothing reaches disk). Shape-checked here so a malformed
 			// entry refuses at the tool boundary, not inside the writer.
 			const rawEdges = args.edges ?? [];
-			if (!Array.isArray(rawEdges)) throw new ToolRefusalError("bais_new: edges must be [{kind, to}]");
+			if (!Array.isArray(rawEdges)) throw new Error("bais_new: edges must be [{kind, to}]");
 			const edges: { kind: string; to: string }[] = rawEdges.map((e, i) => {
 				const r = e as Record<string, unknown>;
 				if (typeof r?.kind !== "string" || !r.kind || typeof r?.to !== "string" || !r.to) {
-					throw new ToolRefusalError(`bais_new: edges[${i}] needs string kind/to`);
+					throw new Error(`bais_new: edges[${i}] needs string kind/to`);
 				}
 				return { kind: r.kind, to: r.to };
 			});
@@ -871,7 +860,7 @@ export async function handleTool(name: string, args: Record<string, unknown>): P
 		case "bais_move": {
 			const id = String(args.id ?? "");
 			const status = String(args.status ?? "");
-			if (!id || !status) throw new ToolRefusalError("bais_move requires id and status");
+			if (!id || !status) throw new Error("bais_move requires id and status");
 			// bi#215: claim-capable move. `as` + `for` mirror the CLI
 			// exactly: `for` without `as` is ignored (bare move keeps
 			// today's anonymous-but-instantly-stale contract), an invalid
@@ -881,7 +870,7 @@ export async function handleTool(name: string, args: Record<string, unknown>): P
 			let forMs: number | undefined;
 			if (forRaw != null) {
 				const p = parseClaimDuration(forRaw);
-				if (p == null) throw new ToolRefusalError(`bais_move: --for ${JSON.stringify(forRaw)} needs <n>s|m|h|d`);
+				if (p == null) throw new Error(`bais_move: --for ${JSON.stringify(forRaw)} needs <n>s|m|h|d`);
 				forMs = p;
 			}
 			const file = await moveBaisIssue(id, status, undefined, as != null ? { as, forMs } : undefined);
@@ -893,10 +882,10 @@ export async function handleTool(name: string, args: Record<string, unknown>): P
 			// render. A single full record carries its body by definition
 			// (the bi#212 rows rule is for discovery-sized results).
 			const id = String(args.id ?? "");
-			if (!id) throw new ToolRefusalError("bais_show requires id");
+			if (!id) throw new Error("bais_show requires id");
 			const { issues } = await loadBaisIssues();
 			const found = issues.find((f) => f.issue.id === id);
-			if (!found) throw new ToolRefusalError(`bais_show: unknown issue ${JSON.stringify(id)} — \`bi bais list\` lists ids`);
+			if (!found) throw new Error(`bais_show: unknown issue ${JSON.stringify(id)} — \`bi bais list\` lists ids`);
 			return capBaisPayload(JSON.stringify(found), "bais show <id>");
 		}
 		case "bais_link": {
@@ -906,7 +895,7 @@ export async function handleTool(name: string, args: Record<string, unknown>): P
 			const from = String(args.from ?? "");
 			const kind = String(args.kind ?? "");
 			const to = String(args.to ?? "");
-			if (!from || !kind || !to) throw new ToolRefusalError("bais_link requires from, kind, and to");
+			if (!from || !kind || !to) throw new Error("bais_link requires from, kind, and to");
 			const file = await linkBaisIssues(from, kind, to);
 			return capBaisPayload(JSON.stringify(file), "bais show <id>");
 		}
@@ -916,12 +905,12 @@ export async function handleTool(name: string, args: Record<string, unknown>): P
 			// holders). `for` parses like the CLI; invalid refuses loud.
 			const id = String(args.id ?? "");
 			const as = String(args.as ?? "");
-			if (!id || !as) throw new ToolRefusalError("bais_renew requires id and as");
+			if (!id || !as) throw new Error("bais_renew requires id and as");
 			const forRaw = typeof args.for === "string" && args.for ? args.for : null;
 			let forMs = 4 * 3600000;
 			if (forRaw != null) {
 				const p = parseClaimDuration(forRaw);
-				if (p == null) throw new ToolRefusalError(`bais_renew: --for ${JSON.stringify(forRaw)} needs <n>s|m|h|d`);
+				if (p == null) throw new Error(`bais_renew: --for ${JSON.stringify(forRaw)} needs <n>s|m|h|d`);
 				forMs = p;
 			}
 			const file = await renewBaisClaim(id, as, forMs);
@@ -958,7 +947,7 @@ export async function handleTool(name: string, args: Record<string, unknown>): P
 			// the old unbounded full-body traversal was the worst dose
 			// (~109k tokens from one --from).
 			const from = String(args.from ?? "");
-			if (!from) throw new ToolRefusalError("bais_graph requires from");
+			if (!from) throw new Error("bais_graph requires from");
 			const wantDepth = Number(args.depth);
 			const depth = Number.isFinite(wantDepth) && wantDepth >= 0 ? Math.floor(wantDepth) : BAIS_GRAPH_DEFAULT_DEPTH;
 			const includeBodies = args.include_bodies === true;

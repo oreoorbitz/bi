@@ -10,7 +10,7 @@ import { runAgent, runSingleImageTurn } from "./agent.js";
 import { HttpKeeperHub, LeaseKeeper } from "./keeper.js";
 import { HubSubscriber, TerminalNotifier, notifyApprovalRequired, notifyTurnComplete } from "./notify.js";
 import { loadBaisIssues, readyBaisIssues, filterReadyIssues, blastRadii, dispatchPack, parseFileClaims, isDeclaredFootprint, warnUnknownShared, warnUnknownWithheld, epicWithheldIn, warnEpicWithheld, createBaisIssue, moveBaisIssue, linkBaisIssues, checkBaisIssues, graphBaisIssues, scanBaisHeaders, scannedBlockers, loadStagedIssues, parseClaimDuration, renewBaisClaim, reapBaisClaims } from "./bais.js";
-import { listTools, handleTool, emitToolDiff, setApprovalInteractive, setTrustReader, ToolRefusalError } from "./tools.js";
+import { listTools, handleTool, emitToolDiff, setApprovalInteractive, setTrustReader } from "./tools.js";
 import { listImageModels } from "./image.js";
 import { showStagedImage, teardownInlineImages } from "./image-display.js";
 import { runAuthStatus, runLogin, runLogout, runOAuthLogin } from "./auth_cli.js";
@@ -4773,9 +4773,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((e) => {
-	// bi#220: expected tool errors (refusals + arg validation, marked
-	// ToolRefusalError at construction) read as sentences; unexpected
-	// throws keep their stacks. Exit policy unchanged either way.
-	console.error(e instanceof ToolRefusalError ? e.message : e);
+	console.error(e);
 	process.exit(1);
 });
