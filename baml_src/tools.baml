@@ -345,11 +345,12 @@ function _tool_bais_check() -> ToolSpec {
 function _tool_bais_graph() -> ToolSpec {
     ToolSpec {
         name: "bais_graph",
-        description: "Graph traversal from a BAIS issue via Blocks/DependsOn/etc edges (bounded BFS, both directions). Returns ROWS by default (id/status/kind/title/area per issue) — full bodies ride `bais show` or a result narrowed to one issue; pass include_bodies:true for full records. Traversal is depth-capped (default 3, pass depth for shallower/deeper) and node-capped near 200 rows: over-cap results carry truncated:true plus a notice naming the refinement (narrower --from, shallower depth), never silent. Results are compact JSON capped near 60k bytes.",
+        description: "Graph traversal from a BAIS issue via Blocks/DependsOn/etc edges (bounded BFS, both directions). The start takes `from`; `id` is an alias for `from` (explicit `from` wins when both are present) — sibling-shaped `{id}` calls traverse, never refuse. Returns ROWS by default (id/status/kind/title/area per issue) — full bodies ride `bais show` or a result narrowed to one issue; pass include_bodies:true for full records. Traversal is depth-capped (default 3, pass depth for shallower/deeper) and node-capped near 200 rows: over-cap results carry truncated:true plus a notice naming the refinement (narrower --from, shallower depth), never silent. Results are compact JSON capped near 60k bytes.",
         input_schema: {
             "type": "object",
             "properties": {
                 "from": { "type": "string", "description": "Starting issue id e.g. bi#04" },
+                "id": { "type": "string", "description": "Alias for `from` (explicit `from` wins when both are present) — optional" },
                 "depth": {
                     "type": "number",
                     "description": "Max BFS hops from `from` (default 3, 0 is just `from` itself) — optional",

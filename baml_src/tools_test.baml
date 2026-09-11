@@ -255,6 +255,21 @@ testset "bais CRUD tools (bi#215)" {
     }
 }
 
+testset "bais_graph id alias (hub#238)" {
+    test "bais_graph documents id as an alias for from with from-wins precedence" {
+        let t = GetTool("bais_graph");
+        assert.not_null(t);
+        match (t) {
+            let tool: ToolSpec => {
+                assert.contains(tool.description, "`id` is an alias for `from`");
+                assert.contains(tool.description, "explicit `from` wins");
+                assert.contains(tool.description, "never refuse")
+            },
+            _ => assert.is_true(false),
+        }
+    }
+}
+
 testset "write/edit refusal policy (bi#77)" {
     test "refusals name the fix" {
         assert.contains(refuse_write_outside_root("../x"), "outside the project root");

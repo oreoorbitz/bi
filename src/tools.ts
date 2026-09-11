@@ -957,8 +957,14 @@ export async function handleTool(name: string, args: Record<string, unknown>): P
 			// BFS (depth + node cap) with a notice naming the refinement —
 			// the old unbounded full-body traversal was the worst dose
 			// (~109k tokens from one --from).
-			const from = String(args.from ?? "");
-			if (!from) throw new ToolRefusalError("bais_graph requires from");
+			// hub#238: `id` is an alias for `from` (every sibling tool takes
+			// `id`, so agents keep passing it). Explicit non-empty `from`
+			// wins when both are present; neither refuses naming both
+			// spellings (marked refusal, so bi#220 prints message-only).
+			const fromArg = typeof args.from === "string" && args.from ? args.from : null;
+			const idArg = typeof args.id === "string" && args.id ? args.id : null;
+			const from = fromArg ?? idArg ?? "";
+			if (!from) throw new ToolRefusalError('bais_graph requires "from" (or "id" as an alias)');
 			const wantDepth = Number(args.depth);
 			const depth = Number.isFinite(wantDepth) && wantDepth >= 0 ? Math.floor(wantDepth) : BAIS_GRAPH_DEFAULT_DEPTH;
 			const includeBodies = args.include_bodies === true;
