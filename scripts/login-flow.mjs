@@ -190,25 +190,107 @@ if (!hasPty) {
 	check("lf-repl REPL /login pick → key → stored, chain survives", replClean.includes("Stored api_key for groq in ~/.bi/auth.json.") && replClean.includes("session kept") && repl.code === 0, `code=${repl.code}`);
 	check("lf-repl-hidden REPL: typed key never in byte stream", !repl.out.includes(KEY), repl.out.includes(KEY) ? `key found at ${repl.out.indexOf(KEY)}` : `scanned ${repl.out.length} bytes`);
 	check("lf-repl-store REPL login round-trips the real store", storedKey(repl.home) === KEY, `stored=${JSON.stringify(storedKey(repl.home))}`);
+	const authJson = (h) => join(h, ".bi", "auth.json");
+
+	// --- Scenario 5 (bi#196): REPL /oauth anthropic reaches the PKCE
+	// manual-code modal on loopback alone (no external network — the
+	// callback server binds localhost and the askText prompt races it).
+	// Typed code must never appear outside the modal's own paint;
+	// Esc cancels with nothing stored. Sends ride bracketed paste
+	// (bi#204: `/oauth anthropic` is 16 chars — raw + CR trips the
+	// paste-burst guard); the marker itself is raw (no CR follows).
+	const OAUTH_MARKER = "zz196-oauth-echo-probe-q7x2";
+	// Gated runner (NOT timed beats): see header note above.
+	const oauth = await (async () => {
+		const home = makeSandbox();
+		const env = { ...process.env, HOME: home, BI_AGENT_DIR: join(home, ".bi"), TERM: "xterm-kitty" };
+		delete env.BI_TUI_DEBUG;
+		const child = spawn("python3", [join(HERE, "e2e-pty-spawn.py"), "0", "90", "node", CLI], {
+			env, stdio: ["pipe", "pipe", "pipe"],
+		});
+		let out = "";
+		child.stdout.on("data", (d) => { out += d.toString("utf8"); });
+		const waitFor = (re, ms) => new Promise((res, rej) => {
+			const t0 = Date.now();
+			const iv = setInterval(() => {
+				if (re.test(out)) { clearInterval(iv); res(true); }
+				else if (Date.now() - t0 > ms) { clearInterval(iv); rej(new Error("wait timeout " + re)); }
+			}, 200);
+		});
+		const quiet = (ms) => new Promise((res) => {
+			let last = out.length;
+			let still = 0;
+			const iv = setInterval(() => {
+				if (out.length !== last) { last = out.length; still = 0; }
+				else if ((still += 200) >= ms) { clearInterval(iv); res(true); }
+			}, 200);
+		});
+		try {
+			await waitFor(/Trust this project\?/, 30000);
+			await new Promise((r) => setTimeout(r, 1500));
+			child.stdin.write("\r");
+			await waitFor(/\u256d bi>/, 60000);
+			await new Promise((r) => setTimeout(r, 2000));
+			child.stdin.write("\x1b[200~/oauth anthropic\x1b[201~\r");
+			await waitFor(/paste the authorization code/, 60000);
+			await quiet(3000);
+			child.stdin.write(OAUTH_MARKER);
+			await new Promise((r) => setTimeout(r, 2000));
+			child.stdin.write("\x1b");
+			await waitFor(/Login cancelled/, 30000);
+			child.stdin.write("\x1b[200~/quit\x1b[201~\r");
+			await waitFor(/session kept/, 30000);
+		} catch (e) {
+			try { child.kill(); } catch {}
+			return { out, code: null, home, died: String(e && e.message || e) };
+		}
+		await new Promise((r) => setTimeout(r, 1000));
+		try { child.kill(); } catch {}
+		return { out, code: 0, home, died: null };
+	})();
+	const oauthClean = oauth.out.replace(ansi, "");
+	check("lf-oauth-modal code modal opens on loopback alone", oauthClean.includes("paste the authorization code") && !oauth.died, `died=${oauth.died}`);
+	// Placement-aware: the askText modal is unmasked, so the typed code
+	// legitimately paints exactly once — in the modal's own input row
+	// (modal title precedes it, the editor's reverse-block cursor
+	// follows). A live readline (missing suspend) echoes a second,
+	// bare copy — that is the leak this names.
+	const oaFirst = oauth.out.indexOf(OAUTH_MARKER);
+	const oaSecond = oaFirst === -1 ? -1 : oauth.out.indexOf(OAUTH_MARKER, oaFirst + 1);
+	const oaPlaced =
+		oaFirst !== -1 &&
+		oaSecond === -1 &&
+		oaFirst > oauth.out.indexOf("paste the authorization code") &&
+		oauth.out.slice(oaFirst, oaFirst + 400).includes("\x1b[7m \x1b[27m");
+	check("lf-oauth-hidden typed code never outside modal paint", oaPlaced && !oauth.died, oaFirst === -1 ? `marker never typed (modal did not open?) died=${oauth.died} — scanned ${oauth.out.length} bytes` : `copies=${oaSecond === -1 ? 1 : "2+"} first at ${oaFirst}`);
+	check("lf-oauth-cancel Esc cancels with nothing stored", oauthClean.includes("Login cancelled") && !existsSync(authJson(oauth.home)) && oauthClean.includes("session kept") && !oauth.died, `died=${oauth.died}`);
+	writeFileSync("/tmp/lf-oauth-" + process.pid + ".log", oauth.out);
 }
 
 // --- Pipe half: non-TTY refusal + arg path byte-identical (no pty). ---
+// Detach the controlling terminal first: readSecret opens /dev/tty
+// directly (never stdin), so a plain pipe-stdin child in an interactive
+// shell inherits the user's ctty, prompts on the REAL terminal, and
+// blocks (the Terminal.app key icon) instead of refusing. setsid() in
+// a python pre-exec drops the ctty, so /dev/tty fails exactly like CI.
 {
 	const home = makeSandbox();
 	const env = { ...process.env, HOME: home, BI_AGENT_DIR: join(home, ".bi") };
-	const bare = spawnSync("node", [CLI, "login"], { env, encoding: "utf8", input: "" });
+	const DETACH = "import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])";
+	const runPipe = (argv) => spawnSync("python3", ["-c", DETACH, "node", CLI, ...argv], { env, encoding: "utf8", input: "" });
+	const bare = runPipe(["login"]);
 	check(
 		"lf-pipe-bare bare login on pipe refuses loud",
 		bare.status === 1 && (bare.stderr ?? "").includes("bi login needs a terminal") && (bare.stderr ?? "").includes("refusing non-TTY stdin"),
 		`code=${bare.status} err=${(bare.stderr ?? "").trim().slice(0, 80)}`,
 	);
-	const unknown = spawnSync("node", [CLI, "login", "nosuchprovider"], { env, encoding: "utf8", input: "" });
+	const unknown = runPipe(["login", "nosuchprovider"]);
 	check(
 		"lf-pipe-arg arg path byte-identical (unknown provider + readSecret refusal)",
 		unknown.status === 1 && (unknown.stderr ?? "").includes("Unknown provider: nosuchprovider — bi list-providers lists known ids"),
 		`code=${unknown.status} err=${(unknown.stderr ?? "").trim().slice(0, 80)}`,
 	);
-	const argKey = spawnSync("node", [CLI, "login", "groq"], { env, encoding: "utf8", input: "" });
+	const argKey = runPipe(["login", "groq"]);
 	check(
 		"lf-pipe-arg-key arg path readSecret refusal unchanged",
 		argKey.status === 1 && (argKey.stderr ?? "").includes("bi login needs a terminal to read the key — refusing non-TTY stdin"),

@@ -795,8 +795,18 @@ async function handleSlash(line: string, skills: Skill[], history: any[], signal
 						console.error(`unknown provider "${arg}" — bare /oauth lists numbers and ids`);
 						return history;
 					}
-					if (getOAuthFlow(id)) await runOAuthLogin(id);
-					else await runLogin(["login", id]);
+					// bi#196: same raw.suspend()/resume() envelope as /login
+					// (bi#195) — the code-entry askText modal owns the
+					// screen, and a live readline echoes every typed byte
+					// (the code/URL) to stdout (drill: login-flow.mjs
+					// lf-oauth-hidden). The finally always resumes.
+					if (raw) raw.suspend();
+					try {
+						if (getOAuthFlow(id)) await runOAuthLogin(id);
+						else await runLogin(["login", id]);
+					} finally {
+						if (raw) raw.resume();
+					}
 					return history;
 				}
 				const stored = await listCredentials();
